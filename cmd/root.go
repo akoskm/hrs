@@ -49,9 +49,12 @@ func Execute() error {
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&dbPath, "db", defaultDBPath(), "sqlite database path")
-	rootCmd.PersistentFlags().StringVar(&fixturesPath, "fixtures", "testdata/claude-sessions", "claude fixture dir to import")
+	rootCmd.PersistentFlags().StringVar(&fixturesPath, "fixtures", "", "fixture dir to import before opening TUI")
 	rootCmd.AddCommand(projectCmd)
 	rootCmd.AddCommand(clientCmd)
+	rootCmd.AddCommand(pathCmd)
+	rootCmd.AddCommand(syncCmd)
+	rootCmd.AddCommand(addCmd)
 }
 
 func defaultDBPath() string {

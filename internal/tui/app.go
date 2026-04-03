@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,9 @@ type AppModel struct {
 	store         *db.Store
 	entries       []model.TimeEntryDetail
 	projects      []model.Project
+	width         int
+	height        int
+	offset        int
 	cursor        int
 	projectCursor int
 	mode          mode
@@ -59,6 +63,43 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			} else if m.cursor > 0 {
 				m.cursor--
+				m.ensureVisible()
+			}
+		case "home":
+			if m.mode == modeAssign {
+				m.projectCursor = 0
+			} else {
+				m.cursor = 0
+				m.ensureVisible()
+			}
+		case "end":
+			if m.mode == modeAssign {
+				if len(m.projects) > 0 {
+					m.projectCursor = len(m.projects) - 1
+				}
+			} else {
+				if len(m.entries) > 0 {
+					m.cursor = len(m.entries) - 1
+					m.ensureVisible()
+				}
+			}
+		case "pgdown", "ctrl+f":
+			if m.mode == modeAssign {
+				step := maxInt(1, m.timelineRows())
+				m.projectCursor = minInt(len(m.projects)-1, m.projectCursor+step)
+			} else if len(m.entries) > 0 {
+				step := maxInt(1, m.timelineRows())
+				m.cursor = minInt(len(m.entries)-1, m.cursor+step)
+				m.ensureVisible()
+			}
+		case "pgup", "ctrl+b":
+			if m.mode == modeAssign {
+				step := maxInt(1, m.timelineRows())
+				m.projectCursor = maxInt(0, m.projectCursor-step)
+			} else if len(m.entries) > 0 {
+				step := maxInt(1, m.timelineRows())
+				m.cursor = maxInt(0, m.cursor-step)
+				m.ensureVisible()
 			}
 		case "down", "j":
 			if m.mode == modeAssign {
@@ -67,6 +108,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			} else if m.cursor < len(m.entries)-1 {
 				m.cursor++
+				m.ensureVisible()
 			}
 		case "enter":
 			if m.mode == modeTimeline {
@@ -97,6 +139,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.mode = modeTimeline
 		}
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.ensureVisible()
 	}
 	return m, nil
 }
@@ -114,7 +160,13 @@ func (m AppModel) View() string {
 	if len(m.entries) == 0 {
 		b.WriteString("no entries\n")
 	} else {
-		for i, entry := range m.entries {
+		cols := timelineColumns(m.width)
+		header := fmt.Sprintf("%s %s %s %s %s", padRight(" ", cols.Cursor), padRight("Time", cols.Time), padRight("Description", cols.Description), padRight("Status", cols.Status), padRight("Project", cols.Project))
+		b.WriteString(header + "\n")
+		b.WriteString(strings.Repeat("-", minInt(len(header), timelineWidth(m.width))) + "\n")
+		start, end := m.visibleRange()
+		for i := start; i < end; i++ {
+			entry := m.entries[i]
 			cursor := " "
 			if i == m.cursor && m.mode == modeTimeline {
 				cursor = ">"
@@ -127,7 +179,18 @@ func (m AppModel) View() string {
 			if entry.Description != nil && *entry.Description != "" {
 				desc = *entry.Description
 			}
-			b.WriteString(fmt.Sprintf("%s %s | %s | %s | %s\n", cursor, formatRange(entry.StartedAt, entry.EndedAt), desc, entry.Status, project))
+			line := fmt.Sprintf("%s %s %s %s %s",
+				padRight(cursor, cols.Cursor),
+				padRight(formatRange(entry.StartedAt, entry.EndedAt), cols.Time),
+				padRight(truncateForWidth(desc, cols.Description), cols.Description),
+				padRight(truncateForWidth(string(entry.Status), cols.Status), cols.Status),
+				padRight(truncateForWidth(project, cols.Project), cols.Project),
+			)
+			b.WriteString(truncateForWidth(line, timelineWidth(m.width)) + "\n")
+		}
+		if len(m.entries) > end {
+			remaining := len(m.entries) - end
+			b.WriteString(truncateForWidth("... "+strconv.Itoa(remaining)+" more", timelineWidth(m.width)) + "\n")
 		}
 	}
 	if m.mode == modeAssign {
@@ -154,9 +217,109 @@ func (m AppModel) View() string {
 	return b.String()
 }
 
+type timelineColWidths struct {
+	Cursor      int
+	Time        int
+	Description int
+	Status      int
+	Project     int
+}
+
+func (m *AppModel) ensureVisible() {
+	visible := m.timelineRows()
+	if visible <= 0 {
+		m.offset = 0
+		return
+	}
+	if m.cursor < m.offset {
+		m.offset = m.cursor
+	}
+	if m.cursor >= m.offset+visible {
+		m.offset = m.cursor - visible + 1
+	}
+	maxOffset := maxInt(0, len(m.entries)-visible)
+	if m.offset > maxOffset {
+		m.offset = maxOffset
+	}
+}
+
+func (m AppModel) visibleRange() (int, int) {
+	visible := m.timelineRows()
+	start := minInt(m.offset, maxInt(0, len(m.entries)))
+	end := minInt(len(m.entries), start+visible)
+	return start, end
+}
+
+func (m AppModel) timelineRows() int {
+	if m.height <= 0 {
+		return len(m.entries)
+	}
+	rows := m.height - 7
+	if rows < 1 {
+		return 1
+	}
+	return rows
+}
+
+func timelineColumns(width int) timelineColWidths {
+	if width <= 0 {
+		width = 80
+	}
+	available := maxInt(35, width-4)
+	cols := timelineColWidths{Cursor: 1, Time: 11, Status: 6, Project: 6, Description: 8}
+	extra := available - (cols.Cursor + cols.Time + cols.Status + cols.Project + cols.Description)
+	if extra > 0 {
+		cols.Project += minInt(8, extra/3)
+		extra -= minInt(8, extra/3)
+		cols.Status += minInt(3, extra/4)
+		extra -= minInt(3, extra/4)
+		cols.Description += extra
+	}
+	return cols
+}
+
 func formatRange(start time.Time, end *time.Time) string {
 	if end == nil {
 		return start.Format("15:04") + "-..."
 	}
 	return start.Format("15:04") + "-" + end.Format("15:04")
+}
+
+func timelineWidth(width int) int {
+	if width <= 0 {
+		return 80
+	}
+	return width
+}
+
+func truncateForWidth(text string, width int) string {
+	if width <= 0 || len(text) <= width {
+		return text
+	}
+	if width <= 3 {
+		return text[:width]
+	}
+	return text[:width-3] + "..."
+}
+
+func padRight(text string, width int) string {
+	text = truncateForWidth(text, width)
+	if len(text) >= width {
+		return text
+	}
+	return text + strings.Repeat(" ", width-len(text))
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

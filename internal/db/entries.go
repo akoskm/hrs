@@ -11,6 +11,7 @@ import (
 )
 
 type EntryImport struct {
+	ProjectID   *string
 	Description string
 	StartedAt   time.Time
 	EndedAt     time.Time
@@ -19,6 +20,14 @@ type EntryImport struct {
 	GitBranch   string
 	Cwd         string
 	Metadata    map[string]any
+}
+
+type ManualEntryInput struct {
+	ProjectIdent string
+	Description  string
+	StartedAt    time.Time
+	EndedAt      time.Time
+	Billable     *bool
 }
 
 func (s *Store) HasImport(ctx context.Context, source, sessionID string) (bool, error) {
@@ -43,13 +52,18 @@ func (s *Store) CreateImportedEntry(ctx context.Context, entry EntryImport) (mod
 		return model.TimeEntry{}, err
 	}
 	metadata := string(metadataBytes)
+	var projectID any
+	if entry.ProjectID != nil {
+		projectID = *entry.ProjectID
+	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO time_entries (
-			id, description, started_at, ended_at, duration_secs, billable, status, operator,
+			id, project_id, description, started_at, ended_at, duration_secs, billable, status, operator,
 			source_ref, git_branch, cwd, metadata, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		id,
+		projectID,
 		entry.Description,
 		entry.StartedAt.UTC().Format(timeFormat),
 		entry.EndedAt.UTC().Format(timeFormat),
@@ -60,6 +74,40 @@ func (s *Store) CreateImportedEntry(ctx context.Context, entry EntryImport) (mod
 		entry.GitBranch,
 		entry.Cwd,
 		metadata,
+		now.Format(timeFormat),
+		now.Format(timeFormat),
+	)
+	if err != nil {
+		return model.TimeEntry{}, err
+	}
+	return s.EntryByID(ctx, id)
+}
+
+func (s *Store) CreateManualEntry(ctx context.Context, entry ManualEntryInput) (model.TimeEntry, error) {
+	project, err := s.ProjectByCodeOrName(ctx, entry.ProjectIdent)
+	if err != nil {
+		return model.TimeEntry{}, err
+	}
+	now := nowUTC()
+	id := ulid.Make().String()
+	duration := int(entry.EndedAt.Sub(entry.StartedAt).Seconds())
+	billable := project.BillableDefault
+	if entry.Billable != nil {
+		billable = *entry.Billable
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO time_entries (
+			id, project_id, description, started_at, ended_at, duration_secs, billable, status, operator, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'human', ?, ?)
+	`,
+		id,
+		project.ID,
+		entry.Description,
+		entry.StartedAt.UTC().Format(timeFormat),
+		entry.EndedAt.UTC().Format(timeFormat),
+		duration,
+		boolToInt(billable),
+		model.StatusConfirmed,
 		now.Format(timeFormat),
 		now.Format(timeFormat),
 	)
