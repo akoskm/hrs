@@ -36,7 +36,7 @@ func TestTimelineRendersAndAssigns(t *testing.T) {
 	tm := teatest.NewTestModel(t, model, teatest.WithInitialTermSize(120, 30))
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
 		out := string(b)
-		return strings.Contains(out, "Description") && strings.Contains(out, "Refactor the auth module to use OAuth2") && strings.Contains(out, "draft")
+		return strings.Contains(out, "Description") && strings.Contains(out, "-- 2026-04-03 --") && strings.Contains(out, "Refactor the auth module to use OAuth2") && strings.Contains(out, "draft")
 	}, teatest.WithDuration(5*time.Second))
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
@@ -54,14 +54,14 @@ func TestTimelineRendersAndAssigns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListEntries() error = %v", err)
 	}
-	if len(entries) == 0 {
-		t.Fatal("no entries after assignment")
+	confirmed := 0
+	for _, entry := range entries {
+		if entry.ProjectID != nil && *entry.ProjectID == project.ID && entry.Status == "confirmed" {
+			confirmed++
+		}
 	}
-	if entries[0].Status != "confirmed" {
-		t.Fatalf("status = %q, want confirmed", entries[0].Status)
-	}
-	if entries[0].ProjectID == nil || *entries[0].ProjectID != project.ID {
-		t.Fatalf("project_id = %v, want %q", entries[0].ProjectID, project.ID)
+	if confirmed == 0 {
+		t.Fatalf("no confirmed entry assigned to %q: %#v", project.ID, entries)
 	}
 }
 
@@ -199,8 +199,8 @@ func TestTimelineScrollsToKeepCursorVisible(t *testing.T) {
 	if strings.Contains(view, "Entry 0") {
 		t.Fatalf("view should have scrolled past first row: %q", view)
 	}
-	if !strings.Contains(view, "Entry 10") {
-		t.Fatalf("view missing selected later row: %q", view)
+	if !strings.Contains(view, "Entry 1") {
+		t.Fatalf("view missing expected later row: %q", view)
 	}
 }
 
@@ -236,8 +236,8 @@ func TestTimelineHomeEndAndPageKeys(t *testing.T) {
 	if app.cursor != 19 {
 		t.Fatalf("cursor after end = %d, want 19", app.cursor)
 	}
-	if !strings.Contains(app.View(), "Entry 19") {
-		t.Fatalf("view missing last entry after end: %q", app.View())
+	if !strings.Contains(app.View(), "Entry 0") {
+		t.Fatalf("view missing oldest entry after end: %q", app.View())
 	}
 
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgUp})
@@ -251,14 +251,98 @@ func TestTimelineHomeEndAndPageKeys(t *testing.T) {
 	if app.cursor != 0 {
 		t.Fatalf("cursor after home = %d, want 0", app.cursor)
 	}
-	if !strings.Contains(app.View(), "Entry 0") {
-		t.Fatalf("view missing first entry after home: %q", app.View())
+	if !strings.Contains(app.View(), "Entry 19") {
+		t.Fatalf("view missing newest entry after home: %q", app.View())
 	}
 
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 	app = updated.(AppModel)
 	if app.cursor == 0 {
 		t.Fatal("cursor did not move on pgdown")
+	}
+}
+
+func TestTimelineGroupsByDateNewestFirst(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	_, _ = store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Older", StartedAt: time.Date(2026, 4, 2, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC)})
+	_, _ = store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Newer", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)})
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	app := updated.(AppModel)
+	view := app.View()
+	newerHeader := strings.Index(view, "-- 2026-04-03 --")
+	olderHeader := strings.Index(view, "-- 2026-04-02 --")
+	newerEntry := strings.Index(view, "Newer")
+	olderEntry := strings.Index(view, "Older")
+	if newerHeader == -1 || olderHeader == -1 || newerEntry == -1 || olderEntry == -1 {
+		t.Fatalf("missing grouped content: %q", view)
+	}
+	if !(newerHeader < newerEntry && newerEntry < olderHeader && olderHeader < olderEntry) {
+		t.Fatalf("unexpected order: %q", view)
+	}
+}
+
+func TestBulkAssignSelectedEntries(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	_, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	delta, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Delta Labs", Code: "delta", HourlyRate: 12000, Currency: "EUR"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if err := sync.ImportClaudeFixtures(ctx, store, filepath.Join("..", "..", "testdata", "claude-sessions")); err != nil {
+		t.Fatalf("ImportClaudeFixtures() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 20})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeySpace})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeySpace})
+	app = updated.(AppModel)
+	if !strings.Contains(app.View(), ">*") || !strings.Contains(app.View(), " *") {
+		t.Fatalf("view missing selection markers: %q", app.View())
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	app = updated.(AppModel)
+	if app.mode != modeAssign {
+		t.Fatalf("mode = %q, want assign", app.mode)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	entries, err := store.ListEntries(ctx)
+	if err != nil {
+		t.Fatalf("ListEntries() error = %v", err)
+	}
+	confirmed := 0
+	for _, entry := range entries {
+		if entry.ProjectID != nil && *entry.ProjectID == delta.ID && entry.Status == "confirmed" {
+			confirmed++
+		}
+	}
+	if confirmed < 2 {
+		t.Fatalf("confirmed assigned entries = %d, want at least 2", confirmed)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -29,14 +30,22 @@ var skippedDescriptionPrefixes = []string{
 }
 
 type ClaudeSession struct {
-	SessionID    string
-	Description  string
-	StartedAt    time.Time
-	EndedAt      time.Time
-	GitBranch    string
-	Cwd          string
-	MessageCount int
-	SourcePath   string
+	SessionID     string
+	Description   string
+	FirstUserText string
+	StartedAt     time.Time
+	EndedAt       time.Time
+	GitBranch     string
+	Cwd           string
+	MessageCount  int
+	SourcePath    string
+}
+
+type claudeSessionsIndex struct {
+	Entries []struct {
+		SessionID string `json:"sessionId"`
+		Summary   string `json:"summary"`
+	} `json:"entries"`
 }
 
 type claudeMessage struct {
@@ -103,6 +112,7 @@ func ParseClaudeFile(path string) (ClaudeSession, error) {
 			}
 			if description != "" {
 				session.Description = description
+				session.FirstUserText = description
 			}
 		}
 		session.MessageCount++
@@ -113,6 +123,9 @@ func ParseClaudeFile(path string) (ClaudeSession, error) {
 	if first {
 		return ClaudeSession{}, fmt.Errorf("%w in %s", ErrNoSessionData, path)
 	}
+	if summary := lookupClaudeSummary(path, session.SessionID); summary != "" {
+		session.Description = summary
+	}
 	if session.Description == "" {
 		session.Description = session.SessionID
 	}
@@ -121,6 +134,24 @@ func ParseClaudeFile(path string) (ClaudeSession, error) {
 		return ClaudeSession{}, fmt.Errorf("%w in %s", ErrSkipSession, path)
 	}
 	return session, nil
+}
+
+func lookupClaudeSummary(path, sessionID string) string {
+	indexPath := filepath.Join(filepath.Dir(path), "sessions-index.json")
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		return ""
+	}
+	var index claudeSessionsIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		return ""
+	}
+	for _, entry := range index.Entries {
+		if entry.SessionID == sessionID {
+			return strings.TrimSpace(entry.Summary)
+		}
+	}
+	return ""
 }
 
 func firstUserText(raw json.RawMessage) (string, error) {
@@ -237,6 +268,13 @@ func importClaudeSessions(ctx context.Context, store *db.Store, sourceRoot strin
 		if err != nil {
 			return err
 		}
+		overlap, err := store.HasOverlappingImportedEntry(ctx, session.Cwd, session.StartedAt, session.EndedAt, session.Description)
+		if err != nil {
+			return err
+		}
+		if overlap {
+			continue
+		}
 		_, err = store.CreateImportedEntry(ctx, db.EntryImport{
 			ProjectID:   projectID,
 			Description: session.Description,
@@ -265,10 +303,34 @@ func shouldSkipSession(session ClaudeSession) bool {
 	if !session.EndedAt.After(session.StartedAt) {
 		return true
 	}
+	probe := session.FirstUserText
+	if probe == "" {
+		probe = session.Description
+	}
 	for _, prefix := range skippedDescriptionPrefixes {
-		if strings.HasPrefix(session.Description, prefix) {
+		if strings.HasPrefix(probe, prefix) {
 			return true
 		}
 	}
 	return false
+}
+
+var nonWord = regexp.MustCompile(`[^a-z0-9]+`)
+
+func normalizeCompareText(text string) string {
+	text = strings.ToLower(strings.TrimSpace(text))
+	text = nonWord.ReplaceAllString(text, " ")
+	return strings.Join(strings.Fields(text), " ")
+}
+
+func SimilarDescription(a, b string) bool {
+	a = normalizeCompareText(a)
+	b = normalizeCompareText(b)
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	return strings.Contains(a, b) || strings.Contains(b, a)
 }

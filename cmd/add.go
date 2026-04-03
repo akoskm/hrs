@@ -22,7 +22,7 @@ var addCmd = &cobra.Command{
 		}
 		defer store.Close()
 
-		startedAt, endedAt, err := parseLocalRange(addFrom, addTo)
+		startedAt, endedAt, err := parseLocalRange(addDate, addFrom, addTo)
 		if err != nil {
 			return err
 		}
@@ -46,6 +46,7 @@ var addCmd = &cobra.Command{
 
 var (
 	addProject  string
+	addDate     string
 	addFrom     string
 	addTo       string
 	addBillable *bool
@@ -53,10 +54,10 @@ var (
 
 func init() {
 	addCmd.Flags().StringVar(&addProject, "project", "", "project code or name")
+	addCmd.Flags().StringVar(&addDate, "date", "", "entry date, eg 2026-04-02")
 	addCmd.Flags().StringVar(&addFrom, "from", "", "local start time, eg 09:00")
 	addCmd.Flags().StringVar(&addTo, "to", "", "local end time, eg 11:00")
-	addCmd.Flags().Bool("billable", false, "override billable flag")
-	_ = addCmd.Flags().MarkHidden("billable")
+	addCmd.Flags().Bool("billable", false, "override billable flag; defaults to project setting when omitted")
 	addCmd.Flags().Lookup("billable").NoOptDefVal = "true"
 	addCmd.PreRunE = func(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(addProject) == "" {
@@ -78,9 +79,12 @@ func init() {
 	}
 }
 
-func parseLocalRange(from, to string) (time.Time, time.Time, error) {
+func parseLocalRange(dateText, from, to string) (time.Time, time.Time, error) {
 	loc := time.Now().Location()
-	day := time.Now().In(loc).Format("2006-01-02")
+	day := strings.TrimSpace(dateText)
+	if day == "" {
+		day = time.Now().In(loc).Format("2006-01-02")
+	}
 	startedAt, err := time.ParseInLocation("2006-01-02 15:04", day+" "+strings.TrimSpace(from), loc)
 	if err != nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("invalid --from: %w", err)

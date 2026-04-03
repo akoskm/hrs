@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,7 @@ type AppModel struct {
 	store         *db.Store
 	entries       []model.TimeEntryDetail
 	projects      []model.Project
+	selected      map[string]bool
 	width         int
 	height        int
 	offset        int
@@ -33,6 +35,12 @@ type AppModel struct {
 	mode          mode
 	err           error
 	quitting      bool
+}
+
+type timelineRow struct {
+	Header     string
+	Entry      *model.TimeEntryDetail
+	EntryIndex int
 }
 
 func NewAppModel(ctx context.Context, store *db.Store) (AppModel, error) {
@@ -44,7 +52,7 @@ func NewAppModel(ctx context.Context, store *db.Store) (AppModel, error) {
 	if err != nil {
 		return AppModel{}, err
 	}
-	return AppModel{ctx: ctx, store: store, entries: entries, projects: projects, mode: modeTimeline}, nil
+	return AppModel{ctx: ctx, store: store, entries: sortEntries(entries), projects: projects, selected: map[string]bool{}, mode: modeTimeline}, nil
 }
 
 func (m AppModel) Init() tea.Cmd { return nil }
@@ -123,7 +131,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			entry := m.entries[m.cursor]
 			project := m.projects[m.projectCursor]
-			if err := m.store.AssignEntryToProject(m.ctx, entry.ID, project.ID); err != nil {
+			targetIDs := m.assignmentTargets(entry.ID)
+			if err := m.assignEntries(targetIDs, project.ID); err != nil {
 				m.err = err
 				m.mode = modeTimeline
 				return m, nil
@@ -134,10 +143,23 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = modeTimeline
 				return m, nil
 			}
-			m.entries = entries
+			m.entries = sortEntries(entries)
+			m.selected = map[string]bool{}
 			m.mode = modeTimeline
 		case "esc":
 			m.mode = modeTimeline
+		case " ", "space":
+			if m.mode == modeTimeline && len(m.entries) > 0 {
+				entry := m.entries[m.cursor]
+				m.selected[entry.ID] = !m.selected[entry.ID]
+				if !m.selected[entry.ID] {
+					delete(m.selected, entry.ID)
+				}
+			}
+		case "p":
+			if m.mode == modeTimeline && len(m.selected) > 0 && len(m.projects) > 0 {
+				m.mode = modeAssign
+			}
 		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -164,13 +186,16 @@ func (m AppModel) View() string {
 		header := fmt.Sprintf("%s %s %s %s %s", padRight(" ", cols.Cursor), padRight("Time", cols.Time), padRight("Description", cols.Description), padRight("Status", cols.Status), padRight("Project", cols.Project))
 		b.WriteString(header + "\n")
 		b.WriteString(strings.Repeat("-", minInt(len(header), timelineWidth(m.width))) + "\n")
-		start, end := m.visibleRange()
+		rows := m.timelineRowsData()
+		start, end := m.visibleRange(len(rows))
 		for i := start; i < end; i++ {
-			entry := m.entries[i]
-			cursor := " "
-			if i == m.cursor && m.mode == modeTimeline {
-				cursor = ">"
+			row := rows[i]
+			if row.Header != "" {
+				b.WriteString(truncateForWidth(row.Header, timelineWidth(m.width)) + "\n")
+				continue
 			}
+			entry := row.Entry
+			cursor := m.entryMarker(row.EntryIndex)
 			project := "unassigned"
 			if entry.ProjectName != "" {
 				project = entry.ProjectName
@@ -188,8 +213,8 @@ func (m AppModel) View() string {
 			)
 			b.WriteString(truncateForWidth(line, timelineWidth(m.width)) + "\n")
 		}
-		if len(m.entries) > end {
-			remaining := len(m.entries) - end
+		if len(rows) > end {
+			remaining := len(rows) - end
 			b.WriteString(truncateForWidth("... "+strconv.Itoa(remaining)+" more", timelineWidth(m.width)) + "\n")
 		}
 	}
@@ -210,9 +235,9 @@ func (m AppModel) View() string {
 				b.WriteString(fmt.Sprintf("%s %s%s\n", cursor, project.Name, code))
 			}
 		}
-		b.WriteString("\nenter confirm, esc cancel\n")
+		b.WriteString("\n" + truncateForWidth("enter confirm, esc cancel", timelineWidth(m.width)) + "\n")
 	} else {
-		b.WriteString("\nup/down move, enter assign, q quit\n")
+		b.WriteString("\n" + truncateForWidth("up/down move, space select, p bulk assign, enter assign, q quit", timelineWidth(m.width)) + "\n")
 	}
 	return b.String()
 }
@@ -226,27 +251,29 @@ type timelineColWidths struct {
 }
 
 func (m *AppModel) ensureVisible() {
+	rows := m.timelineRowsData()
 	visible := m.timelineRows()
 	if visible <= 0 {
 		m.offset = 0
 		return
 	}
-	if m.cursor < m.offset {
-		m.offset = m.cursor
+	selectedRow := m.selectedRowIndex(rows)
+	if selectedRow < m.offset {
+		m.offset = selectedRow
 	}
-	if m.cursor >= m.offset+visible {
-		m.offset = m.cursor - visible + 1
+	if selectedRow >= m.offset+visible {
+		m.offset = selectedRow - visible + 1
 	}
-	maxOffset := maxInt(0, len(m.entries)-visible)
+	maxOffset := maxInt(0, len(rows)-visible)
 	if m.offset > maxOffset {
 		m.offset = maxOffset
 	}
 }
 
-func (m AppModel) visibleRange() (int, int) {
+func (m AppModel) visibleRange(total int) (int, int) {
 	visible := m.timelineRows()
-	start := minInt(m.offset, maxInt(0, len(m.entries)))
-	end := minInt(len(m.entries), start+visible)
+	start := minInt(m.offset, maxInt(0, total))
+	end := minInt(total, start+visible)
 	return start, end
 }
 
@@ -266,7 +293,7 @@ func timelineColumns(width int) timelineColWidths {
 		width = 80
 	}
 	available := maxInt(35, width-4)
-	cols := timelineColWidths{Cursor: 1, Time: 11, Status: 6, Project: 6, Description: 8}
+	cols := timelineColWidths{Cursor: 2, Time: 11, Status: 6, Project: 6, Description: 8}
 	extra := available - (cols.Cursor + cols.Time + cols.Status + cols.Project + cols.Description)
 	if extra > 0 {
 		cols.Project += minInt(8, extra/3)
@@ -276,6 +303,78 @@ func timelineColumns(width int) timelineColWidths {
 		cols.Description += extra
 	}
 	return cols
+}
+
+func (m AppModel) timelineRowsData() []timelineRow {
+	rows := make([]timelineRow, 0, len(m.entries)+8)
+	lastDate := ""
+	for i, entry := range m.entries {
+		day := entry.StartedAt.Format("2006-01-02")
+		if day != lastDate {
+			rows = append(rows, timelineRow{Header: "-- " + day + " --"})
+			lastDate = day
+		}
+		entryCopy := entry
+		rows = append(rows, timelineRow{Entry: &entryCopy, EntryIndex: i})
+	}
+	return rows
+}
+
+func (m AppModel) selectedRowIndex(rows []timelineRow) int {
+	for i, row := range rows {
+		if row.Entry != nil && row.EntryIndex == m.cursor {
+			return i
+		}
+	}
+	return 0
+}
+
+func (m AppModel) entryMarker(index int) string {
+	selected := m.selected[m.entries[index].ID]
+	active := index == m.cursor && m.mode == modeTimeline
+	switch {
+	case active && selected:
+		return ">*"
+	case active:
+		return "> "
+	case selected:
+		return " *"
+	default:
+		return "  "
+	}
+}
+
+func (m AppModel) assignmentTargets(currentID string) []string {
+	if len(m.selected) == 0 {
+		return []string{currentID}
+	}
+	ids := make([]string, 0, len(m.selected))
+	for _, entry := range m.entries {
+		if m.selected[entry.ID] {
+			ids = append(ids, entry.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return []string{currentID}
+	}
+	return ids
+}
+
+func (m AppModel) assignEntries(entryIDs []string, projectID string) error {
+	for _, entryID := range entryIDs {
+		if err := m.store.AssignEntryToProject(m.ctx, entryID, projectID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sortEntries(entries []model.TimeEntryDetail) []model.TimeEntryDetail {
+	sorted := append([]model.TimeEntryDetail(nil), entries...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return sorted[i].StartedAt.After(sorted[j].StartedAt)
+	})
+	return sorted
 }
 
 func formatRange(start time.Time, end *time.Time) string {

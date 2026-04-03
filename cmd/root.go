@@ -55,6 +55,7 @@ func init() {
 	rootCmd.AddCommand(pathCmd)
 	rootCmd.AddCommand(syncCmd)
 	rootCmd.AddCommand(addCmd)
+	rootCmd.AddCommand(reportCmd)
 }
 
 func defaultDBPath() string {

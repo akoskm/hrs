@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/akoskm/hrs/internal/model"
@@ -170,6 +171,109 @@ func (s *Store) AssignEntryToProject(ctx context.Context, entryID, projectID str
 		WHERE id = ?
 	`, projectID, model.StatusConfirmed, nowUTC().Format(timeFormat), entryID)
 	return err
+}
+
+func (s *Store) HasOverlappingImportedEntry(ctx context.Context, cwd string, startedAt, endedAt time.Time, description string) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT description, started_at, ended_at
+		FROM time_entries
+		WHERE operator = 'claude-code'
+		  AND cwd = ?
+		  AND deleted_at IS NULL
+		  AND ended_at IS NOT NULL
+		  AND started_at < ?
+		  AND ended_at > ?
+	`, cwd, endedAt.UTC().Format(timeFormat), startedAt.UTC().Format(timeFormat))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var existingDesc sql.NullString
+		var existingStart string
+		var existingEnd string
+		if err := rows.Scan(&existingDesc, &existingStart, &existingEnd); err != nil {
+			return false, err
+		}
+		existingStartedAt, err := parseTime(existingStart)
+		if err != nil {
+			return false, err
+		}
+		existingEndedAt, err := parseTime(existingEnd)
+		if err != nil {
+			return false, err
+		}
+		if overlapsMoreThan90Percent(startedAt, endedAt, existingStartedAt, existingEndedAt) && similarDescription(description, existingDesc.String) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func overlapsMoreThan90Percent(aStart, aEnd, bStart, bEnd time.Time) bool {
+	start := maxTime(aStart, bStart)
+	end := minTime(aEnd, bEnd)
+	if !end.After(start) {
+		return false
+	}
+	overlap := end.Sub(start)
+	shorter := minDuration(aEnd.Sub(aStart), bEnd.Sub(bStart))
+	if shorter <= 0 {
+		return false
+	}
+	return float64(overlap)/float64(shorter) > 0.9
+}
+
+func similarDescription(a, b string) bool {
+	a = normalizeCompareText(a)
+	b = normalizeCompareText(b)
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	return strings.Contains(a, b) || strings.Contains(b, a)
+}
+
+func normalizeCompareText(text string) string {
+	text = strings.ToLower(strings.TrimSpace(text))
+	var b strings.Builder
+	lastSpace := false
+	for _, r := range text {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastSpace = false
+			continue
+		}
+		if !lastSpace {
+			b.WriteByte(' ')
+			lastSpace = true
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
 
 type entryScanner interface {

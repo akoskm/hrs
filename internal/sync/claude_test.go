@@ -167,3 +167,26 @@ func TestParseClaudeFileSkipsZeroDuration(t *testing.T) {
 		t.Fatalf("ParseClaudeFile() error = %v, want ErrSkipSession", err)
 	}
 }
+
+func TestParseClaudeFileUsesSessionsIndexSummary(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sess_summary.jsonl")
+	content := `{"sessionId":"sess_summary","timestamp":"2026-01-29T14:02:59.712Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"user","content":"raw first prompt"}}` + "\n" +
+		`{"sessionId":"sess_summary","timestamp":"2026-01-29T14:12:59.712Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}` + "\n"
+	index := `{"version":1,"entries":[{"sessionId":"sess_summary","summary":"Summary from index"}]}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sessions-index.json"), []byte(index), 0o644); err != nil {
+		t.Fatalf("WriteFile(index) error = %v", err)
+	}
+	session, err := ParseClaudeFile(path)
+	if err != nil {
+		t.Fatalf("ParseClaudeFile() error = %v", err)
+	}
+	if session.Description != "Summary from index" {
+		t.Fatalf("description = %q, want %q", session.Description, "Summary from index")
+	}
+}

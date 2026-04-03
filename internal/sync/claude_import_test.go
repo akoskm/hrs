@@ -109,6 +109,36 @@ func TestImportClaudeLogsSkipsNoiseAndZeroDuration(t *testing.T) {
 	}
 }
 
+func TestImportClaudeLogsSkipsOverlapDuplicates(t *testing.T) {
+	ctx := context.Background()
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+
+	root := t.TempDir()
+	writeClaudeJSONL(t, filepath.Join(root, "one.jsonl"), []string{
+		`{"sessionId":"one","timestamp":"2026-04-03T10:00:00Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"user","content":"Fix report page"}}`,
+		`{"sessionId":"one","timestamp":"2026-04-03T11:00:00Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`,
+	})
+	writeClaudeJSONL(t, filepath.Join(root, "two.jsonl"), []string{
+		`{"sessionId":"two","timestamp":"2026-04-03T10:05:00Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"user","content":"Fix report page now"}}`,
+		`{"sessionId":"two","timestamp":"2026-04-03T10:59:00Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`,
+	})
+
+	if err := ImportClaudeLogs(ctx, store, root); err != nil {
+		t.Fatalf("ImportClaudeLogs() error = %v", err)
+	}
+	entries, err := store.ListEntries(ctx)
+	if err != nil {
+		t.Fatalf("ListEntries() error = %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+}
+
 func writeClaudeJSONL(t *testing.T, path string, lines []string) {
 	t.Helper()
 	content := ""
