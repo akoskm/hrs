@@ -282,28 +282,15 @@ func (m AppModel) View() string {
 		}
 	}
 	sections = append(sections, b.String())
-	if m.mode == modeAssign {
-		var assign strings.Builder
-		assign.WriteString(styles.title.Render("Assign Project") + "\n")
-		assign.WriteString(renderPickerLine("Unassign", 0, m.projectCursor, styles, m.width) + "\n")
-		if len(m.projects) == 0 {
-			assign.WriteString(styles.muted.Render("no projects") + "\n")
-		} else {
-			for i, project := range m.projects {
-				code := ""
-				if project.Code != nil && *project.Code != "" {
-					code = " (" + *project.Code + ")"
-				}
-				assign.WriteString(renderPickerLine(project.Name+code, i+1, m.projectCursor, styles, m.width) + "\n")
-			}
-		}
-		sections = append(sections, assign.String())
-	}
 	if m.mode == modeSearch {
 		sections = append(sections, styles.title.Render("Search")+"\n"+styles.activePicker.Render("/"+m.searchQuery))
 	}
 	sections = append(sections, styles.statusBar.Render(renderStatusBar(m, timelineWidth(m.width))))
-	return strings.Join(sections, "\n")
+	view := strings.Join(sections, "\n")
+	if m.mode == modeAssign {
+		return renderProjectDialog(m, styles, view)
+	}
+	return view
 }
 
 type timelineColWidths struct {
@@ -493,6 +480,7 @@ type tuiStyles struct {
 	confirmed     lipgloss.Style
 	projectPicker lipgloss.Style
 	activePicker  lipgloss.Style
+	dialogBox     lipgloss.Style
 }
 
 func newStyles(width int) tuiStyles {
@@ -514,6 +502,7 @@ func newStyles(width int) tuiStyles {
 		confirmed:     lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true),
 		projectPicker: lipgloss.NewStyle(),
 		activePicker:  lipgloss.NewStyle().Background(lipgloss.Color("99")).Foreground(lipgloss.Color("230")).Bold(true),
+		dialogBox:     lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("99")).Background(lipgloss.Color("235")).Padding(1, 2),
 	}
 }
 
@@ -590,6 +579,9 @@ func renderEntryRow(cursor string, entry *model.TimeEntryDetail, desc, project s
 }
 
 func renderStatusBar(m AppModel, width int) string {
+	if m.mode == modeAssign {
+		return truncateForWidth("project dialog | up/down home/end pgup/pgdn enter assign esc cancel", width)
+	}
 	if m.mode == modeSearch {
 		return truncateForWidth("/"+m.searchQuery+" | enter search | esc cancel", width)
 	}
@@ -732,6 +724,64 @@ func stripANSI(text string) string {
 		b.WriteByte(c)
 	}
 	return b.String()
+}
+
+func renderProjectDialog(m AppModel, styles tuiStyles, background string) string {
+	dialogWidth := projectDialogWidth(m.width)
+	innerWidth := maxInt(20, dialogWidth-6)
+
+	var content strings.Builder
+	content.WriteString(styles.title.Render("Assign Project") + "\n")
+	content.WriteString(styles.muted.Render(projectDialogSummary(m)) + "\n\n")
+	content.WriteString(renderPickerLine("Unassign", 0, m.projectCursor, styles, innerWidth) + "\n")
+	if len(m.projects) == 0 {
+		content.WriteString(styles.muted.Render("no projects") + "\n")
+	} else {
+		for i, project := range m.projects {
+			content.WriteString(renderPickerLine(projectDialogLabel(project), i+1, m.projectCursor, styles, innerWidth) + "\n")
+		}
+	}
+	content.WriteString("\n" + styles.muted.Render("enter assign | esc cancel"))
+
+	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
+	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)
+}
+
+func projectDialogSummary(m AppModel) string {
+	if len(m.entries) == 0 {
+		return "no entry selected"
+	}
+	entry := m.entries[m.cursor]
+	count := len(m.assignmentTargets(entry.ID))
+	if count > 1 {
+		return fmt.Sprintf("assign %d selected entries", count)
+	}
+	if entry.Description != nil && strings.TrimSpace(*entry.Description) != "" {
+		return truncateForWidth(strings.TrimSpace(*entry.Description), 48)
+	}
+	return truncateForWidth(entry.ID, 48)
+}
+
+func projectDialogLabel(project model.Project) string {
+	if project.Code == nil || *project.Code == "" {
+		return project.Name
+	}
+	return project.Name + " (" + *project.Code + ")"
+}
+
+func projectDialogWidth(width int) int {
+	available := timelineWidth(width)
+	if available <= 40 {
+		return available
+	}
+	return minInt(64, maxInt(40, available-8))
+}
+
+func dialogHeight(height int, background, dialog string) int {
+	if height > 0 {
+		return height
+	}
+	return maxInt(len(strings.Split(background, "\n")), len(strings.Split(dialog, "\n")))
 }
 
 func renderPickerLine(label string, index, current int, styles tuiStyles, width int) string {

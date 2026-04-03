@@ -127,6 +127,39 @@ func TestAssignPickerShowsProjectsFromDB(t *testing.T) {
 	}
 }
 
+func TestAssignDialogStaysWithinScreenHeight(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Delta Labs", Code: "delta", HourlyRate: 12000, Currency: "EUR"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if err := sync.ImportClaudeFixtures(ctx, store, filepath.Join("..", "..", "testdata", "claude-sessions")); err != nil {
+		t.Fatalf("ImportClaudeFixtures() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+
+	lines := strings.Split(strings.TrimRight(stripANSI(app.View()), "\n"), "\n")
+	if len(lines) != 12 {
+		t.Fatalf("dialog line count = %d, want 12", len(lines))
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "Assign Project") {
+		t.Fatalf("view missing dialog title: %q", strings.Join(lines, "\n"))
+	}
+}
+
 func TestTimelineTruncatesLongDescriptionToWidth(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
