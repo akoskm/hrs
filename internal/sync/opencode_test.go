@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/akoskm/hrs/internal/db"
 	"github.com/akoskm/hrs/internal/model"
@@ -78,6 +79,47 @@ func TestImportOpenCodeLogs(t *testing.T) {
 	}
 }
 
+func TestImportOpenCodeLogsUpdatesExistingSession(t *testing.T) {
+	ctx := context.Background()
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+
+	dbPath := createOpenCodeFixtureDB(t)
+	if err := ImportOpenCodeLogs(ctx, store, dbPath); err != nil {
+		t.Fatalf("ImportOpenCodeLogs() error = %v", err)
+	}
+	if err := bumpOpenCodeSessionUpdatedAt(dbPath, "ses_1", 1775214583592); err != nil {
+		t.Fatalf("bumpOpenCodeSessionUpdatedAt() error = %v", err)
+	}
+	if err := ImportOpenCodeLogs(ctx, store, dbPath); err != nil {
+		t.Fatalf("ImportOpenCodeLogs() second run error = %v", err)
+	}
+
+	entries, err := store.ListEntries(ctx)
+	if err != nil {
+		t.Fatalf("ListEntries() error = %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2", len(entries))
+	}
+	for _, entry := range entries {
+		if entry.SourceRef != nil && *entry.SourceRef == "ses_1" {
+			if entry.EndedAt == nil {
+				t.Fatal("ended_at = nil, want value")
+			}
+			want := time.UnixMilli(1775214583592).UTC().Format(time.RFC3339)
+			if entry.EndedAt.UTC().Format(time.RFC3339) != want {
+				t.Fatalf("ended_at = %s, want %s", entry.EndedAt.UTC().Format(time.RFC3339), want)
+			}
+			return
+		}
+	}
+	t.Fatal("updated session not found")
+}
+
 func createOpenCodeFixtureDB(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "opencode.db")
@@ -101,4 +143,14 @@ func createOpenCodeFixtureDB(t *testing.T) string {
 		}
 	}
 	return path
+}
+
+func bumpOpenCodeSessionUpdatedAt(path, sessionID string, updatedAtMS int64) error {
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_, err = conn.Exec(`UPDATE session SET time_updated = ? WHERE id = ?`, updatedAtMS, sessionID)
+	return err
 }

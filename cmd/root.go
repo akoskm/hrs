@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,8 +30,9 @@ var rootCmd = &cobra.Command{
 				return err
 			}
 		}
-
-		model, err := tui.NewAppModel(ctx, store)
+		model, err := tui.NewAppModelWithSync(ctx, store, func() error {
+			return syncAllSources(ctx, store)
+		})
 		if err != nil {
 			return err
 		}
@@ -72,4 +74,17 @@ func defaultDBPath() string {
 		return "hrs.db"
 	}
 	return path
+}
+
+func syncAllSources(ctx context.Context, store *db.Store) error {
+	if err := sync.ImportClaudeLogs(ctx, store, claudeLogsPath); err != nil {
+		return err
+	}
+	if err := sync.ImportCodexLogs(ctx, store, codexLogsPath); err != nil {
+		return err
+	}
+	if err := sync.ImportOpenCodeLogs(ctx, store, opencodeDBPath); err != nil {
+		return err
+	}
+	return nil
 }

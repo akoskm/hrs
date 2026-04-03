@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/x/exp/teatest"
 
 	"github.com/akoskm/hrs/internal/db"
+	"github.com/akoskm/hrs/internal/model"
 	"github.com/akoskm/hrs/internal/sync"
 )
 
@@ -412,6 +413,336 @@ func TestTimelineGroupsByDateNewestFirst(t *testing.T) {
 	}
 }
 
+func TestTimelineDayViewShowsAxisAndBlocks(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Sprint planning", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 30, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Review", StartedAt: time.Date(2026, 4, 3, 13, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 14, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	app = updated.(AppModel)
+
+	view := stripANSI(app.View())
+	if app.timelineView != timelineViewDay {
+		t.Fatalf("timelineView = %q, want day", app.timelineView)
+	}
+	if !strings.Contains(view, "time") || !strings.Contains(view, "10:45") || !strings.Contains(view, "14:30") {
+		t.Fatalf("view missing day axis: %q", view)
+	}
+	if !strings.Contains(view, "Friday 2026-04-03") || !strings.Contains(view, "human") || !strings.Contains(view, "gaps") || !strings.Contains(view, "Friday | focus 15:00-16:00") {
+		t.Fatalf("view missing day blocks: %q", view)
+	}
+}
+
+func TestTimelineDayViewSplitsOverlapsIntoLanes(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Agent A", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 11, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Agent B", StartedAt: time.Date(2026, 4, 3, 9, 30, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 30, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	app = updated.(AppModel)
+
+	view := stripANSI(app.View())
+	if !strings.Contains(view, "human 2") {
+		t.Fatalf("view missing overlap lane: %q", view)
+	}
+}
+
+func TestTimelineDayViewLeftRightMovesBetweenDays(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	today := dayStart(time.Now().UTC())
+	dayTwo := today.AddDate(0, 0, -2)
+	dayThree := today.AddDate(0, 0, -1)
+	dayFour := today
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Day two", StartedAt: dayTwo.Add(9 * time.Hour), EndedAt: dayTwo.Add(10 * time.Hour)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Day three", StartedAt: dayThree.Add(12 * time.Hour), EndedAt: dayThree.Add(13 * time.Hour)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Day four", StartedAt: dayFour.Add(15 * time.Hour), EndedAt: dayFour.Add(16 * time.Hour)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	app = updated.(AppModel)
+
+	if !app.displayedDay().Equal(dayFour) {
+		t.Fatalf("initial day = %s, want %s", app.displayedDay().Format("2006-01-02"), dayFour.Format("2006-01-02"))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	app = updated.(AppModel)
+	if !app.displayedDay().Equal(dayFour) {
+		t.Fatalf("day after right = %s, want %s", app.displayedDay().Format("2006-01-02"), dayFour.Format("2006-01-02"))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+	app = updated.(AppModel)
+	if !app.displayedDay().Equal(dayThree) {
+		t.Fatalf("day after left = %s, want %s", app.displayedDay().Format("2006-01-02"), dayThree.Format("2006-01-02"))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+	app = updated.(AppModel)
+	if !app.displayedDay().Equal(dayTwo) {
+		t.Fatalf("day after second left = %s, want %s", app.displayedDay().Format("2006-01-02"), dayTwo.Format("2006-01-02"))
+	}
+
+	if got := descriptionOrID(app.entries[app.cursor]); got != "Day two" {
+		t.Fatalf("focus on returned day = %q, want Day two", got)
+	}
+
+	if !strings.Contains(stripANSI(app.View()), "left/right day") {
+		t.Fatalf("day status missing nav hint: %q", stripANSI(app.View()))
+	}
+}
+
+func TestTimelineDayViewTJumpsToToday(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	today := dayStart(time.Now().UTC())
+	otherDay := today.AddDate(0, 0, -2)
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Old", StartedAt: otherDay.Add(9 * time.Hour), EndedAt: otherDay.Add(10 * time.Hour)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	app = updated.(AppModel)
+	if !app.displayedDay().Equal(otherDay) {
+		t.Fatalf("initial day = %s, want %s", app.displayedDay().Format("2006-01-02"), otherDay.Format("2006-01-02"))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	app = updated.(AppModel)
+	if !app.displayedDay().Equal(today) {
+		t.Fatalf("day after t = %s, want %s", app.displayedDay().Format("2006-01-02"), today.Format("2006-01-02"))
+	}
+	if gap := app.focusedGap(); gap == nil {
+		t.Fatal("today without entries should focus full-day gap")
+	}
+}
+
+func TestTimelineDayViewDoesNotMovePastToday(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	today := dayStart(time.Now().UTC())
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Today", StartedAt: today.Add(9 * time.Hour), EndedAt: today.Add(10 * time.Hour)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	app = updated.(AppModel)
+	if !app.displayedDay().Equal(today) {
+		t.Fatalf("day after right on today = %s, want %s", app.displayedDay().Format("2006-01-02"), today.Format("2006-01-02"))
+	}
+}
+
+func TestTimelineDayViewCreateManualEntryFromGap(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Morning", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Noon", StartedAt: time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 13, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	app = updated.(AppModel)
+	if app.dayFocusKind != "gap" {
+		t.Fatalf("focus kind = %q, want gap", app.dayFocusKind)
+	}
+	if gap := app.focusedGap(); gap == nil || formatRange(gap.start, &gap.end) != "12:00-14:00" {
+		t.Fatalf("focused gap = %#v, want 12:00-14:00", app.focusedGap())
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	app = updated.(AppModel)
+	if app.mode != modeGapEntry {
+		t.Fatalf("mode = %q, want gap-entry", app.mode)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	for _, r := range []rune("Deep work") {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = updated.(AppModel)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.mode != modeTimeline {
+		t.Fatalf("mode after create = %q, want timeline", app.mode)
+	}
+	if got := descriptionOrID(app.entries[app.cursor]); got != "Deep work" {
+		t.Fatalf("focus after create = %q, want Deep work", got)
+	}
+	entries, err := store.ListEntries(ctx)
+	if err != nil {
+		t.Fatalf("ListEntries() error = %v", err)
+	}
+	found := false
+	for _, entry := range entries {
+		if entry.Description != nil && *entry.Description == "Deep work" {
+			if formatRange(entry.StartedAt, entry.EndedAt) != "12:00-14:00" {
+				t.Fatalf("created range = %s, want 12:00-14:00", formatRange(entry.StartedAt, entry.EndedAt))
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("manual gap entry not created")
+	}
+}
+
+func TestRecentAgentSessionRendersAsActiveUntilNow(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	now := time.Now().UTC().Truncate(time.Minute)
+	start := now.Add(-30 * time.Minute)
+	end := now.Add(-5 * time.Minute)
+	if _, err := store.CreateImportedEntry(ctx, db.EntryImport{
+		Description: "Active opencode session",
+		StartedAt:   start,
+		EndedAt:     end,
+		Operator:    "opencode",
+		SourceRef:   "live-session",
+		Cwd:         "/Users/akoskm/Projects/hrs",
+		Metadata:    map[string]any{},
+	}); err != nil {
+		t.Fatalf("CreateImportedEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	entry := model.entries[model.cursor]
+	blockEnd := timelineBlockEnd(entry)
+	if blockEnd.Before(now.Add(-2 * time.Minute)) {
+		t.Fatalf("timelineBlockEnd() = %s, want near now %s", blockEnd.Format(time.RFC3339), now.Format(time.RFC3339))
+	}
+	view := stripANSI(model.View())
+	if !strings.Contains(view, "opencode") {
+		t.Fatalf("view missing opencode lane: %q", view)
+	}
+}
+
+func TestTodayGapsDoNotExtendIntoFuture(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	now := time.Now().UTC().Truncate(time.Minute)
+	start := now.Add(-2 * time.Hour)
+	end := now.Add(-30 * time.Minute)
+	if _, err := store.CreateImportedEntry(ctx, db.EntryImport{
+		Description: "Ended agent session",
+		StartedAt:   start,
+		EndedAt:     end,
+		Operator:    "opencode",
+		SourceRef:   "ended-session",
+		Cwd:         "/Users/akoskm/Projects/hrs",
+		Metadata:    map[string]any{},
+	}); err != nil {
+		t.Fatalf("CreateImportedEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	gaps := dayGapsForIndices(model.entries, model.dayEntryIndices(model.displayedDay().Format("2006-01-02")), model.displayedDay())
+	if len(gaps) == 0 {
+		t.Fatal("len(gaps) = 0, want at least one")
+	}
+	latest := gaps[len(gaps)-1]
+	if latest.end.After(time.Now().In(time.Local).Add(time.Minute)) {
+		t.Fatalf("latest gap end = %s, want no later than now", latest.end.Format(time.RFC3339))
+	}
+}
+
 func TestBulkAssignSelectedEntries(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -749,6 +1080,45 @@ func TestTimelineSourceFilterCycles(t *testing.T) {
 	}
 }
 
+func TestSyncStatusBarAnimatesWhileSyncing(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	model, err := NewAppModelWithSync(ctx, store, func() error { return nil })
+	if err != nil {
+		t.Fatalf("NewAppModelWithSync() error = %v", err)
+	}
+	model.width = 120
+	model.height = 20
+	model.syncing = true
+	model.syncFrame = 2
+	first := renderStatusBar(model, 120)
+	firstSpinner := syncSpinnerFrame(model.syncFrame)
+	model.syncFrame = 3
+	secondSpinner := syncSpinnerFrame(model.syncFrame)
+	if !strings.Contains(first, "Syncing") {
+		t.Fatalf("first status missing sync bar: %q", first)
+	}
+	if firstSpinner == secondSpinner {
+		t.Fatalf("sync bar did not animate: %q", first)
+	}
+	model.syncing = false
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	app := updated.(AppModel)
+	if !app.syncing {
+		t.Fatal("syncing = false after r, want true")
+	}
+	if cmd == nil {
+		t.Fatal("cmd = nil after r, want sync commands")
+	}
+	updated, _ = model.Update(syncDoneMsg{})
+	app = updated.(AppModel)
+	if app.syncing {
+		t.Fatal("syncing = true, want false")
+	}
+}
+
 func openTestStore(t *testing.T) *db.Store {
 	t.Helper()
 	store, err := db.Open(":memory:")
@@ -756,4 +1126,11 @@ func openTestStore(t *testing.T) *db.Store {
 		t.Fatalf("db.Open() error = %v", err)
 	}
 	return store
+}
+
+func descriptionOrID(entry model.TimeEntryDetail) string {
+	if entry.Description != nil && *entry.Description != "" {
+		return *entry.Description
+	}
+	return entry.ID
 }

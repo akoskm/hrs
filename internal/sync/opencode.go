@@ -33,14 +33,11 @@ func ImportOpenCodeLogs(ctx context.Context, store *db.Store, dbPath string) err
 		if err != nil {
 			return err
 		}
-		if exists {
-			continue
-		}
 		projectID, err := store.DetectProjectIDByPath(ctx, session.Cwd)
 		if err != nil {
 			return err
 		}
-		_, err = store.CreateImportedEntry(ctx, db.EntryImport{
+		importEntry := db.EntryImport{
 			ProjectID:   projectID,
 			Description: session.Description,
 			StartedAt:   session.StartedAt,
@@ -51,8 +48,14 @@ func ImportOpenCodeLogs(ctx context.Context, store *db.Store, dbPath string) err
 			Metadata: map[string]any{
 				"source_path": dbPath,
 			},
-		})
-		if err != nil {
+		}
+		if exists {
+			if _, err := store.UpdateImportedEntryBySourceRef(ctx, opencodeSource, session.SessionID, importEntry); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := store.CreateImportedEntry(ctx, importEntry); err != nil {
 			return err
 		}
 		if err := store.RecordImport(ctx, opencodeSource, dbPath, session.SessionID, 1); err != nil {

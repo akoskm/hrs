@@ -84,6 +84,42 @@ func (s *Store) CreateImportedEntry(ctx context.Context, entry EntryImport) (mod
 	return s.EntryByID(ctx, id)
 }
 
+func (s *Store) UpdateImportedEntryBySourceRef(ctx context.Context, operator, sourceRef string, entry EntryImport) (model.TimeEntry, error) {
+	now := nowUTC()
+	duration := int(entry.EndedAt.Sub(entry.StartedAt).Seconds())
+	metadataBytes, err := json.Marshal(entry.Metadata)
+	if err != nil {
+		return model.TimeEntry{}, err
+	}
+	metadata := string(metadataBytes)
+	var projectID any
+	if entry.ProjectID != nil {
+		projectID = *entry.ProjectID
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE time_entries
+		SET project_id = ?, description = ?, started_at = ?, ended_at = ?, duration_secs = ?, cwd = ?, metadata = ?, updated_at = ?
+		WHERE operator = ? AND source_ref = ? AND deleted_at IS NULL
+	`, projectID, entry.Description, entry.StartedAt.UTC().Format(timeFormat), entry.EndedAt.UTC().Format(timeFormat), duration, entry.Cwd, metadata, now.Format(timeFormat), operator, sourceRef)
+	if err != nil {
+		return model.TimeEntry{}, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return model.TimeEntry{}, err
+	}
+	if rows == 0 {
+		return model.TimeEntry{}, sql.ErrNoRows
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, project_id, task_id, description, started_at, ended_at, duration_secs,
+			billable, status, operator, source_ref, worktree, git_branch, cwd, metadata,
+			deleted_at, created_at, updated_at
+		FROM time_entries WHERE operator = ? AND source_ref = ? AND deleted_at IS NULL
+	`, operator, sourceRef)
+	return scanTimeEntry(row)
+}
+
 func (s *Store) CreateManualEntry(ctx context.Context, entry ManualEntryInput) (model.TimeEntry, error) {
 	project, err := s.ProjectByCodeOrName(ctx, entry.ProjectIdent)
 	if err != nil {

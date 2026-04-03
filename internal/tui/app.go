@@ -19,36 +19,60 @@ type mode string
 
 type projectDialogMode string
 
+type timelineViewMode string
+
 const (
 	modeTimeline mode = "timeline"
 	modeAssign   mode = "assign"
+	modeGapEntry mode = "gap-entry"
 	modeSearch   mode = "search"
 
 	projectDialogAssign projectDialogMode = "assign"
 	projectDialogManage projectDialogMode = "manage"
 	projectDialogCreate projectDialogMode = "create"
+
+	timelineViewList timelineViewMode = "list"
+	timelineViewDay  timelineViewMode = "day"
 )
 
 type AppModel struct {
-	ctx           context.Context
-	store         *db.Store
-	allEntries    []model.TimeEntryDetail
-	entries       []model.TimeEntryDetail
-	projects      []model.Project
-	selected      map[string]bool
-	searchQuery   string
-	lastSearch    string
-	sourceFilter  string
-	width         int
-	height        int
-	offset        int
-	cursor        int
-	projectCursor int
-	dialogMode    projectDialogMode
-	projectInput  string
-	mode          mode
-	err           error
-	quitting      bool
+	ctx              context.Context
+	store            *db.Store
+	syncFn           func() error
+	allEntries       []model.TimeEntryDetail
+	entries          []model.TimeEntryDetail
+	projects         []model.Project
+	selected         map[string]bool
+	searchQuery      string
+	lastSearch       string
+	sourceFilter     string
+	width            int
+	height           int
+	offset           int
+	cursor           int
+	projectCursor    int
+	gapProjectCursor int
+	dialogMode       projectDialogMode
+	projectInput     string
+	gapInput         string
+	gapInputField    string
+	dayFocusKind     string
+	dayGapFocus      int
+	dayDate          time.Time
+	syncing          bool
+	syncFrame        int
+	lastSyncedAt     *time.Time
+	syncStatusErr    error
+	timelineView     timelineViewMode
+	mode             mode
+	err              error
+	quitting         bool
+}
+
+type syncPulseMsg struct{}
+
+type syncDoneMsg struct {
+	err error
 }
 
 type timelineRow struct {
@@ -58,6 +82,10 @@ type timelineRow struct {
 }
 
 func NewAppModel(ctx context.Context, store *db.Store) (AppModel, error) {
+	return NewAppModelWithSync(ctx, store, nil)
+}
+
+func NewAppModelWithSync(ctx context.Context, store *db.Store, syncFn func() error) (AppModel, error) {
 	entries, err := store.ListEntries(ctx)
 	if err != nil {
 		return AppModel{}, err
@@ -67,7 +95,7 @@ func NewAppModel(ctx context.Context, store *db.Store) (AppModel, error) {
 		return AppModel{}, err
 	}
 	sorted := sortEntries(entries)
-	model := AppModel{ctx: ctx, store: store, allEntries: sorted, projects: projects, selected: map[string]bool{}, mode: modeTimeline, dialogMode: projectDialogAssign, sourceFilter: "all"}
+	model := AppModel{ctx: ctx, store: store, syncFn: syncFn, allEntries: sorted, projects: projects, selected: map[string]bool{}, mode: modeTimeline, dialogMode: projectDialogAssign, timelineView: timelineViewList, sourceFilter: "all"}
 	model.applySourceFilter()
 	return model, nil
 }
@@ -100,6 +128,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.mode == modeGapEntry {
+			return m, m.handleGapEntryKey(msg)
+		}
 		if m.mode == modeAssign {
 			return m, m.handleProjectDialogKey(msg)
 		}
@@ -110,6 +141,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "/":
 			m.mode = modeSearch
 			m.searchQuery = ""
+		case "v":
+			if m.timelineView == timelineViewList {
+				m.timelineView = timelineViewDay
+				m.focusCurrentEntryInDayView()
+			} else {
+				m.timelineView = timelineViewList
+			}
+		case "t":
+			if m.timelineView == timelineViewDay {
+				m.jumpToToday()
+			}
 		case "tab", "f":
 			if m.mode == modeTimeline {
 				m.cycleSourceFilter(1)
@@ -119,38 +161,55 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cycleSourceFilter(-1)
 			}
 		case "up", "k":
-			if m.cursor > 0 {
+			if m.timelineView == timelineViewDay {
+				m.jumpDayItem(-1)
+			} else if m.cursor > 0 {
 				m.cursor--
+				m.focusCurrentEntryInDayView()
 				m.ensureVisible()
+			}
+		case "left", "h":
+			if m.timelineView == timelineViewDay {
+				m.shiftDisplayedDay(-1)
+			}
+		case "right", "l":
+			if m.timelineView == timelineViewDay {
+				m.shiftDisplayedDay(1)
 			}
 		case "home":
 			m.cursor = 0
+			m.focusCurrentEntryInDayView()
 			m.ensureVisible()
 		case "end":
 			if len(m.entries) > 0 {
 				m.cursor = len(m.entries) - 1
+				m.focusCurrentEntryInDayView()
 				m.ensureVisible()
 			}
 		case "pgdown", "ctrl+f":
 			if len(m.entries) > 0 {
 				step := maxInt(1, m.timelineRows())
 				m.cursor = minInt(len(m.entries)-1, m.cursor+step)
+				m.focusCurrentEntryInDayView()
 				m.ensureVisible()
 			}
 		case "pgup", "ctrl+b":
 			if len(m.entries) > 0 {
 				step := maxInt(1, m.timelineRows())
 				m.cursor = maxInt(0, m.cursor-step)
+				m.focusCurrentEntryInDayView()
 				m.ensureVisible()
 			}
 		case "}":
 			if m.mode == modeTimeline && len(m.entries) > 0 {
 				m.cursor = m.jumpGroup(1)
+				m.focusCurrentEntryInDayView()
 				m.ensureVisible()
 			}
 		case "{":
 			if m.mode == modeTimeline && len(m.entries) > 0 {
 				m.cursor = m.jumpGroup(-1)
+				m.focusCurrentEntryInDayView()
 				m.ensureVisible()
 			}
 		case "down", "j":
@@ -158,15 +217,26 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.projectCursor < len(m.projects) {
 					m.projectCursor++
 				}
+			} else if m.timelineView == timelineViewDay {
+				m.jumpDayItem(1)
 			} else if m.cursor < len(m.entries)-1 {
 				m.cursor++
+				m.focusCurrentEntryInDayView()
 				m.ensureVisible()
 			}
 		case "enter":
+			if m.timelineView == timelineViewDay && m.dayFocusKind == "gap" {
+				m.openGapEntryDialog()
+				return m, nil
+			}
 			if len(m.entries) > 0 {
 				m.openProjectDialog(projectDialogAssign)
 			}
 			return m, nil
+		case "a":
+			if m.timelineView == timelineViewDay && m.dayFocusKind == "gap" {
+				m.openGapEntryDialog()
+			}
 		case " ", "space":
 			if m.mode == modeTimeline && len(m.entries) > 0 {
 				entry := m.entries[m.cursor]
@@ -191,11 +261,34 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.mode == modeTimeline && m.lastSearch != "" {
 				m.jumpToSearchMatch(m.cursor, -1, false)
 			}
+		case "r":
+			if m.mode == modeTimeline && m.syncFn != nil && !m.syncing {
+				m.syncing = true
+				m.syncFrame = 0
+				m.syncStatusErr = nil
+				return m, tea.Batch(runSyncCmd(m.syncFn), syncPulseCmd(40*time.Millisecond))
+			}
 		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ensureVisible()
+	case syncPulseMsg:
+		if !m.syncing {
+			return m, nil
+		}
+		m.syncFrame++
+		return m, syncPulseCmd(40 * time.Millisecond)
+	case syncDoneMsg:
+		m.syncing = false
+		if msg.err != nil {
+			m.syncStatusErr = msg.err
+			return m, nil
+		}
+		now := time.Now().UTC()
+		m.lastSyncedAt = &now
+		m.syncStatusErr = nil
+		m.restoreStateAfterReload()
 	}
 	return m, nil
 }
@@ -214,6 +307,8 @@ func (m AppModel) View() string {
 	b.WriteString(styles.title.Render("Timeline") + "\n")
 	if len(m.entries) == 0 {
 		b.WriteString(styles.muted.Render("no entries") + "\n")
+	} else if m.timelineView == timelineViewDay {
+		b.WriteString(renderDayTimeline(m, styles))
 	} else {
 		cols := timelineColumns(m.width)
 		header := renderTableHeader(cols, styles)
@@ -250,10 +345,15 @@ func (m AppModel) View() string {
 	if m.mode == modeSearch {
 		sections = append(sections, styles.title.Render("Search")+"\n"+styles.activePicker.Render("/"+m.searchQuery))
 	}
-	sections = append(sections, styles.statusBar.Render(renderStatusBar(m, timelineWidth(m.width))))
+	statusWidth := maxInt(0, timelineWidth(m.width)-3)
+	statusText := padRight(renderStatusBar(m, statusWidth), statusWidth)
+	sections = append(sections, styles.statusBar.Render(statusText))
 	view := strings.Join(sections, "\n")
 	if m.mode == modeAssign {
 		return renderProjectDialog(m, styles, view)
+	}
+	if m.mode == modeGapEntry {
+		return renderGapEntryDialog(m, styles, view)
 	}
 	return view
 }
@@ -264,6 +364,41 @@ type timelineColWidths struct {
 	Description int
 	Status      int
 	Project     int
+}
+
+type dayTimelineCols struct {
+	Lane  int
+	Chart int
+}
+
+type dayWindow struct {
+	start time.Time
+	end   time.Time
+}
+
+type timelineBlock struct {
+	entry model.TimeEntryDetail
+	index int
+	start time.Time
+	end   time.Time
+}
+
+type dayGap struct {
+	start time.Time
+	end   time.Time
+}
+
+type dayTimelineItem struct {
+	kind       string
+	entryIndex int
+	gapIndex   int
+	start      time.Time
+	end        time.Time
+}
+
+type dayOperatorLane struct {
+	label  string
+	blocks []timelineBlock
 }
 
 func (m *AppModel) ensureVisible() {
@@ -321,11 +456,18 @@ func timelineColumns(width int) timelineColWidths {
 	return cols
 }
 
+func dayTimelineColumns(width int) dayTimelineCols {
+	available := maxInt(40, timelineWidth(width)-2)
+	lane := minInt(14, maxInt(8, available/6))
+	chart := maxInt(24, available-lane-1)
+	return dayTimelineCols{Lane: lane, Chart: chart}
+}
+
 func (m AppModel) timelineRowsData() []timelineRow {
 	rows := make([]timelineRow, 0, len(m.entries)+8)
 	lastDate := ""
 	for i, entry := range m.entries {
-		day := entry.StartedAt.Format("2006-01-02")
+		day := dayKey(entry.StartedAt)
 		if day != lastDate {
 			rows = append(rows, timelineRow{Header: day})
 			lastDate = day
@@ -349,10 +491,10 @@ func (m AppModel) jumpGroup(direction int) int {
 	if len(m.entries) == 0 {
 		return 0
 	}
-	currentDay := m.entries[m.cursor].StartedAt.Format("2006-01-02")
+	currentDay := dayKey(m.entries[m.cursor].StartedAt)
 	if direction > 0 {
 		for i := m.cursor + 1; i < len(m.entries); i++ {
-			day := m.entries[i].StartedAt.Format("2006-01-02")
+			day := dayKey(m.entries[i].StartedAt)
 			if day != currentDay {
 				return i
 			}
@@ -360,15 +502,159 @@ func (m AppModel) jumpGroup(direction int) int {
 		return m.cursor
 	}
 	for i := m.cursor - 1; i >= 0; i-- {
-		day := m.entries[i].StartedAt.Format("2006-01-02")
+		day := dayKey(m.entries[i].StartedAt)
 		if day != currentDay {
-			for i > 0 && m.entries[i-1].StartedAt.Format("2006-01-02") == day {
+			for i > 0 && dayKey(m.entries[i-1].StartedAt) == day {
 				i--
 			}
 			return i
 		}
 	}
 	return m.cursor
+}
+
+func (m *AppModel) focusCurrentEntryInDayView() {
+	if len(m.entries) > 0 {
+		m.dayDate = dayStart(m.entries[m.cursor].StartedAt)
+	}
+	m.dayFocusKind = "entry"
+	m.dayGapFocus = 0
+}
+
+func (m AppModel) displayedDay() time.Time {
+	if !m.dayDate.IsZero() {
+		return dayStart(m.dayDate)
+	}
+	if len(m.entries) > 0 {
+		return dayStart(m.entries[m.cursor].StartedAt)
+	}
+	return dayStart(time.Now())
+}
+
+func (m *AppModel) shiftDisplayedDay(direction int) {
+	if direction == 0 {
+		return
+	}
+	next := m.displayedDay().AddDate(0, 0, direction)
+	today := dayStart(time.Now())
+	if next.After(today) {
+		next = today
+	}
+	m.dayDate = next
+	m.syncFocusForDisplayedDay()
+}
+
+func (m *AppModel) jumpToToday() {
+	today := dayStart(time.Now())
+	if m.displayedDay().Equal(today) {
+		return
+	}
+	m.dayDate = today
+	m.syncFocusForDisplayedDay()
+}
+
+func (m *AppModel) syncFocusForDisplayedDay() {
+	indices := m.dayEntryIndices(m.displayedDay().Format("2006-01-02"))
+	if len(indices) == 0 {
+		m.dayFocusKind = "gap"
+		m.dayGapFocus = 0
+		return
+	}
+	m.dayFocusKind = "entry"
+	m.dayGapFocus = 0
+	m.cursor = indices[0]
+	m.ensureVisible()
+}
+
+func (m *AppModel) jumpDayItem(direction int) {
+	if len(m.entries) == 0 || direction == 0 {
+		return
+	}
+	items := m.dayTimelineItems()
+	if len(items) == 0 {
+		return
+	}
+	current := m.currentDayItemPosition(items)
+	if current == -1 {
+		return
+	}
+	next := current + direction
+	if next < 0 || next >= len(items) {
+		return
+	}
+	m.focusDayItem(items[next])
+	m.ensureVisible()
+}
+
+func (m AppModel) currentDayItemPosition(items []dayTimelineItem) int {
+	for i, item := range items {
+		if m.dayFocusKind == "gap" && item.kind == "gap" && item.gapIndex == m.dayGapFocus {
+			return i
+		}
+		if m.dayFocusKind != "gap" && item.kind == "entry" && item.entryIndex == m.cursor {
+			return i
+		}
+	}
+	return -1
+}
+
+func (m *AppModel) focusDayItem(item dayTimelineItem) {
+	if item.kind == "gap" {
+		m.dayFocusKind = "gap"
+		m.dayGapFocus = item.gapIndex
+		return
+	}
+	m.dayFocusKind = "entry"
+	m.cursor = item.entryIndex
+}
+
+func (m AppModel) dayEntryIndices(day string) []int {
+	indices := make([]int, 0, len(m.entries))
+	for i, entry := range m.entries {
+		if dayKey(entry.StartedAt) == day {
+			indices = append(indices, i)
+		}
+	}
+	sort.SliceStable(indices, func(i, j int) bool {
+		return m.entries[indices[i]].StartedAt.Before(m.entries[indices[j]].StartedAt)
+	})
+	return indices
+}
+
+func (m AppModel) dayTimelineItems() []dayTimelineItem {
+	day := m.displayedDay().Format("2006-01-02")
+	indices := m.dayEntryIndices(day)
+	gaps := dayGapsForIndices(m.entries, indices, m.displayedDay())
+	items := make([]dayTimelineItem, 0, len(indices)+len(gaps))
+	for _, idx := range indices {
+		entry := m.entries[idx]
+		items = append(items, dayTimelineItem{kind: "entry", entryIndex: idx, start: entry.StartedAt, end: timelineBlockEnd(entry)})
+	}
+	for i, gap := range gaps {
+		items = append(items, dayTimelineItem{kind: "gap", gapIndex: i, start: gap.start, end: gap.end})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].start.Equal(items[j].start) {
+			if items[i].kind == items[j].kind {
+				return items[i].end.Before(items[j].end)
+			}
+			return items[i].kind == "entry"
+		}
+		return items[i].start.Before(items[j].start)
+	})
+	return items
+}
+
+func (m AppModel) focusedGap() *dayGap {
+	if m.dayFocusKind != "gap" {
+		return nil
+	}
+	indices := m.dayEntryIndices(m.displayedDay().Format("2006-01-02"))
+	gaps := dayGapsForIndices(m.entries, indices, m.displayedDay())
+	if m.dayGapFocus < 0 || m.dayGapFocus >= len(gaps) {
+		return nil
+	}
+	return &gaps[m.dayGapFocus]
 }
 
 func (m AppModel) entryMarker(index int) string {
@@ -429,6 +715,103 @@ func (m *AppModel) openProjectDialog(dialogMode projectDialogMode) {
 	if dialogMode == projectDialogManage && len(m.projects) > 0 {
 		m.projectCursor = 1
 	}
+}
+
+func (m *AppModel) openGapEntryDialog() {
+	if m.focusedGap() == nil {
+		return
+	}
+	m.mode = modeGapEntry
+	m.gapInput = ""
+	m.gapInputField = "project"
+	m.gapProjectCursor = 0
+	m.err = nil
+	if len(m.projects) > 0 {
+		m.gapProjectCursor = 1
+	}
+}
+
+func (m *AppModel) closeGapEntryDialog() {
+	m.mode = modeTimeline
+	m.gapInput = ""
+	m.gapInputField = ""
+	m.gapProjectCursor = 0
+}
+
+func (m *AppModel) handleGapEntryKey(msg tea.KeyMsg) tea.Cmd {
+	if m.gapInputField == "description" && msg.Type == tea.KeyRunes {
+		m.gapInput += string(msg.Runes)
+		return nil
+	}
+	switch msg.String() {
+	case "ctrl+c", "q":
+		m.quitting = true
+		return tea.Quit
+	case "esc":
+		m.closeGapEntryDialog()
+	case "tab":
+		if m.gapInputField == "project" {
+			m.gapInputField = "description"
+		} else {
+			m.gapInputField = "project"
+		}
+	case "up", "k":
+		if m.gapInputField == "project" && m.gapProjectCursor > 1 {
+			m.gapProjectCursor--
+		}
+	case "down", "j":
+		if m.gapInputField == "project" && m.gapProjectCursor < len(m.projects) {
+			m.gapProjectCursor++
+		}
+	case "backspace":
+		if m.gapInputField == "description" && len(m.gapInput) > 0 {
+			m.gapInput = m.gapInput[:len(m.gapInput)-1]
+		}
+	case "enter":
+		m.createGapEntry()
+	}
+	return nil
+}
+
+func (m *AppModel) createGapEntry() {
+	gap := m.focusedGap()
+	if gap == nil {
+		m.err = fmt.Errorf("gap not found")
+		m.closeGapEntryDialog()
+		return
+	}
+	project := m.selectedGapProject()
+	if project == nil {
+		m.err = fmt.Errorf("project required")
+		return
+	}
+	ident := project.Name
+	if project.Code != nil && *project.Code != "" {
+		ident = *project.Code
+	}
+	entry, err := m.store.CreateManualEntry(m.ctx, db.ManualEntryInput{
+		ProjectIdent: ident,
+		Description:  strings.TrimSpace(m.gapInput),
+		StartedAt:    gap.start,
+		EndedAt:      gap.end,
+	})
+	if err != nil {
+		m.err = err
+		return
+	}
+	if err := m.reloadEntries(); err != nil {
+		m.err = err
+		return
+	}
+	m.focusEntryByID(entry.ID)
+	m.closeGapEntryDialog()
+}
+
+func (m *AppModel) selectedGapProject() *model.Project {
+	if m.gapProjectCursor <= 0 || m.gapProjectCursor > len(m.projects) {
+		return nil
+	}
+	return &m.projects[m.gapProjectCursor-1]
 }
 
 func (m *AppModel) closeProjectDialog() {
@@ -645,6 +1028,62 @@ func (m *AppModel) reloadEntries() error {
 	return nil
 }
 
+func (m *AppModel) restoreStateAfterReload() {
+	prevDay := m.displayedDay()
+	prevKind := m.dayFocusKind
+	prevGap := m.dayGapFocus
+	prevEntryID := ""
+	if len(m.entries) > 0 && m.cursor >= 0 && m.cursor < len(m.entries) {
+		prevEntryID = m.entries[m.cursor].ID
+	}
+	if err := m.reloadEntries(); err != nil {
+		m.syncStatusErr = err
+		return
+	}
+	m.dayDate = prevDay
+	if prevKind == "gap" {
+		m.dayFocusKind = "gap"
+		m.dayGapFocus = prevGap
+		if m.focusedGap() == nil {
+			m.syncFocusForDisplayedDay()
+		}
+		return
+	}
+	if prevEntryID != "" {
+		for i, entry := range m.entries {
+			if entry.ID == prevEntryID {
+				m.cursor = i
+				m.dayFocusKind = "entry"
+				m.dayGapFocus = 0
+				m.ensureVisible()
+				return
+			}
+		}
+	}
+	m.syncFocusForDisplayedDay()
+}
+
+func syncPulseCmd(delay time.Duration) tea.Cmd {
+	return tea.Tick(delay, func(time.Time) tea.Msg { return syncPulseMsg{} })
+}
+
+func runSyncCmd(syncFn func() error) tea.Cmd {
+	return func() tea.Msg {
+		return syncDoneMsg{err: syncFn()}
+	}
+}
+
+func (m *AppModel) focusEntryByID(id string) {
+	for i, entry := range m.entries {
+		if entry.ID == id {
+			m.cursor = i
+			m.focusCurrentEntryInDayView()
+			m.ensureVisible()
+			return
+		}
+	}
+}
+
 func (m AppModel) projectIndex(id string) int {
 	for i, project := range m.projects {
 		if project.ID == id {
@@ -691,7 +1130,7 @@ func newStyles(width int) tuiStyles {
 		rule:          lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
 		dateHeader:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252")),
 		muted:         lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
-		statusBar:     lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Background(lipgloss.Color("63")).Padding(0, 1).Width(barWidth),
+		statusBar:     lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Background(lipgloss.Color("63")),
 		tableHeader:   lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252")),
 		baseRow:       lipgloss.NewStyle(),
 		activeRow:     lipgloss.NewStyle().Background(lipgloss.Color("236")),
@@ -715,10 +1154,10 @@ func renderHeader(entries []model.TimeEntryDetail, width int) string {
 
 func currentRange(entries []model.TimeEntryDetail) string {
 	if len(entries) == 0 {
-		return time.Now().Format("2006-01-02")
+		return time.Now().In(time.Local).Format("2006-01-02")
 	}
-	newest := entries[0].StartedAt.Format("2006-01-02")
-	oldest := entries[len(entries)-1].StartedAt.Format("2006-01-02")
+	newest := dayKey(entries[0].StartedAt)
+	oldest := dayKey(entries[len(entries)-1].StartedAt)
 	if newest == oldest {
 		return newest
 	}
@@ -777,12 +1216,531 @@ func renderEntryRow(cursor string, entry *model.TimeEntryDetail, desc, project s
 	return rowStyle.Render(line)
 }
 
+func renderDayTimeline(m AppModel, styles tuiStyles) string {
+	selectedDay := m.displayedDay().Format("2006-01-02")
+	selectedWeekday := m.displayedDay().Format("Monday")
+	indices := m.dayEntryIndices(selectedDay)
+	dayEntries := dayEntriesForDate(m.entries, selectedDay)
+	gaps := dayGapsForIndices(m.entries, indices, m.displayedDay())
+	window := dayTimelineWindow(dayEntries, m.displayedDay())
+	operatorLanes := buildOperatorLanes(m.entries, indices)
+	rowCount, slot := dayTimelineRowConfig(window, m.height)
+	chartCols := verticalTimelineColumns(m.width, operatorLanes)
+
+	var b strings.Builder
+	b.WriteString(styles.dateHeader.Render(renderDateHeader(selectedWeekday+" "+selectedDay, timelineWidth(m.width))) + "\n")
+	b.WriteString(styles.muted.Render(fmt.Sprintf("%d entries | %d lanes | %d gaps | %s-%s | v toggle view", len(dayEntries), len(operatorLanes), len(gaps), clock(window.start), clock(window.end))) + "\n")
+	b.WriteString(renderVerticalTimelineHeader(chartCols, operatorLanes) + "\n")
+	b.WriteString(styles.rule.Render(strings.Repeat("-", timelineWidth(m.width))) + "\n")
+	for i := 0; i < rowCount; i++ {
+		slotStart := window.start.Add(time.Duration(i) * slot)
+		slotEnd := slotStart.Add(slot)
+		b.WriteString(renderVerticalTimelineRow(m, slotStart, slotEnd, chartCols, operatorLanes, gaps, styles) + "\n")
+	}
+	if gap := m.focusedGap(); gap != nil {
+		b.WriteString(styles.muted.Render(fmt.Sprintf("%s | focus gap %s-%s | %s | enter add entry", selectedWeekday, clock(gap.start), clock(gap.end), formatGapDuration(*gap))))
+		return b.String()
+	}
+	if len(dayEntries) == 0 {
+		b.WriteString(styles.muted.Render(fmt.Sprintf("%s | focus empty day | left/right change day | t today", selectedWeekday)))
+		return b.String()
+	}
+	selected := m.entries[m.cursor]
+	project := "unassigned"
+	if selected.ProjectName != "" {
+		project = selected.ProjectName
+	}
+	label := timelineBlockLabel(selected)
+	b.WriteString(styles.muted.Render(fmt.Sprintf("%s | focus %s | %s | %s | %s", selectedWeekday, formatRange(selected.StartedAt, selected.EndedAt), selected.Operator, truncateForWidth(label, 32), truncateForWidth(project, 20))))
+	return b.String()
+}
+
+func dayTimelineRowConfig(window dayWindow, height int) (int, time.Duration) {
+	span := window.end.Sub(window.start)
+	if span <= 0 {
+		return 1, time.Hour
+	}
+	available := maxInt(8, height-8)
+	step := 15 * time.Minute
+	for int(span/step) > available && step < time.Hour {
+		step += 15 * time.Minute
+	}
+	rows := int(span / step)
+	if span%step != 0 {
+		rows++
+	}
+	return maxInt(1, rows), step
+}
+
+func verticalTimelineColumns(width int, lanes []dayOperatorLane) []int {
+	count := len(lanes) + 1
+	cols := make([]int, count)
+	cols[0] = 5
+	for i, lane := range lanes {
+		maxLabel := lipgloss.Width(lane.label)
+		for _, block := range lane.blocks {
+			maxLabel = maxInt(maxLabel, lipgloss.Width(timelineBlockLabel(block.entry)))
+		}
+		cols[i+1] = minInt(36, maxInt(12, maxLabel+2))
+	}
+	return cols
+}
+
+func renderVerticalTimelineHeader(colWidths []int, lanes []dayOperatorLane) string {
+	parts := []string{padRight("time", 5), " ", padRight("gap", colWidths[0])}
+	for i, lane := range lanes {
+		parts = append(parts, " ", padRight(truncateForWidth(lane.label, colWidths[i+1]), colWidths[i+1]))
+	}
+	return strings.Join(parts, "")
+}
+
+func renderVerticalTimelineRow(m AppModel, slotStart, slotEnd time.Time, colWidths []int, lanes []dayOperatorLane, gaps []dayGap, styles tuiStyles) string {
+	parts := []string{padRight(clock(slotStart), 5), " ", renderVerticalGapCell(slotStart, slotEnd, gaps, m, colWidths[0], styles)}
+	for i, lane := range lanes {
+		parts = append(parts, " ", renderVerticalLaneCell(slotStart, slotEnd, lane.blocks, m, colWidths[i+1], styles))
+	}
+	return strings.Join(parts, "")
+}
+
+func renderVerticalGapCell(slotStart, slotEnd time.Time, gaps []dayGap, m AppModel, width int, styles tuiStyles) string {
+	for i, gap := range gaps {
+		if !rangesOverlap(slotStart, slotEnd, gap.start, gap.end) {
+			continue
+		}
+		focused := m.dayFocusKind == "gap" && i == m.dayGapFocus
+		label := "g"
+		if focused && width > 2 {
+			label = "gap"
+		}
+		return renderVerticalRangeCell(slotStart, slotEnd, gap.start, gap.end, focused, width, label, styles.muted, styles)
+	}
+	return padRight("", width)
+}
+
+func renderVerticalLaneCell(slotStart, slotEnd time.Time, blocks []timelineBlock, m AppModel, width int, styles tuiStyles) string {
+	for _, block := range blocks {
+		if !rangesOverlap(slotStart, slotEnd, block.start, block.end) {
+			continue
+		}
+		focused := m.dayFocusKind != "gap" && block.index == m.cursor
+		cellStyle := styles.confirmed
+		if block.entry.Status == model.StatusDraft {
+			cellStyle = styles.draft
+		}
+		if block.entry.ProjectColor != nil && *block.entry.ProjectColor != "" && !focused {
+			cellStyle = cellStyle.Foreground(lipgloss.Color(*block.entry.ProjectColor))
+		}
+		return renderVerticalRangeCell(slotStart, slotEnd, block.start, block.end, focused, width, timelineBlockLabel(block.entry), cellStyle, styles)
+	}
+	return padRight("", width)
+}
+
+func renderVerticalRangeCell(slotStart, slotEnd, itemStart, itemEnd time.Time, focused bool, width int, label string, baseStyle lipgloss.Style, styles tuiStyles) string {
+	text := "|"
+	starts := !itemStart.Before(slotStart) && itemStart.Before(slotEnd)
+	ends := itemEnd.After(slotStart) && !itemEnd.After(slotEnd)
+	if starts && ends {
+		text = "[" + truncateForWidth(label, maxInt(1, width-2)) + "]"
+	} else if starts {
+		text = ">" + truncateForWidth(label, maxInt(1, width-1))
+	} else if ends {
+		text = truncateForWidth("|", width-1) + "<"
+	}
+	style := baseStyle
+	if focused {
+		style = styles.activePicker
+	}
+	return style.Render(padRight(truncateForWidth(text, width), width))
+}
+
+func rangesOverlap(aStart, aEnd, bStart, bEnd time.Time) bool {
+	return aStart.Before(bEnd) && aEnd.After(bStart)
+}
+
+func dayEntriesForDate(entries []model.TimeEntryDetail, date string) []model.TimeEntryDetail {
+	filtered := make([]model.TimeEntryDetail, 0, len(entries))
+	for _, entry := range entries {
+		if dayKey(entry.StartedAt) == date {
+			filtered = append(filtered, entry)
+		}
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		return filtered[i].StartedAt.Before(filtered[j].StartedAt)
+	})
+	return filtered
+}
+
+func dayTimelineWindow(entries []model.TimeEntryDetail, day time.Time) dayWindow {
+	if len(entries) == 0 {
+		start := time.Date(day.Year(), day.Month(), day.Day(), 8, 0, 0, 0, day.Location())
+		return dayWindow{start: start, end: start.Add(10 * time.Hour)}
+	}
+	start := entries[0].StartedAt.In(time.Local)
+	end := timelineBlockEnd(entries[0]).In(time.Local)
+	for _, entry := range entries[1:] {
+		entryStart := entry.StartedAt.In(time.Local)
+		if entryStart.Before(start) {
+			start = entryStart
+		}
+		entryEnd := timelineBlockEnd(entry).In(time.Local)
+		if entryEnd.After(end) {
+			end = entryEnd
+		}
+	}
+	day = dayStart(start)
+	windowStart := time.Date(day.Year(), day.Month(), day.Day(), maxInt(0, start.Hour()-1), 0, 0, 0, day.Location())
+	windowEndHour := minInt(24, end.Hour()+2)
+	windowEnd := time.Date(day.Year(), day.Month(), day.Day(), windowEndHour, 0, 0, 0, day.Location())
+	if !windowEnd.After(windowStart) {
+		windowEnd = windowStart.Add(2 * time.Hour)
+	}
+	return dayWindow{start: windowStart, end: windowEnd}
+}
+
+func buildOperatorLanes(entries []model.TimeEntryDetail, indices []int) []dayOperatorLane {
+	groups := map[string][]timelineBlock{}
+	order := make([]string, 0, 4)
+	for _, idx := range indices {
+		entry := entries[idx]
+		label := entry.Operator
+		if label == "" {
+			label = "unknown"
+		}
+		if _, ok := groups[label]; !ok {
+			order = append(order, label)
+		}
+		groups[label] = append(groups[label], timelineBlock{entry: entry, index: idx, start: entry.StartedAt, end: timelineBlockEnd(entry)})
+	}
+	lanes := make([]dayOperatorLane, 0, len(indices))
+	for _, label := range order {
+		blocks := groups[label]
+		sort.SliceStable(blocks, func(i, j int) bool { return blocks[i].start.Before(blocks[j].start) })
+		sublanes := assignBlockLanes(blocks)
+		for i, sublane := range sublanes {
+			laneLabel := label
+			if len(sublanes) > 1 {
+				laneLabel = fmt.Sprintf("%s %d", label, i+1)
+			}
+			lanes = append(lanes, dayOperatorLane{label: laneLabel, blocks: sublane})
+		}
+	}
+	return lanes
+}
+
+func assignBlockLanes(blocks []timelineBlock) [][]timelineBlock {
+	lanes := make([][]timelineBlock, 0, 2)
+	for _, block := range blocks {
+		placed := false
+		for i := range lanes {
+			last := lanes[i][len(lanes[i])-1]
+			if !block.start.Before(last.end) {
+				lanes[i] = append(lanes[i], block)
+				placed = true
+				break
+			}
+		}
+		if !placed {
+			lanes = append(lanes, []timelineBlock{block})
+		}
+	}
+	return lanes
+}
+
+func assignTimelineLanes(entries []model.TimeEntryDetail) [][]timelineBlock {
+	lanes := make([][]timelineBlock, 0, 4)
+	for _, entry := range entries {
+		block := timelineBlock{entry: entry, start: entry.StartedAt, end: timelineBlockEnd(entry)}
+		placed := false
+		for i := range lanes {
+			last := lanes[i][len(lanes[i])-1]
+			if !block.start.Before(last.end) {
+				lanes[i] = append(lanes[i], block)
+				placed = true
+				break
+			}
+		}
+		if !placed {
+			lanes = append(lanes, []timelineBlock{block})
+		}
+	}
+	return lanes
+}
+
+func dayGapsForIndices(entries []model.TimeEntryDetail, indices []int, day time.Time) []dayGap {
+	day = dayStart(day)
+	dayEnd := gapDayEnd(day)
+	if len(indices) == 0 {
+		if !dayEnd.After(day) {
+			return nil
+		}
+		return []dayGap{{start: day, end: dayEnd}}
+	}
+	blocks := make([]timelineBlock, 0, len(indices))
+	for _, idx := range indices {
+		entry := entries[idx]
+		blocks = append(blocks, timelineBlock{entry: entry, start: entry.StartedAt, end: timelineBlockEnd(entry)})
+	}
+	sort.SliceStable(blocks, func(i, j int) bool { return blocks[i].start.Before(blocks[j].start) })
+	start := day
+	mergedStart := blocks[0].start
+	mergedEnd := blocks[0].end
+	gaps := make([]dayGap, 0, len(blocks)+1)
+	if mergedStart.After(start) {
+		gaps = append(gaps, dayGap{start: start, end: mergedStart})
+	}
+	for i := 1; i < len(blocks); i++ {
+		if blocks[i].start.After(mergedEnd) {
+			gaps = append(gaps, dayGap{start: mergedEnd, end: blocks[i].start})
+			mergedStart = blocks[i].start
+			mergedEnd = blocks[i].end
+			continue
+		}
+		if blocks[i].end.After(mergedEnd) {
+			mergedEnd = blocks[i].end
+		}
+	}
+	if mergedEnd.Before(dayEnd) {
+		gaps = append(gaps, dayGap{start: mergedEnd, end: dayEnd})
+	}
+	filtered := gaps[:0]
+	for _, gap := range gaps {
+		if gap.end.After(gap.start) {
+			filtered = append(filtered, gap)
+		}
+	}
+	return filtered
+}
+
+func timelineBlockEnd(entry model.TimeEntryDetail) time.Time {
+	if entry.EndedAt != nil {
+		if activeAgentEntry(entry, time.Now()) {
+			return time.Now().UTC()
+		}
+		return *entry.EndedAt
+	}
+	if activeAgentEntry(entry, time.Now()) {
+		return time.Now().UTC()
+	}
+	return entry.StartedAt.Add(time.Minute)
+}
+
+func activeAgentEntry(entry model.TimeEntryDetail, now time.Time) bool {
+	if entry.Operator == "human" {
+		return false
+	}
+	if entry.EndedAt == nil {
+		return true
+	}
+	end := entry.EndedAt.In(time.UTC)
+	now = now.In(time.UTC)
+	if end.After(now) {
+		return true
+	}
+	return now.Sub(end) <= 20*time.Minute
+}
+
+func renderDayAxis(cols dayTimelineCols, window dayWindow) string {
+	runes := make([]rune, cols.Chart)
+	for i := range runes {
+		runes[i] = '-'
+	}
+	step := 1
+	if window.end.Sub(window.start) > 12*time.Hour {
+		step = 2
+	}
+	for ts := window.start; ts.Before(window.end); ts = ts.Add(time.Duration(step) * time.Hour) {
+		col := timelineColumnForTime(ts, cols.Chart, window)
+		label := fmt.Sprintf("%02d", ts.Hour())
+		for i, r := range label {
+			if col+i < len(runes) {
+				runes[col+i] = r
+			}
+		}
+	}
+	return fmt.Sprintf("%s %s", padRight("time", cols.Lane), string(runes))
+}
+
+func renderDayLane(blocks []timelineBlock, m AppModel, width int, window dayWindow, styles tuiStyles) string {
+	segments := make([]string, 0, len(blocks)*2+1)
+	position := 0
+	for _, block := range blocks {
+		startCol := timelineColumnForTime(block.start, width, window)
+		endCol := timelineColumnForTime(block.end, width, window)
+		if endCol <= startCol {
+			endCol = minInt(width, startCol+1)
+		}
+		if startCol > position {
+			segments = append(segments, strings.Repeat(" ", startCol-position))
+		}
+		blockWidth := maxInt(1, endCol-startCol)
+		segments = append(segments, renderDayBlock(block, blockWidth, m, styles))
+		position = endCol
+	}
+	if position < width {
+		segments = append(segments, strings.Repeat(" ", width-position))
+	}
+	return strings.Join(segments, "")
+}
+
+func renderDayGaps(gaps []dayGap, m AppModel, width int, window dayWindow, styles tuiStyles) string {
+	segments := make([]string, 0, len(gaps)*2+1)
+	position := 0
+	for i, gap := range gaps {
+		startCol := timelineColumnForTime(gap.start, width, window)
+		endCol := timelineColumnForTime(gap.end, width, window)
+		if endCol <= startCol {
+			endCol = minInt(width, startCol+1)
+		}
+		if startCol > position {
+			segments = append(segments, strings.Repeat(" ", startCol-position))
+		}
+		gapWidth := maxInt(1, endCol-startCol)
+		segments = append(segments, renderDayGap(gap, i == m.dayGapFocus && m.dayFocusKind == "gap", gapWidth, styles))
+		position = endCol
+	}
+	if position < width {
+		segments = append(segments, strings.Repeat(" ", width-position))
+	}
+	return strings.Join(segments, "")
+}
+
+func renderDayBlock(block timelineBlock, width int, m AppModel, styles tuiStyles) string {
+	label := timelineBlockLabel(block.entry)
+	if width == 1 {
+		label = "#"
+	} else if width == 2 {
+		label = "[]"
+	} else {
+		label = "[" + padRight(truncateForWidth(label, width-2), width-2) + "]"
+	}
+	style := styles.baseRow
+	if block.entry.Status == model.StatusDraft {
+		style = styles.draft
+	} else {
+		style = styles.confirmed
+	}
+	if m.dayFocusKind != "gap" && m.entries[m.cursor].ID == block.entry.ID {
+		style = styles.activePicker
+	}
+	if block.entry.ProjectColor != nil && *block.entry.ProjectColor != "" && (m.dayFocusKind == "gap" || m.entries[m.cursor].ID != block.entry.ID) {
+		style = style.Foreground(lipgloss.Color(*block.entry.ProjectColor))
+	}
+	return style.Render(padRight(label, width))
+}
+
+func renderDayGap(gap dayGap, focused bool, width int, styles tuiStyles) string {
+	label := "gap"
+	if width > 6 {
+		label = "gap " + formatGapDuration(gap)
+	}
+	if width == 1 {
+		label = "."
+	} else if width == 2 {
+		label = ".."
+	} else {
+		label = "{" + padRight(truncateForWidth(label, width-2), width-2) + "}"
+	}
+	style := styles.muted
+	if focused {
+		style = styles.activePicker
+	}
+	return style.Render(padRight(label, width))
+}
+
+func formatGapDuration(gap dayGap) string {
+	d := gap.end.Sub(gap.start)
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	if h > 0 && m > 0 {
+		return fmt.Sprintf("%dh%02dm", h, m)
+	}
+	if h > 0 {
+		return fmt.Sprintf("%dh", h)
+	}
+	return fmt.Sprintf("%dm", int(d.Minutes()))
+}
+
+func clock(ts time.Time) string {
+	return ts.In(time.Local).Format("15:04")
+}
+
+func gapDayEnd(day time.Time) time.Time {
+	day = dayStart(day)
+	end := day.Add(24 * time.Hour)
+	now := time.Now().In(time.Local)
+	today := dayStart(now)
+	if day.Equal(today) && now.Before(end) {
+		return now
+	}
+	return end
+}
+
+func dayStart(ts time.Time) time.Time {
+	local := ts.In(time.Local)
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local)
+}
+
+func dayKey(ts time.Time) string {
+	return ts.In(time.Local).Format("2006-01-02")
+}
+
+func timelineBlockLabel(entry model.TimeEntryDetail) string {
+	if entry.Description != nil && strings.TrimSpace(*entry.Description) != "" {
+		return strings.TrimSpace(*entry.Description)
+	}
+	parts := []string{entry.Operator}
+	if entry.ProjectName != "" {
+		parts = append(parts, entry.ProjectName)
+	}
+	return strings.Join(parts, " ")
+}
+
+func timelineColumnForTime(ts time.Time, width int, window dayWindow) int {
+	if width <= 1 {
+		return 0
+	}
+	if !window.end.After(window.start) {
+		return 0
+	}
+	if ts.Before(window.start) {
+		return 0
+	}
+	if ts.After(window.end) {
+		return width - 1
+	}
+	offset := ts.Sub(window.start)
+	span := window.end.Sub(window.start)
+	col := int((offset * time.Duration(width)) / span)
+	if col < 0 {
+		return 0
+	}
+	if col >= width {
+		return width - 1
+	}
+	return col
+}
+
 func renderStatusBar(m AppModel, width int) string {
+	base := renderBaseStatusBar(m, width)
+	if m.syncing || m.syncStatusErr != nil {
+		return mergeSyncIntoStatusBar(base, m, width)
+	}
+	return base
+}
+
+func renderBaseStatusBar(m AppModel, width int) string {
 	if m.mode == modeAssign {
 		return truncateForWidth(projectDialogHelp(m), width)
 	}
+	if m.mode == modeGapEntry {
+		return truncateForWidth("gap entry | up/down project | tab desc | enter create | esc cancel", width)
+	}
 	if m.mode == modeSearch {
 		return truncateForWidth("/"+m.searchQuery+" | enter search | esc cancel", width)
+	}
+	if m.timelineView == timelineViewDay {
+		text := fmt.Sprintf("entries %d | day %s | up/down items | left/right day | t today | r sync | a add gap | v list | P projects q", len(m.entries), m.displayedDay().Format("2006-01-02"))
+		return truncateForWidth(text, width)
 	}
 	drafts := 0
 	for _, entry := range m.entries {
@@ -798,8 +1756,42 @@ func renderStatusBar(m AppModel, width int) string {
 	if m.lastSearch != "" {
 		searchHint = " | / search n/N next"
 	}
-	text := fmt.Sprintf("entries %d | drafts %d | pos %s | src %s | f/tab filter | up/down home/end pgup/pgdn space p assign P projects enter q%s", len(m.entries), drafts, position, m.sourceFilter, searchHint)
+	text := fmt.Sprintf("entries %d | drafts %d | pos %s | src %s | r sync | v view | f/tab filter | up/down home/end pgup/pgdn space p assign P projects enter q%s", len(m.entries), drafts, position, m.sourceFilter, searchHint)
 	return truncateForWidth(text, width)
+}
+
+func mergeSyncIntoStatusBar(base string, m AppModel, width int) string {
+	rightWidth := minInt(24, maxInt(14, width/5))
+	leftWidth := maxInt(0, width-rightWidth-1)
+	left := padRight(truncateForWidth(stripANSI(base), leftWidth), leftWidth)
+	right := renderInlineSyncStatus(m, rightWidth)
+	if lipgloss.Width(right) < rightWidth {
+		right = strings.Repeat(" ", rightWidth-lipgloss.Width(right)) + right
+	}
+	return left + " " + right
+}
+
+func renderInlineSyncStatus(m AppModel, width int) string {
+	label := "Syncing"
+	if m.syncStatusErr != nil {
+		label = "Sync Error"
+		return padRight(label+" "+truncateForWidth(m.syncStatusErr.Error(), maxInt(8, width-lipgloss.Width(label)-1)), width)
+	}
+	spinner := syncSpinnerFrame(m.syncFrame)
+	text := spinner + " " + label
+	return padRight(text, width)
+}
+
+func oneLine(text string) string {
+	text = strings.ReplaceAll(text, "\r", "")
+	text = strings.ReplaceAll(text, "\n", "")
+	return text
+}
+
+func syncSpinnerFrame(frame int) string {
+	frames := []string{"|", "/", "-", "\\"}
+	idx := frame % len(frames)
+	return frames[idx]
 }
 
 func (m *AppModel) jumpToSearchMatch(start, direction int, includeCurrent bool) {
@@ -951,6 +1943,36 @@ func renderProjectDialog(m AppModel, styles tuiStyles, background string) string
 	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)
 }
 
+func renderGapEntryDialog(m AppModel, styles tuiStyles, background string) string {
+	dialogWidth := projectDialogWidth(m.width)
+	innerWidth := maxInt(20, dialogWidth-6)
+	gap := m.focusedGap()
+
+	var content strings.Builder
+	content.WriteString(styles.title.Render("Add Manual Entry") + "\n")
+	if gap != nil {
+		content.WriteString(styles.muted.Render(fmt.Sprintf("%s-%s | %s", clock(gap.start), clock(gap.end), formatGapDuration(*gap))) + "\n\n")
+	}
+	content.WriteString(styles.muted.Render("Project") + "\n")
+	if len(m.projects) == 0 {
+		content.WriteString(styles.muted.Render("no projects") + "\n")
+	} else {
+		for i, project := range m.projects {
+			content.WriteString(renderPickerLine(projectDialogLabel(AppModel{}, project), i+1, m.gapProjectCursor, styles, innerWidth) + "\n")
+		}
+	}
+	inputStyle := styles.muted
+	if m.gapInputField == "description" {
+		inputStyle = styles.activePicker
+	}
+	content.WriteString("\n" + styles.muted.Render("Description") + "\n")
+	content.WriteString(inputStyle.Render(truncateForWidth("> "+m.gapInput, innerWidth)))
+	content.WriteString("\n\n" + styles.muted.Render("tab switch | enter create | esc cancel"))
+
+	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
+	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)
+}
+
 func projectDialogSummary(m AppModel) string {
 	if m.dialogMode == projectDialogManage {
 		project := m.selectedProject()
@@ -1054,9 +2076,9 @@ func renderPickerLine(label string, index, current int, styles tuiStyles, width 
 
 func formatRange(start time.Time, end *time.Time) string {
 	if end == nil {
-		return start.Format("15:04") + "-..."
+		return clock(start) + "-..."
 	}
-	return start.Format("15:04") + "-" + end.Format("15:04")
+	return clock(start) + "-" + clock(*end)
 }
 
 func timelineWidth(width int) int {
