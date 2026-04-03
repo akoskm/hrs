@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/akoskm/hrs/internal/db"
 	"github.com/akoskm/hrs/internal/model"
@@ -109,6 +110,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor = maxInt(0, m.cursor-step)
 				m.ensureVisible()
 			}
+		case "}":
+			if m.mode == modeTimeline && len(m.entries) > 0 {
+				m.cursor = m.jumpGroup(1)
+				m.ensureVisible()
+			}
+		case "{":
+			if m.mode == modeTimeline && len(m.entries) > 0 {
+				m.cursor = m.jumpGroup(-1)
+				m.ensureVisible()
+			}
 		case "down", "j":
 			if m.mode == modeAssign {
 				if m.projectCursor < len(m.projects)-1 {
@@ -173,25 +184,28 @@ func (m AppModel) View() string {
 	if m.quitting {
 		return ""
 	}
-	var b strings.Builder
-	b.WriteString("hrs\n\n")
+	styles := newStyles(m.width)
+	var sections []string
+	sections = append(sections, styles.header.Render(renderHeader(m.entries, m.width)))
 	if m.err != nil {
-		b.WriteString("error: " + m.err.Error() + "\n\n")
+		sections = append(sections, styles.error.Render("error: "+m.err.Error()))
 	}
-	b.WriteString("Timeline\n")
+	var b strings.Builder
+	b.WriteString(styles.title.Render("Timeline") + "\n")
 	if len(m.entries) == 0 {
-		b.WriteString("no entries\n")
+		b.WriteString(styles.muted.Render("no entries") + "\n")
 	} else {
 		cols := timelineColumns(m.width)
-		header := fmt.Sprintf("%s %s %s %s %s", padRight(" ", cols.Cursor), padRight("Time", cols.Time), padRight("Description", cols.Description), padRight("Status", cols.Status), padRight("Project", cols.Project))
+		header := renderTableHeader(cols, styles)
 		b.WriteString(header + "\n")
-		b.WriteString(strings.Repeat("-", minInt(len(header), timelineWidth(m.width))) + "\n")
+		b.WriteString(styles.rule.Render(strings.Repeat("─", minInt(lipgloss.Width(stripANSI(header)), timelineWidth(m.width)))))
+		b.WriteString("\n")
 		rows := m.timelineRowsData()
 		start, end := m.visibleRange(len(rows))
 		for i := start; i < end; i++ {
 			row := rows[i]
 			if row.Header != "" {
-				b.WriteString(truncateForWidth(row.Header, timelineWidth(m.width)) + "\n")
+				b.WriteString(styles.dateHeader.Render(renderDateHeader(row.Header, timelineWidth(m.width))) + "\n")
 				continue
 			}
 			entry := row.Entry
@@ -204,24 +218,20 @@ func (m AppModel) View() string {
 			if entry.Description != nil && *entry.Description != "" {
 				desc = *entry.Description
 			}
-			line := fmt.Sprintf("%s %s %s %s %s",
-				padRight(cursor, cols.Cursor),
-				padRight(formatRange(entry.StartedAt, entry.EndedAt), cols.Time),
-				padRight(truncateForWidth(desc, cols.Description), cols.Description),
-				padRight(truncateForWidth(string(entry.Status), cols.Status), cols.Status),
-				padRight(truncateForWidth(project, cols.Project), cols.Project),
-			)
-			b.WriteString(truncateForWidth(line, timelineWidth(m.width)) + "\n")
+			line := renderEntryRow(cursor, entry, desc, project, cols, styles, row.EntryIndex == m.cursor, m.selected[entry.ID])
+			b.WriteString(line + "\n")
 		}
 		if len(rows) > end {
 			remaining := len(rows) - end
-			b.WriteString(truncateForWidth("... "+strconv.Itoa(remaining)+" more", timelineWidth(m.width)) + "\n")
+			b.WriteString(styles.muted.Render(truncateForWidth("... "+strconv.Itoa(remaining)+" more", timelineWidth(m.width))) + "\n")
 		}
 	}
+	sections = append(sections, b.String())
 	if m.mode == modeAssign {
-		b.WriteString("\nAssign Project\n")
+		var assign strings.Builder
+		assign.WriteString(styles.title.Render("Assign Project") + "\n")
 		if len(m.projects) == 0 {
-			b.WriteString("no projects\n")
+			assign.WriteString(styles.muted.Render("no projects") + "\n")
 		} else {
 			for i, project := range m.projects {
 				cursor := " "
@@ -232,14 +242,18 @@ func (m AppModel) View() string {
 				if project.Code != nil && *project.Code != "" {
 					code = " (" + *project.Code + ")"
 				}
-				b.WriteString(fmt.Sprintf("%s %s%s\n", cursor, project.Name, code))
+				line := fmt.Sprintf("%s %s%s", cursor, project.Name, code)
+				style := styles.projectPicker
+				if i == m.projectCursor {
+					style = styles.activePicker
+				}
+				assign.WriteString(style.Render(truncateForWidth(line, timelineWidth(m.width))) + "\n")
 			}
 		}
-		b.WriteString("\n" + truncateForWidth("enter confirm, esc cancel", timelineWidth(m.width)) + "\n")
-	} else {
-		b.WriteString("\n" + truncateForWidth("up/down move, space select, p bulk assign, enter assign, q quit", timelineWidth(m.width)) + "\n")
+		sections = append(sections, assign.String())
 	}
-	return b.String()
+	sections = append(sections, styles.statusBar.Render(renderStatusBar(m, timelineWidth(m.width))))
+	return strings.Join(sections, "\n")
 }
 
 type timelineColWidths struct {
@@ -311,7 +325,7 @@ func (m AppModel) timelineRowsData() []timelineRow {
 	for i, entry := range m.entries {
 		day := entry.StartedAt.Format("2006-01-02")
 		if day != lastDate {
-			rows = append(rows, timelineRow{Header: "-- " + day + " --"})
+			rows = append(rows, timelineRow{Header: day})
 			lastDate = day
 		}
 		entryCopy := entry
@@ -327,6 +341,32 @@ func (m AppModel) selectedRowIndex(rows []timelineRow) int {
 		}
 	}
 	return 0
+}
+
+func (m AppModel) jumpGroup(direction int) int {
+	if len(m.entries) == 0 {
+		return 0
+	}
+	currentDay := m.entries[m.cursor].StartedAt.Format("2006-01-02")
+	if direction > 0 {
+		for i := m.cursor + 1; i < len(m.entries); i++ {
+			day := m.entries[i].StartedAt.Format("2006-01-02")
+			if day != currentDay {
+				return i
+			}
+		}
+		return m.cursor
+	}
+	for i := m.cursor - 1; i >= 0; i-- {
+		day := m.entries[i].StartedAt.Format("2006-01-02")
+		if day != currentDay {
+			for i > 0 && m.entries[i-1].StartedAt.Format("2006-01-02") == day {
+				i--
+			}
+			return i
+		}
+	}
+	return m.cursor
 }
 
 func (m AppModel) entryMarker(index int) string {
@@ -375,6 +415,154 @@ func sortEntries(entries []model.TimeEntryDetail) []model.TimeEntryDetail {
 		return sorted[i].StartedAt.After(sorted[j].StartedAt)
 	})
 	return sorted
+}
+
+type tuiStyles struct {
+	header        lipgloss.Style
+	title         lipgloss.Style
+	error         lipgloss.Style
+	rule          lipgloss.Style
+	dateHeader    lipgloss.Style
+	muted         lipgloss.Style
+	statusBar     lipgloss.Style
+	tableHeader   lipgloss.Style
+	baseRow       lipgloss.Style
+	activeRow     lipgloss.Style
+	selectedRow   lipgloss.Style
+	activeSelRow  lipgloss.Style
+	draft         lipgloss.Style
+	confirmed     lipgloss.Style
+	projectPicker lipgloss.Style
+	activePicker  lipgloss.Style
+}
+
+func newStyles(width int) tuiStyles {
+	barWidth := timelineWidth(width)
+	return tuiStyles{
+		header:        lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).Width(barWidth),
+		title:         lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")),
+		error:         lipgloss.NewStyle().Foreground(lipgloss.Color("204")).Bold(true),
+		rule:          lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
+		dateHeader:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252")),
+		muted:         lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
+		statusBar:     lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Background(lipgloss.Color("63")).Padding(0, 1).Width(barWidth),
+		tableHeader:   lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252")),
+		baseRow:       lipgloss.NewStyle(),
+		activeRow:     lipgloss.NewStyle().Background(lipgloss.Color("236")),
+		selectedRow:   lipgloss.NewStyle().Background(lipgloss.Color("60")),
+		activeSelRow:  lipgloss.NewStyle().Background(lipgloss.Color("99")).Bold(true),
+		draft:         lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true),
+		confirmed:     lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true),
+		projectPicker: lipgloss.NewStyle(),
+		activePicker:  lipgloss.NewStyle().Background(lipgloss.Color("99")).Foreground(lipgloss.Color("230")).Bold(true),
+	}
+}
+
+func renderHeader(entries []model.TimeEntryDetail, width int) string {
+	rangeText := currentRange(entries)
+	left := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).Render("hrs")
+	right := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(rangeText)
+	spacer := maxInt(1, timelineWidth(width)-lipgloss.Width(left)-lipgloss.Width(right))
+	return left + strings.Repeat(" ", spacer) + right
+}
+
+func currentRange(entries []model.TimeEntryDetail) string {
+	if len(entries) == 0 {
+		return time.Now().Format("2006-01-02")
+	}
+	newest := entries[0].StartedAt.Format("2006-01-02")
+	oldest := entries[len(entries)-1].StartedAt.Format("2006-01-02")
+	if newest == oldest {
+		return newest
+	}
+	return oldest + " to " + newest
+}
+
+func renderTableHeader(cols timelineColWidths, styles tuiStyles) string {
+	line := fmt.Sprintf("%s %s %s %s %s",
+		padRight(" ", cols.Cursor),
+		padRight("Time", cols.Time),
+		padRight("Description", cols.Description),
+		padRight("Status", cols.Status),
+		padRight("Project", cols.Project),
+	)
+	return styles.tableHeader.Render(line)
+}
+
+func renderDateHeader(date string, width int) string {
+	label := "── " + date + " ──"
+	if lipgloss.Width(label) >= width {
+		return truncateForWidth(label, width)
+	}
+	return label + strings.Repeat("─", width-lipgloss.Width(label))
+}
+
+func renderEntryRow(cursor string, entry *model.TimeEntryDetail, desc, project string, cols timelineColWidths, styles tuiStyles, active, selected bool) string {
+	statusText := truncateForWidth(string(entry.Status), cols.Status)
+	statusCell := styles.draft
+	if entry.Status == model.StatusConfirmed {
+		statusCell = styles.confirmed
+	}
+	projectCell := lipgloss.NewStyle()
+	if entry.ProjectColor != nil && *entry.ProjectColor != "" {
+		projectCell = projectCell.Foreground(lipgloss.Color(*entry.ProjectColor)).Bold(true)
+	}
+	line := lipgloss.JoinHorizontal(lipgloss.Top,
+		lipgloss.NewStyle().Width(cols.Cursor).Render(cursor),
+		lipgloss.NewStyle().Width(1).Render(" "),
+		lipgloss.NewStyle().Width(cols.Time).Render(padRight(formatRange(entry.StartedAt, entry.EndedAt), cols.Time)),
+		lipgloss.NewStyle().Width(1).Render(" "),
+		lipgloss.NewStyle().Width(cols.Description).Render(padRight(truncateForWidth(desc, cols.Description), cols.Description)),
+		lipgloss.NewStyle().Width(1).Render(" "),
+		statusCell.Width(cols.Status).Render(padRight(statusText, cols.Status)),
+		lipgloss.NewStyle().Width(1).Render(" "),
+		projectCell.Width(cols.Project).Render(padRight(truncateForWidth(project, cols.Project), cols.Project)),
+	)
+	rowStyle := styles.baseRow
+	switch {
+	case active && selected:
+		rowStyle = styles.activeSelRow
+	case active:
+		rowStyle = styles.activeRow
+	case selected:
+		rowStyle = styles.selectedRow
+	}
+	return rowStyle.Render(line)
+}
+
+func renderStatusBar(m AppModel, width int) string {
+	drafts := 0
+	for _, entry := range m.entries {
+		if entry.Status == model.StatusDraft {
+			drafts++
+		}
+	}
+	position := "0/0"
+	if len(m.entries) > 0 {
+		position = strconv.Itoa(m.cursor+1) + "/" + strconv.Itoa(len(m.entries))
+	}
+	text := fmt.Sprintf("entries %d | drafts %d | pos %s | up/down home/end pgup/pgdn space p enter q", len(m.entries), drafts, position)
+	return truncateForWidth(text, width)
+}
+
+func stripANSI(text string) string {
+	var b strings.Builder
+	inEsc := false
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if inEsc {
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+				inEsc = false
+			}
+			continue
+		}
+		if c == 0x1b {
+			inEsc = true
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 func formatRange(start time.Time, end *time.Time) string {

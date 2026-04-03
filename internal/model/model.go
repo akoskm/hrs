@@ -153,7 +153,7 @@ type ProjectSummary struct {
 	BillableSecs int      `json:"billable_secs" db:"billable_secs"`
 }
 
-func (ps ProjectSummary) TotalHours() float64   { return float64(ps.TotalSecs) / 3600.0 }
+func (ps ProjectSummary) TotalHours() float64    { return float64(ps.TotalSecs) / 3600.0 }
 func (ps ProjectSummary) BillableHours() float64 { return float64(ps.BillableSecs) / 3600.0 }
 func (ps ProjectSummary) Earnings() float64 {
 	return ps.BillableHours() * float64(ps.HourlyRate) / 100.0
@@ -167,9 +167,9 @@ type DailySummary struct {
 	AgentSecs    int    `json:"agent_secs"    db:"agent_secs"`
 }
 
-func (ds DailySummary) TotalHours() float64   { return float64(ds.TotalSecs) / 3600.0 }
-func (ds DailySummary) HumanHours() float64   { return float64(ds.HumanSecs) / 3600.0 }
-func (ds DailySummary) AgentHours() float64   { return float64(ds.AgentSecs) / 3600.0 }
+func (ds DailySummary) TotalHours() float64 { return float64(ds.TotalSecs) / 3600.0 }
+func (ds DailySummary) HumanHours() float64 { return float64(ds.HumanSecs) / 3600.0 }
+func (ds DailySummary) AgentHours() float64 { return float64(ds.AgentSecs) / 3600.0 }
 
 type OperatorSummary struct {
 	Operator   string `json:"operator"    db:"operator"`
@@ -192,9 +192,10 @@ func (ls LabelSummary) TotalHours() float64 { return float64(ls.TotalSecs) / 360
 
 type TimeEntryDetail struct {
 	TimeEntry
-	ProjectName string   `json:"project_name" db:"project_name"`
-	ProjectCode *string  `json:"project_code" db:"project_code"`
-	TaskName    *string  `json:"task_name"    db:"task_name"`
-	ClientName  *string  `json:"client_name"  db:"client_name"`
-	Labels      []string `json:"labels"`
+	ProjectName  string   `json:"project_name" db:"project_name"`
+	ProjectCode  *string  `json:"project_code" db:"project_code"`
+	ProjectColor *string  `json:"project_color" db:"project_color"`
+	TaskName     *string  `json:"task_name"    db:"task_name"`
+	ClientName   *string  `json:"client_name"  db:"client_name"`
+	Labels       []string `json:"labels"`
 }

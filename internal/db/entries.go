@@ -132,7 +132,7 @@ func (s *Store) ListEntries(ctx context.Context) ([]model.TimeEntryDetail, error
 			te.id, te.project_id, te.task_id, te.description, te.started_at, te.ended_at, te.duration_secs,
 			te.billable, te.status, te.operator, te.source_ref, te.worktree, te.git_branch, te.cwd,
 			te.metadata, te.deleted_at, te.created_at, te.updated_at,
-			COALESCE(p.name, ''), p.code
+			COALESCE(p.name, ''), p.code, p.color
 		FROM time_entries te
 		LEFT JOIN projects p ON p.id = te.project_id
 		WHERE te.deleted_at IS NULL
@@ -375,6 +375,7 @@ func scanTimeEntryDetail(row entryScanner) (model.TimeEntryDetail, error) {
 	var createdAt string
 	var updatedAt string
 	var projectCode sql.NullString
+	var projectColor sql.NullString
 	var taskName sql.NullString
 	var clientName sql.NullString
 	var billable int
@@ -399,6 +400,7 @@ func scanTimeEntryDetail(row entryScanner) (model.TimeEntryDetail, error) {
 		&updatedAt,
 		&detail.ProjectName,
 		&projectCode,
+		&projectColor,
 	); err != nil {
 		return model.TimeEntryDetail{}, err
 	}
@@ -412,6 +414,7 @@ func scanTimeEntryDetail(row entryScanner) (model.TimeEntryDetail, error) {
 	detail.Cwd = scanNullString(cwd)
 	detail.Metadata = scanNullString(metadata)
 	detail.ProjectCode = scanNullString(projectCode)
+	detail.ProjectColor = scanNullString(projectColor)
 	detail.TaskName = scanNullString(taskName)
 	detail.ClientName = scanNullString(clientName)
 	detail.Billable = billable == 1

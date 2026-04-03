@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/exp/teatest"
 
 	"github.com/akoskm/hrs/internal/db"
@@ -35,8 +36,8 @@ func TestTimelineRendersAndAssigns(t *testing.T) {
 
 	tm := teatest.NewTestModel(t, model, teatest.WithInitialTermSize(120, 30))
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
-		out := string(b)
-		return strings.Contains(out, "Description") && strings.Contains(out, "-- 2026-04-03 --") && strings.Contains(out, "Refactor the auth module to use OAuth2") && strings.Contains(out, "draft")
+		out := stripANSI(string(b))
+		return strings.Contains(out, "Description") && strings.Contains(out, "2026-04-03") && strings.Contains(out, "Refactor the auth module to use OAuth2") && strings.Contains(out, "draft")
 	}, teatest.WithDuration(5*time.Second))
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
@@ -45,7 +46,7 @@ func TestTimelineRendersAndAssigns(t *testing.T) {
 	}, teatest.WithDuration(5*time.Second))
 	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
-		out := string(b)
+		out := stripANSI(string(b))
 		return strings.Contains(out, "confirmed") && strings.Contains(out, project.Name)
 	}, teatest.WithDuration(5*time.Second))
 	tm.Quit()
@@ -116,7 +117,7 @@ func TestAssignPickerShowsProjectsFromDB(t *testing.T) {
 	if !ok {
 		t.Fatalf("updated model type = %T", updated)
 	}
-	view := app.View()
+	view := stripANSI(app.View())
 	if !strings.Contains(view, "Assign Project") {
 		t.Fatalf("view missing assign picker: %q", view)
 	}
@@ -151,7 +152,7 @@ func TestTimelineTruncatesLongDescriptionToWidth(t *testing.T) {
 	if !ok {
 		t.Fatalf("updated model type = %T", updated)
 	}
-	view := app.View()
+	view := stripANSI(app.View())
 	if !strings.Contains(view, "...") {
 		t.Fatalf("view missing truncation: %q", view)
 	}
@@ -159,8 +160,8 @@ func TestTimelineTruncatesLongDescriptionToWidth(t *testing.T) {
 		t.Fatalf("view missing table header: %q", view)
 	}
 	for _, line := range strings.Split(view, "\n") {
-		if len(line) > 40 {
-			t.Fatalf("line too wide (%d): %q", len(line), line)
+		if lipgloss.Width(line) > 40 {
+			t.Fatalf("line too wide (%d): %q", lipgloss.Width(line), line)
 		}
 	}
 }
@@ -195,7 +196,7 @@ func TestTimelineScrollsToKeepCursorVisible(t *testing.T) {
 		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
 		app = updated.(AppModel)
 	}
-	view := app.View()
+	view := stripANSI(app.View())
 	if strings.Contains(view, "Entry 0") {
 		t.Fatalf("view should have scrolled past first row: %q", view)
 	}
@@ -236,8 +237,8 @@ func TestTimelineHomeEndAndPageKeys(t *testing.T) {
 	if app.cursor != 19 {
 		t.Fatalf("cursor after end = %d, want 19", app.cursor)
 	}
-	if !strings.Contains(app.View(), "Entry 0") {
-		t.Fatalf("view missing oldest entry after end: %q", app.View())
+	if !strings.Contains(stripANSI(app.View()), "Entry 0") {
+		t.Fatalf("view missing oldest entry after end: %q", stripANSI(app.View()))
 	}
 
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgUp})
@@ -251,8 +252,8 @@ func TestTimelineHomeEndAndPageKeys(t *testing.T) {
 	if app.cursor != 0 {
 		t.Fatalf("cursor after home = %d, want 0", app.cursor)
 	}
-	if !strings.Contains(app.View(), "Entry 19") {
-		t.Fatalf("view missing newest entry after home: %q", app.View())
+	if !strings.Contains(stripANSI(app.View()), "Entry 19") {
+		t.Fatalf("view missing newest entry after home: %q", stripANSI(app.View()))
 	}
 
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgDown})
@@ -279,9 +280,9 @@ func TestTimelineGroupsByDateNewestFirst(t *testing.T) {
 	}
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
 	app := updated.(AppModel)
-	view := app.View()
-	newerHeader := strings.Index(view, "-- 2026-04-03 --")
-	olderHeader := strings.Index(view, "-- 2026-04-02 --")
+	view := stripANSI(app.View())
+	newerHeader := strings.Index(view, "── 2026-04-03")
+	olderHeader := strings.Index(view, "── 2026-04-02")
 	newerEntry := strings.Index(view, "Newer")
 	olderEntry := strings.Index(view, "Older")
 	if newerHeader == -1 || olderHeader == -1 || newerEntry == -1 || olderEntry == -1 {
@@ -321,8 +322,9 @@ func TestBulkAssignSelectedEntries(t *testing.T) {
 	app = updated.(AppModel)
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeySpace})
 	app = updated.(AppModel)
-	if !strings.Contains(app.View(), ">*") || !strings.Contains(app.View(), " *") {
-		t.Fatalf("view missing selection markers: %q", app.View())
+	plain := stripANSI(app.View())
+	if !strings.Contains(plain, ">*") || !strings.Contains(plain, " *") {
+		t.Fatalf("view missing selection markers: %q", plain)
 	}
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	app = updated.(AppModel)
@@ -343,6 +345,56 @@ func TestBulkAssignSelectedEntries(t *testing.T) {
 	}
 	if confirmed < 2 {
 		t.Fatalf("confirmed assigned entries = %d, want at least 2", confirmed)
+	}
+}
+
+func TestTimelineGroupJumpKeys(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	_, _ = store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Day1", StartedAt: time.Date(2026, 4, 1, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)})
+	_, _ = store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Day2", StartedAt: time.Date(2026, 4, 2, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC)})
+	_, _ = store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Day3", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)})
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	app := updated.(AppModel)
+	if !strings.Contains(stripANSI(app.View()), "Day3") {
+		t.Fatalf("initial view missing newest group entry: %q", stripANSI(app.View()))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("}")})
+	app = updated.(AppModel)
+	if app.cursor != 1 {
+		t.Fatalf("cursor after first } = %d, want 1", app.cursor)
+	}
+	if !strings.Contains(stripANSI(app.View()), "Day2") {
+		t.Fatalf("view missing next group entry after }: %q", stripANSI(app.View()))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("}")})
+	app = updated.(AppModel)
+	if app.cursor != 2 {
+		t.Fatalf("cursor after second } = %d, want 2", app.cursor)
+	}
+	if !strings.Contains(stripANSI(app.View()), "Day1") {
+		t.Fatalf("view missing next-next group entry after }: %q", stripANSI(app.View()))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("{")})
+	app = updated.(AppModel)
+	if app.cursor != 1 {
+		t.Fatalf("cursor after { = %d, want 1", app.cursor)
+	}
+	if !strings.Contains(stripANSI(app.View()), "Day2") {
+		t.Fatalf("view missing previous group entry after {: %q", stripANSI(app.View()))
 	}
 }
 
