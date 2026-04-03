@@ -112,3 +112,30 @@ func TestProjectUpdateAndArchiveByID(t *testing.T) {
 		t.Fatal("archived_at = nil, want value")
 	}
 }
+
+func TestProjectGetsDefaultColorAndCanUpdateColor(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+
+	project, err := store.CreateProject(ctx, ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Currency: model.CurrencyCHF})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if project.Color == nil || *project.Color == "" {
+		t.Fatal("color = nil, want default color")
+	}
+
+	updated, err := store.UpdateProjectColorByID(ctx, project.ID, "#20c997")
+	if err != nil {
+		t.Fatalf("UpdateProjectColorByID() error = %v", err)
+	}
+	if updated.Color == nil || *updated.Color != "#20c997" {
+		t.Fatalf("color = %v, want #20c997", updated.Color)
+	}
+}

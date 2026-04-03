@@ -22,10 +22,11 @@ type projectDialogMode string
 type timelineViewMode string
 
 const (
-	modeTimeline mode = "timeline"
-	modeAssign   mode = "assign"
-	modeGapEntry mode = "gap-entry"
-	modeSearch   mode = "search"
+	modeTimeline  mode = "timeline"
+	modeAssign    mode = "assign"
+	modeEntryEdit mode = "entry-edit"
+	modeGapEntry  mode = "gap-entry"
+	modeSearch    mode = "search"
 
 	projectDialogAssign projectDialogMode = "assign"
 	projectDialogManage projectDialogMode = "manage"
@@ -36,40 +37,46 @@ const (
 )
 
 type AppModel struct {
-	ctx              context.Context
-	store            *db.Store
-	syncFn           func() error
-	allEntries       []model.TimeEntryDetail
-	entries          []model.TimeEntryDetail
-	projects         []model.Project
-	selected         map[string]bool
-	searchQuery      string
-	lastSearch       string
-	sourceFilter     string
-	width            int
-	height           int
-	offset           int
-	cursor           int
-	projectCursor    int
-	gapProjectCursor int
-	dialogMode       projectDialogMode
-	projectInput     string
-	gapInput         string
-	gapInputField    string
-	dayFocusKind     string
-	dayGapFocus      int
-	dayDate          time.Time
-	syncing          bool
-	syncFrame        int
-	lastSyncedAt     *time.Time
-	syncStatusErr    error
-	timelineView     timelineViewMode
-	mode             mode
-	err              error
-	quitting         bool
+	ctx                context.Context
+	store              *db.Store
+	syncFn             func() error
+	allEntries         []model.TimeEntryDetail
+	entries            []model.TimeEntryDetail
+	projects           []model.Project
+	selected           map[string]bool
+	searchQuery        string
+	lastSearch         string
+	sourceFilter       string
+	width              int
+	height             int
+	offset             int
+	cursor             int
+	projectCursor      int
+	gapProjectCursor   int
+	entryProjectCursor int
+	dialogMode         projectDialogMode
+	projectInput       string
+	gapInput           string
+	gapInputField      string
+	entryInput         string
+	entryInputField    string
+	entryProjectOnly   bool
+	dayFocusKind       string
+	dayGapFocus        int
+	dayDate            time.Time
+	syncing            bool
+	syncFrame          int
+	caretVisible       bool
+	lastSyncedAt       *time.Time
+	syncStatusErr      error
+	timelineView       timelineViewMode
+	mode               mode
+	err                error
+	quitting           bool
 }
 
 type syncPulseMsg struct{}
+type cursorBlinkMsg struct{}
 
 type syncDoneMsg struct {
 	err error
@@ -127,6 +134,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		}
+		if m.mode == modeEntryEdit {
+			return m, m.handleEntryEditKey(msg)
 		}
 		if m.mode == modeGapEntry {
 			return m, m.handleGapEntryKey(msg)
@@ -230,7 +240,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if len(m.entries) > 0 {
-				m.openProjectDialog(projectDialogAssign)
+				m.openEntryEditDialog(false)
 			}
 			return m, nil
 		case "a":
@@ -247,6 +257,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "p":
 			if m.mode == modeTimeline && len(m.selected) > 0 && len(m.projects) > 0 {
+				m.openProjectDialog(projectDialogAssign)
+			} else if m.mode == modeTimeline && len(m.entries) > 0 {
 				m.openProjectDialog(projectDialogAssign)
 			}
 		case "P":
@@ -289,6 +301,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastSyncedAt = &now
 		m.syncStatusErr = nil
 		m.restoreStateAfterReload()
+	case cursorBlinkMsg:
+		if m.mode != modeEntryEdit && m.mode != modeGapEntry {
+			m.caretVisible = false
+			return m, nil
+		}
+		m.caretVisible = !m.caretVisible
+		return m, cursorBlinkCmd()
 	}
 	return m, nil
 }
@@ -354,6 +373,9 @@ func (m AppModel) View() string {
 	}
 	if m.mode == modeGapEntry {
 		return renderGapEntryDialog(m, styles, view)
+	}
+	if m.mode == modeEntryEdit {
+		return renderEntryEditDialog(m, styles, view)
 	}
 	return view
 }
@@ -710,11 +732,29 @@ func (m *AppModel) openProjectDialog(dialogMode projectDialogMode) {
 	m.mode = modeAssign
 	m.dialogMode = dialogMode
 	m.projectInput = ""
-	m.projectCursor = 0
+	m.projectCursor = m.defaultProjectCursor(dialogMode)
 	m.err = nil
 	if dialogMode == projectDialogManage && len(m.projects) > 0 {
 		m.projectCursor = 1
 	}
+}
+
+func (m AppModel) defaultProjectCursor(dialogMode projectDialogMode) int {
+	if dialogMode != projectDialogAssign || len(m.entries) == 0 {
+		return 0
+	}
+	if len(m.selected) > 0 {
+		return 0
+	}
+	entry := m.entries[m.cursor]
+	if entry.ProjectID == nil {
+		return 0
+	}
+	idx := m.projectIndex(*entry.ProjectID)
+	if idx < 0 {
+		return 0
+	}
+	return idx + 1
 }
 
 func (m *AppModel) openGapEntryDialog() {
@@ -726,9 +766,113 @@ func (m *AppModel) openGapEntryDialog() {
 	m.gapInputField = "project"
 	m.gapProjectCursor = 0
 	m.err = nil
+	m.caretVisible = true
 	if len(m.projects) > 0 {
 		m.gapProjectCursor = 1
 	}
+}
+
+func (m *AppModel) openEntryEditDialog(projectOnly bool) {
+	if len(m.entries) == 0 {
+		return
+	}
+	entry := m.entries[m.cursor]
+	m.mode = modeEntryEdit
+	m.entryProjectOnly = projectOnly
+	m.entryInputField = "description"
+	if projectOnly {
+		m.entryInputField = "project"
+	}
+	m.entryInput = ""
+	if entry.Description != nil {
+		m.entryInput = *entry.Description
+	}
+	m.entryProjectCursor = 0
+	if entry.ProjectID != nil {
+		m.entryProjectCursor = m.projectIndex(*entry.ProjectID) + 1
+	}
+	m.err = nil
+	m.caretVisible = true
+}
+
+func (m *AppModel) closeEntryEditDialog() {
+	m.mode = modeTimeline
+	m.entryInput = ""
+	m.entryInputField = ""
+	m.entryProjectCursor = 0
+	m.entryProjectOnly = false
+	m.caretVisible = false
+}
+
+func (m *AppModel) handleEntryEditKey(msg tea.KeyMsg) tea.Cmd {
+	if !m.entryProjectOnly && m.entryInputField == "description" && msg.Type == tea.KeyRunes {
+		m.entryInput += string(msg.Runes)
+		return nil
+	}
+	switch msg.String() {
+	case "ctrl+c", "q":
+		m.quitting = true
+		return tea.Quit
+	case "esc":
+		m.closeEntryEditDialog()
+	case "tab":
+		if !m.entryProjectOnly {
+			if m.entryInputField == "project" {
+				m.entryInputField = "description"
+			} else {
+				m.entryInputField = "project"
+			}
+		}
+	case "up", "k":
+		if m.entryInputField == "project" && m.entryProjectCursor > 0 {
+			m.entryProjectCursor--
+		}
+	case "down", "j":
+		if m.entryInputField == "project" && m.entryProjectCursor < len(m.projects) {
+			m.entryProjectCursor++
+		}
+	case "backspace":
+		if !m.entryProjectOnly && m.entryInputField == "description" && len(m.entryInput) > 0 {
+			m.entryInput = m.entryInput[:len(m.entryInput)-1]
+		}
+	case " ", "space":
+		if !m.entryProjectOnly && m.entryInputField == "description" {
+			m.entryInput += " "
+		}
+	case "delete":
+		if !m.entryProjectOnly && m.entryInputField == "description" {
+			m.entryInput = ""
+		}
+	case "enter":
+		m.saveEntryEdit()
+	}
+	return nil
+}
+
+func (m *AppModel) saveEntryEdit() {
+	if len(m.entries) == 0 {
+		m.closeEntryEditDialog()
+		return
+	}
+	entry := m.entries[m.cursor]
+	var projectID *string
+	if m.entryProjectCursor > 0 && m.entryProjectCursor <= len(m.projects) {
+		projectID = &m.projects[m.entryProjectCursor-1].ID
+	}
+	description := strings.TrimSpace(m.entryInput)
+	if m.entryProjectOnly && entry.Description != nil {
+		description = *entry.Description
+	}
+	if err := m.store.UpdateEntryDescriptionAndProject(m.ctx, entry.ID, description, projectID); err != nil {
+		m.err = err
+		return
+	}
+	if err := m.reloadEntries(); err != nil {
+		m.err = err
+		return
+	}
+	m.focusEntryByID(entry.ID)
+	m.closeEntryEditDialog()
 }
 
 func (m *AppModel) closeGapEntryDialog() {
@@ -736,6 +880,7 @@ func (m *AppModel) closeGapEntryDialog() {
 	m.gapInput = ""
 	m.gapInputField = ""
 	m.gapProjectCursor = 0
+	m.caretVisible = false
 }
 
 func (m *AppModel) handleGapEntryKey(msg tea.KeyMsg) tea.Cmd {
@@ -766,6 +911,14 @@ func (m *AppModel) handleGapEntryKey(msg tea.KeyMsg) tea.Cmd {
 	case "backspace":
 		if m.gapInputField == "description" && len(m.gapInput) > 0 {
 			m.gapInput = m.gapInput[:len(m.gapInput)-1]
+		}
+	case " ", "space":
+		if m.gapInputField == "description" {
+			m.gapInput += " "
+		}
+	case "delete":
+		if m.gapInputField == "description" {
+			m.gapInput = ""
 		}
 	case "enter":
 		m.createGapEntry()
@@ -913,6 +1066,14 @@ func (m *AppModel) handleProjectDialogKey(msg tea.KeyMsg) tea.Cmd {
 		if m.dialogMode == projectDialogManage {
 			m.toggleProjectBillable()
 		}
+	case "c":
+		if m.dialogMode == projectDialogManage {
+			m.cycleProjectColor()
+		}
+	case "C":
+		if m.dialogMode == projectDialogManage {
+			m.randomizeProjectColor()
+		}
 	case "x":
 		if m.dialogMode == projectDialogManage {
 			m.archiveSelectedProject()
@@ -1002,6 +1163,67 @@ func (m *AppModel) archiveSelectedProject() {
 	}
 }
 
+func (m *AppModel) cycleProjectColor() {
+	project := m.selectedProject()
+	if project == nil {
+		return
+	}
+	colors := db.DefaultProjectColors()
+	if len(colors) == 0 {
+		return
+	}
+	current := ""
+	if project.Color != nil {
+		current = strings.ToLower(*project.Color)
+	}
+	next := colors[0]
+	for i, color := range colors {
+		if strings.ToLower(color) == current {
+			next = colors[(i+1)%len(colors)]
+			break
+		}
+	}
+	updated, err := m.store.UpdateProjectColorByID(m.ctx, project.ID, next)
+	if err != nil {
+		m.err = err
+		return
+	}
+	if err := m.reloadProjects(); err != nil {
+		m.err = err
+		return
+	}
+	m.projectCursor = m.projectIndex(updated.ID) + 1
+}
+
+func (m *AppModel) randomizeProjectColor() {
+	project := m.selectedProject()
+	if project == nil {
+		return
+	}
+	colors := db.DefaultProjectColors()
+	if len(colors) == 0 {
+		return
+	}
+	current := ""
+	if project.Color != nil {
+		current = strings.ToLower(*project.Color)
+	}
+	choice := colors[int(time.Now().UnixNano())%len(colors)]
+	if len(colors) > 1 && strings.ToLower(choice) == current {
+		choice = colors[(int(time.Now().UnixNano())+1)%len(colors)]
+	}
+	updated, err := m.store.UpdateProjectColorByID(m.ctx, project.ID, choice)
+	if err != nil {
+		m.err = err
+		return
+	}
+	if err := m.reloadProjects(); err != nil {
+		m.err = err
+		return
+	}
+	m.projectCursor = m.projectIndex(updated.ID) + 1
+}
+
 func (m *AppModel) selectedProject() *model.Project {
 	if m.projectCursor <= 0 || m.projectCursor > len(m.projects) {
 		return nil
@@ -1067,6 +1289,10 @@ func syncPulseCmd(delay time.Duration) tea.Cmd {
 	return tea.Tick(delay, func(time.Time) tea.Msg { return syncPulseMsg{} })
 }
 
+func cursorBlinkCmd() tea.Cmd {
+	return tea.Tick(530*time.Millisecond, func(time.Time) tea.Msg { return cursorBlinkMsg{} })
+}
+
 func runSyncCmd(syncFn func() error) tea.Cmd {
 	return func() tea.Msg {
 		return syncDoneMsg{err: syncFn()}
@@ -1090,7 +1316,7 @@ func (m AppModel) projectIndex(id string) int {
 			return i
 		}
 	}
-	return 0
+	return -1
 }
 
 func sortEntries(entries []model.TimeEntryDetail) []model.TimeEntryDetail {
@@ -1966,8 +2192,36 @@ func renderGapEntryDialog(m AppModel, styles tuiStyles, background string) strin
 		inputStyle = styles.activePicker
 	}
 	content.WriteString("\n" + styles.muted.Render("Description") + "\n")
-	content.WriteString(inputStyle.Render(truncateForWidth("> "+m.gapInput, innerWidth)))
+	content.WriteString(inputStyle.Render(truncateForWidth("> "+textWithCaret(m.gapInput, m.caretVisible, m.gapInputField == "description"), innerWidth)))
 	content.WriteString("\n\n" + styles.muted.Render("tab switch | enter create | esc cancel"))
+
+	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
+	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)
+}
+
+func renderEntryEditDialog(m AppModel, styles tuiStyles, background string) string {
+	dialogWidth := projectDialogWidth(m.width)
+	innerWidth := maxInt(20, dialogWidth-6)
+	entry := m.entries[m.cursor]
+
+	var content strings.Builder
+	content.WriteString(styles.title.Render(entryEditTitle(m)) + "\n")
+	content.WriteString(styles.muted.Render(formatRange(entry.StartedAt, entry.EndedAt)) + "\n\n")
+	if !m.entryProjectOnly {
+		inputStyle := styles.muted
+		if m.entryInputField == "description" {
+			inputStyle = styles.activePicker
+		}
+		content.WriteString(styles.muted.Render("Description") + "\n")
+		content.WriteString(inputStyle.Render(truncateForWidth("> "+textWithCaret(m.entryInput, m.caretVisible, m.entryInputField == "description"), innerWidth)))
+		content.WriteString("\n\n")
+	}
+	content.WriteString(styles.muted.Render("Project") + "\n")
+	content.WriteString(renderPickerLine("Unassign", 0, m.entryProjectCursor, styles, innerWidth) + "\n")
+	for i, project := range m.projects {
+		content.WriteString(renderPickerLine(projectDialogLabel(AppModel{}, project), i+1, m.entryProjectCursor, styles, innerWidth) + "\n")
+	}
+	content.WriteString("\n\n" + styles.muted.Render(entryEditHelp(m)))
 
 	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
 	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)
@@ -1983,7 +2237,7 @@ func projectDialogSummary(m AppModel) string {
 		if project.BillableDefault {
 			state = "billable"
 		}
-		return truncateForWidth(project.Name+" | default "+state, 48)
+		return truncateForWidth(project.Name+" | default "+state+" | "+projectColorLabel(*project), 48)
 	}
 	if m.dialogMode == projectDialogCreate {
 		return "new project name"
@@ -2038,12 +2292,43 @@ func projectDialogEmpty(m AppModel) string {
 func projectDialogHelp(m AppModel) string {
 	switch m.dialogMode {
 	case projectDialogManage:
-		return "a new | b billable | x archive | tab assign | esc close"
+		return "a new | b billable | c next color | C random | x archive | tab assign | esc close"
 	case projectDialogCreate:
 		return "type name | enter create | esc back"
 	default:
 		return "enter assign | tab manage | esc cancel"
 	}
+}
+
+func entryEditTitle(m AppModel) string {
+	if m.entryProjectOnly {
+		return "Change Project"
+	}
+	return "Edit Time Entry"
+}
+
+func entryEditHelp(m AppModel) string {
+	if m.entryProjectOnly {
+		return "up/down project | enter save | esc cancel"
+	}
+	return "tab switch | enter save | esc cancel"
+}
+
+func projectColorLabel(project model.Project) string {
+	if project.Color == nil || *project.Color == "" {
+		return "auto"
+	}
+	return strings.ToLower(*project.Color)
+}
+
+func textWithCaret(text string, visible, active bool) string {
+	if !active {
+		return text
+	}
+	if visible {
+		return text + "_"
+	}
+	return text + " "
 }
 
 func projectDialogWidth(width int) int {
@@ -2066,12 +2351,12 @@ func renderPickerLine(label string, index, current int, styles tuiStyles, width 
 	if index == current {
 		cursor = ">"
 	}
-	line := fmt.Sprintf("%s %s", cursor, label)
+	line := lipgloss.NewStyle().MaxWidth(width).Render(fmt.Sprintf("%s %s", cursor, label))
 	style := styles.projectPicker
 	if index == current {
 		style = styles.activePicker
 	}
-	return style.Render(truncateForWidth(line, timelineWidth(width)))
+	return style.Width(width).MaxWidth(width).Render(line)
 }
 
 func formatRange(start time.Time, end *time.Time) string {

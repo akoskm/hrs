@@ -41,7 +41,7 @@ func TestTimelineRendersAndAssigns(t *testing.T) {
 		return strings.Contains(out, "Refactor the auth module to use OAuth2") && strings.Contains(out, "draft")
 	}, teatest.WithDuration(5*time.Second))
 
-	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
 		return strings.Contains(string(b), "Assign Project")
 	}, teatest.WithDuration(5*time.Second))
@@ -114,7 +114,7 @@ func TestAssignPickerShowsProjectsFromDB(t *testing.T) {
 		t.Fatalf("NewAppModel() error = %v", err)
 	}
 
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	app, ok := updated.(AppModel)
 	if !ok {
 		t.Fatalf("updated model type = %T", updated)
@@ -149,7 +149,7 @@ func TestAssignDialogStaysWithinScreenHeight(t *testing.T) {
 	}
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
 	app := updated.(AppModel)
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	app = updated.(AppModel)
 
 	lines := strings.Split(strings.TrimRight(stripANSI(app.View()), "\n"), "\n")
@@ -158,6 +158,34 @@ func TestAssignDialogStaysWithinScreenHeight(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(lines, "\n"), "Assign Project") {
 		t.Fatalf("view missing dialog title: %q", strings.Join(lines, "\n"))
+	}
+}
+
+func TestAssignDialogDefaultsToCurrentProject(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	project, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Currency: "CHF"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	entry, err := store.CreateImportedEntry(ctx, db.EntryImport{ProjectID: &project.ID, Description: "Auth", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC), Operator: "opencode", SourceRef: "sess-1", Cwd: "/Users/akoskm/Projects/hrs", Metadata: map[string]any{}})
+	if err != nil {
+		t.Fatalf("CreateImportedEntry() error = %v", err)
+	}
+	if err := store.AssignEntryToProject(ctx, entry.ID, project.ID); err != nil {
+		t.Fatalf("AssignEntryToProject() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	app := updated.(AppModel)
+	if app.mode != modeAssign || app.projectCursor != 1 {
+		t.Fatalf("mode/cursor = %q/%d, want assign/1", app.mode, app.projectCursor)
 	}
 }
 
@@ -243,6 +271,167 @@ func TestManageProjectsToggleCreateAndArchive(t *testing.T) {
 	}
 	if !strings.Contains(stripANSI(app.View()), "Manage Projects") {
 		t.Fatalf("view missing manage dialog: %q", stripANSI(app.View()))
+	}
+}
+
+func TestManageProjectsCyclesColor(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	project, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Currency: "CHF"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	app = updated.(AppModel)
+	updatedProject, err := store.ProjectByID(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("ProjectByID() error = %v", err)
+	}
+	if updatedProject.Color == nil || project.Color == nil || *updatedProject.Color == *project.Color {
+		t.Fatalf("color did not change: before=%v after=%v", project.Color, updatedProject.Color)
+	}
+}
+
+func TestManageProjectsRandomizesColor(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	project, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Currency: "CHF"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("C")})
+	app = updated.(AppModel)
+	updatedProject, err := store.ProjectByID(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("ProjectByID() error = %v", err)
+	}
+	if updatedProject.Color == nil || project.Color == nil || *updatedProject.Color == *project.Color {
+		t.Fatalf("color did not change: before=%v after=%v", project.Color, updatedProject.Color)
+	}
+	if !strings.Contains(stripANSI(app.View()), "C random") {
+		t.Fatalf("manage dialog missing random color help: %q", stripANSI(app.View()))
+	}
+}
+
+func TestEnterOpensEntryEditDialogAndSavesDescriptionAndProject(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Delta", Code: "delta", Currency: "EUR"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	entry, err := store.CreateImportedEntry(ctx, db.EntryImport{Description: "Auth", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC), Operator: "opencode", SourceRef: "sess-edit", Cwd: "/Users/akoskm/Projects/hrs", Metadata: map[string]any{}})
+	if err != nil {
+		t.Fatalf("CreateImportedEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app := updated.(AppModel)
+	if app.mode != modeEntryEdit {
+		t.Fatalf("mode = %q, want entry-edit", app.mode)
+	}
+	view := stripANSI(app.View())
+	if strings.Index(view, "Description") > strings.Index(view, "Project") {
+		t.Fatalf("description should render before project: %q", view)
+	}
+	if app.entryInputField != "description" {
+		t.Fatalf("entryInputField = %q, want description", app.entryInputField)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	app = updated.(AppModel)
+	for _, r := range []rune("Updated") {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = updated.(AppModel)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.mode != modeTimeline {
+		t.Fatalf("mode after save = %q, want timeline", app.mode)
+	}
+	updatedEntry, err := store.EntryByID(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("EntryByID() error = %v", err)
+	}
+	if updatedEntry.Description == nil || *updatedEntry.Description != "Auth Updated" {
+		t.Fatalf("description = %v, want Auth Updated", updatedEntry.Description)
+	}
+	if updatedEntry.ProjectID == nil {
+		t.Fatal("project_id = nil, want assigned")
+	}
+}
+
+func TestDeleteClearsFocusedEntryDescription(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	entry, err := store.CreateImportedEntry(ctx, db.EntryImport{Description: "Auth", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC), Operator: "opencode", SourceRef: "sess-del", Cwd: "/Users/akoskm/Projects/hrs", Metadata: map[string]any{}})
+	if err != nil {
+		t.Fatalf("CreateImportedEntry() error = %v", err)
+	}
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDelete})
+	app = updated.(AppModel)
+	if app.entryInput != "" {
+		t.Fatalf("entryInput = %q, want empty", app.entryInput)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	updatedEntry, err := store.EntryByID(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("EntryByID() error = %v", err)
+	}
+	if updatedEntry.Description == nil || *updatedEntry.Description != "" {
+		t.Fatalf("description = %v, want empty", updatedEntry.Description)
+	}
+}
+
+func TestPickerHighlightsFullRow(t *testing.T) {
+	line := renderPickerLine("Test Project", 1, 1, newStyles(80), 20)
+	if !strings.Contains(line, "Test Project") {
+		t.Fatalf("line missing label: %q", line)
+	}
+	if lipgloss.Width(stripANSI(line)) != 20 {
+		t.Fatalf("line width = %d, want 20", lipgloss.Width(stripANSI(line)))
+	}
+}
+
+func TestTextWithCaret(t *testing.T) {
+	if got := textWithCaret("Auth", true, true); got != "Auth_" {
+		t.Fatalf("textWithCaret() = %q, want Auth_", got)
 	}
 }
 
@@ -834,11 +1023,13 @@ func TestSingleUnassignEntry(t *testing.T) {
 	}
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 20})
 	app := updated.(AppModel)
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	app = updated.(AppModel)
 	if !strings.Contains(stripANSI(app.View()), "Unassign") {
 		t.Fatalf("assign picker missing unassign option: %q", stripANSI(app.View()))
 	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyHome})
+	app = updated.(AppModel)
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	app = updated.(AppModel)
 	refreshed, err := store.ListEntries(ctx)

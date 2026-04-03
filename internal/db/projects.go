@@ -20,6 +20,7 @@ type ProjectCreateInput struct {
 	Code       string
 	HourlyRate int
 	Currency   model.Currency
+	Color      string
 }
 
 type ProjectListItem struct {
@@ -41,6 +42,25 @@ func (s *Store) UpdateProjectBillableDefaultByID(ctx context.Context, id string,
 		SET billable_default = ?, updated_at = ?
 		WHERE id = ?
 	`, boolToInt(billable), nowUTC().Format(timeFormat), id)
+	if err != nil {
+		return model.Project{}, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return model.Project{}, err
+	}
+	if rows == 0 {
+		return model.Project{}, ErrProjectNotFound
+	}
+	return s.ProjectByID(ctx, id)
+}
+
+func (s *Store) UpdateProjectColorByID(ctx context.Context, id, color string) (model.Project, error) {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE projects
+		SET color = ?, updated_at = ?
+		WHERE id = ?
+	`, color, nowUTC().Format(timeFormat), id)
 	if err != nil {
 		return model.Project{}, err
 	}
@@ -94,14 +114,18 @@ func (s *Store) CreateProject(ctx context.Context, input ProjectCreateInput) (mo
 	if input.Code != "" {
 		code = input.Code
 	}
+	color := strings.TrimSpace(input.Color)
+	if color == "" {
+		color = defaultProjectColor(id)
+	}
 	currency := input.Currency
 	if currency == "" {
 		currency = model.CurrencyEUR
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO projects (id, client_id, name, code, hourly_rate, currency, billable_default, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
-	`, id, clientID, input.Name, code, input.HourlyRate, currency, now.Format(timeFormat), now.Format(timeFormat))
+		INSERT INTO projects (id, client_id, name, code, hourly_rate, currency, billable_default, color, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+	`, id, clientID, input.Name, code, input.HourlyRate, currency, color, now.Format(timeFormat), now.Format(timeFormat))
 	if err != nil {
 		return model.Project{}, err
 	}
@@ -119,10 +143,11 @@ func (s *Store) EnsureProject(ctx context.Context, name, code string) (model.Pro
 
 	now := nowUTC()
 	id := ulid.Make().String()
+	color := defaultProjectColor(id)
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO projects (id, name, code, hourly_rate, currency, billable_default, created_at, updated_at)
-		VALUES (?, ?, ?, 0, 'EUR', 1, ?, ?)
-	`, id, name, code, now.Format(timeFormat), now.Format(timeFormat))
+		INSERT INTO projects (id, name, code, hourly_rate, currency, billable_default, color, created_at, updated_at)
+		VALUES (?, ?, ?, 0, 'EUR', 1, ?, ?, ?)
+	`, id, name, code, color, now.Format(timeFormat), now.Format(timeFormat))
 	if err != nil {
 		return model.Project{}, err
 	}
@@ -226,6 +251,21 @@ const timeFormat = time.RFC3339Nano
 
 var nonSlugChars = regexp.MustCompile(`[^a-z0-9]+`)
 
+var defaultProjectColors = []string{
+	"#ff6b6b",
+	"#f59f00",
+	"#ffd43b",
+	"#51cf66",
+	"#20c997",
+	"#22b8cf",
+	"#4dabf7",
+	"#748ffc",
+	"#9775fa",
+	"#e599f7",
+	"#f06595",
+	"#ff8787",
+}
+
 func slugProjectCode(name string) string {
 	slug := strings.ToLower(strings.TrimSpace(name))
 	slug = nonSlugChars.ReplaceAllString(slug, "-")
@@ -234,6 +274,23 @@ func slugProjectCode(name string) string {
 		return "project"
 	}
 	return slug
+}
+
+func defaultProjectColor(seed string) string {
+	if len(defaultProjectColors) == 0 {
+		return "#748ffc"
+	}
+	sum := 0
+	for i := 0; i < len(seed); i++ {
+		sum += int(seed[i])
+	}
+	return defaultProjectColors[sum%len(defaultProjectColors)]
+}
+
+func DefaultProjectColors() []string {
+	colors := make([]string, len(defaultProjectColors))
+	copy(colors, defaultProjectColors)
+	return colors
 }
 
 func scanProject(row projectScanner) (model.Project, error) {
