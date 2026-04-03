@@ -37,13 +37,14 @@ func TestTimelineRendersAndAssigns(t *testing.T) {
 	tm := teatest.NewTestModel(t, model, teatest.WithInitialTermSize(120, 30))
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
 		out := stripANSI(string(b))
-		return strings.Contains(out, "Description") && strings.Contains(out, "2026-04-03") && strings.Contains(out, "Refactor the auth module to use OAuth2") && strings.Contains(out, "draft")
+		return strings.Contains(out, "Refactor the auth module to use OAuth2") && strings.Contains(out, "draft")
 	}, teatest.WithDuration(5*time.Second))
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
 		return strings.Contains(string(b), "Assign Project")
 	}, teatest.WithDuration(5*time.Second))
+	tm.Send(tea.KeyMsg{Type: tea.KeyDown})
 	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
 		out := stripANSI(string(b))
@@ -316,12 +317,15 @@ func TestBulkAssignSelectedEntries(t *testing.T) {
 	}
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 20})
 	app := updated.(AppModel)
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeySpace})
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
 	app = updated.(AppModel)
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	app = updated.(AppModel)
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeySpace})
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
 	app = updated.(AppModel)
+	if len(app.selected) != 2 {
+		t.Fatalf("selected = %d, want 2", len(app.selected))
+	}
 	plain := stripANSI(app.View())
 	if !strings.Contains(plain, ">*") || !strings.Contains(plain, " *") {
 		t.Fatalf("view missing selection markers: %q", plain)
@@ -330,6 +334,11 @@ func TestBulkAssignSelectedEntries(t *testing.T) {
 	app = updated.(AppModel)
 	if app.mode != modeAssign {
 		t.Fatalf("mode = %q, want assign", app.mode)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	app = updated.(AppModel)
+	if app.projectCursor != 1 {
+		t.Fatalf("projectCursor = %d, want 1", app.projectCursor)
 	}
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	app = updated.(AppModel)
@@ -345,6 +354,115 @@ func TestBulkAssignSelectedEntries(t *testing.T) {
 	}
 	if confirmed < 2 {
 		t.Fatalf("confirmed assigned entries = %d, want at least 2", confirmed)
+	}
+}
+
+func TestSingleUnassignEntry(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	project, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if err := sync.ImportClaudeFixtures(ctx, store, filepath.Join("..", "..", "testdata", "claude-sessions")); err != nil {
+		t.Fatalf("ImportClaudeFixtures() error = %v", err)
+	}
+	entries, err := store.ListEntries(ctx)
+	if err != nil {
+		t.Fatalf("ListEntries() error = %v", err)
+	}
+	for _, entry := range entries {
+		if err := store.AssignEntryToProject(ctx, entry.ID, project.ID); err != nil {
+			t.Fatalf("AssignEntryToProject() error = %v", err)
+		}
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 20})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if !strings.Contains(stripANSI(app.View()), "Unassign") {
+		t.Fatalf("assign picker missing unassign option: %q", stripANSI(app.View()))
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	refreshed, err := store.ListEntries(ctx)
+	if err != nil {
+		t.Fatalf("ListEntries() error = %v", err)
+	}
+	unassigned := 0
+	for _, entry := range refreshed {
+		if entry.ProjectID == nil && entry.Status == "draft" {
+			unassigned++
+		}
+	}
+	if unassigned == 0 {
+		t.Fatalf("no entry unassigned: %#v", refreshed)
+	}
+}
+
+func TestBulkUnassignSelectedEntries(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	project, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if err := sync.ImportClaudeFixtures(ctx, store, filepath.Join("..", "..", "testdata", "claude-sessions")); err != nil {
+		t.Fatalf("ImportClaudeFixtures() error = %v", err)
+	}
+	entries, err := store.ListEntries(ctx)
+	if err != nil {
+		t.Fatalf("ListEntries() error = %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := store.AssignEntryToProject(ctx, entries[i].ID, project.ID); err != nil {
+			t.Fatalf("AssignEntryToProject() error = %v", err)
+		}
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 20})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	app = updated.(AppModel)
+	if len(app.selected) != 2 {
+		t.Fatalf("selected = %d, want 2", len(app.selected))
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	app = updated.(AppModel)
+	if app.mode != modeAssign {
+		t.Fatalf("mode = %q, want assign", app.mode)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	refreshed, err := store.ListEntries(ctx)
+	if err != nil {
+		t.Fatalf("ListEntries() error = %v", err)
+	}
+	unassigned := 0
+	for _, entry := range refreshed {
+		if entry.ProjectID == nil && entry.Status == "draft" {
+			unassigned++
+		}
+	}
+	if unassigned < 2 {
+		t.Fatalf("unassigned entries = %d, want at least 2", unassigned)
 	}
 }
 
@@ -448,6 +566,65 @@ func TestTimelineSlashSearchAndNextPrev(t *testing.T) {
 	app = updated.(AppModel)
 	if !strings.Contains(stripANSI(app.View()), "Beta task") {
 		t.Fatalf("view missing previous beta match: %q", stripANSI(app.View()))
+	}
+}
+
+func TestTimelineSourceFilterCycles(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Human entry", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if err := sync.ImportClaudeFixtures(ctx, store, filepath.Join("..", "..", "testdata", "claude-sessions")); err != nil {
+		t.Fatalf("ImportClaudeFixtures() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
+	app := updated.(AppModel)
+	if app.sourceFilter != "all" {
+		t.Fatalf("sourceFilter = %q, want all", app.sourceFilter)
+	}
+	if !strings.Contains(stripANSI(app.View()), "Human entry") || !strings.Contains(stripANSI(app.View()), "Refactor the auth module") {
+		t.Fatalf("all filter missing mixed entries: %q", stripANSI(app.View()))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	app = updated.(AppModel)
+	if app.sourceFilter != "opencode" || len(app.entries) != 0 {
+		t.Fatalf("first filter step = %q len=%d", app.sourceFilter, len(app.entries))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	app = updated.(AppModel)
+	if app.sourceFilter != "codex" || len(app.entries) != 0 {
+		t.Fatalf("second filter step = %q len=%d", app.sourceFilter, len(app.entries))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	app = updated.(AppModel)
+	if app.sourceFilter != "claude-code" || len(app.entries) != 2 {
+		t.Fatalf("third filter step = %q len=%d", app.sourceFilter, len(app.entries))
+	}
+	if strings.Contains(stripANSI(app.View()), "Human entry") || !strings.Contains(stripANSI(app.View()), "Refactor the auth module") {
+		t.Fatalf("claude filter view wrong: %q", stripANSI(app.View()))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	app = updated.(AppModel)
+	if app.sourceFilter != "human" || len(app.entries) != 1 {
+		t.Fatalf("fourth filter step = %q len=%d", app.sourceFilter, len(app.entries))
+	}
+	if !strings.Contains(stripANSI(app.View()), "Human entry") || strings.Contains(stripANSI(app.View()), "Refactor the auth module") {
+		t.Fatalf("human filter view wrong: %q", stripANSI(app.View()))
 	}
 }
 

@@ -26,11 +26,13 @@ const (
 type AppModel struct {
 	ctx           context.Context
 	store         *db.Store
+	allEntries    []model.TimeEntryDetail
 	entries       []model.TimeEntryDetail
 	projects      []model.Project
 	selected      map[string]bool
 	searchQuery   string
 	lastSearch    string
+	sourceFilter  string
 	width         int
 	height        int
 	offset        int
@@ -56,7 +58,10 @@ func NewAppModel(ctx context.Context, store *db.Store) (AppModel, error) {
 	if err != nil {
 		return AppModel{}, err
 	}
-	return AppModel{ctx: ctx, store: store, entries: sortEntries(entries), projects: projects, selected: map[string]bool{}, mode: modeTimeline}, nil
+	sorted := sortEntries(entries)
+	model := AppModel{ctx: ctx, store: store, allEntries: sorted, projects: projects, selected: map[string]bool{}, mode: modeTimeline, sourceFilter: "all"}
+	model.applySourceFilter()
+	return model, nil
 }
 
 func (m AppModel) Init() tea.Cmd { return nil }
@@ -94,6 +99,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "/":
 			m.mode = modeSearch
 			m.searchQuery = ""
+		case "tab", "f":
+			if m.mode == modeTimeline {
+				m.cycleSourceFilter(1)
+			}
+		case "shift+tab", "F":
+			if m.mode == modeTimeline {
+				m.cycleSourceFilter(-1)
+			}
 		case "up", "k":
 			if m.mode == modeAssign {
 				if m.projectCursor > 0 {
@@ -112,9 +125,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "end":
 			if m.mode == modeAssign {
-				if len(m.projects) > 0 {
-					m.projectCursor = len(m.projects) - 1
-				}
+				m.projectCursor = len(m.projects)
 			} else {
 				if len(m.entries) > 0 {
 					m.cursor = len(m.entries) - 1
@@ -124,7 +135,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "pgdown", "ctrl+f":
 			if m.mode == modeAssign {
 				step := maxInt(1, m.timelineRows())
-				m.projectCursor = minInt(len(m.projects)-1, m.projectCursor+step)
+				m.projectCursor = minInt(len(m.projects), m.projectCursor+step)
 			} else if len(m.entries) > 0 {
 				step := maxInt(1, m.timelineRows())
 				m.cursor = minInt(len(m.entries)-1, m.cursor+step)
@@ -151,7 +162,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "down", "j":
 			if m.mode == modeAssign {
-				if m.projectCursor < len(m.projects)-1 {
+				if m.projectCursor < len(m.projects) {
 					m.projectCursor++
 				}
 			} else if m.cursor < len(m.entries)-1 {
@@ -160,19 +171,25 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "enter":
 			if m.mode == modeTimeline {
-				if len(m.entries) > 0 && len(m.projects) > 0 {
+				if len(m.entries) > 0 {
 					m.mode = modeAssign
 				}
 				return m, nil
 			}
-			if len(m.entries) == 0 || len(m.projects) == 0 {
+			if len(m.entries) == 0 {
 				m.mode = modeTimeline
 				return m, nil
 			}
 			entry := m.entries[m.cursor]
-			project := m.projects[m.projectCursor]
 			targetIDs := m.assignmentTargets(entry.ID)
-			if err := m.assignEntries(targetIDs, project.ID); err != nil {
+			var err error
+			if m.projectCursor == 0 {
+				err = m.unassignEntries(targetIDs)
+			} else {
+				project := m.projects[m.projectCursor-1]
+				err = m.assignEntries(targetIDs, project.ID)
+			}
+			if err != nil {
 				m.err = err
 				m.mode = modeTimeline
 				return m, nil
@@ -183,7 +200,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = modeTimeline
 				return m, nil
 			}
-			m.entries = sortEntries(entries)
+			m.allEntries = sortEntries(entries)
+			m.applySourceFilter()
 			m.selected = map[string]bool{}
 			m.mode = modeTimeline
 		case "esc":
@@ -267,24 +285,16 @@ func (m AppModel) View() string {
 	if m.mode == modeAssign {
 		var assign strings.Builder
 		assign.WriteString(styles.title.Render("Assign Project") + "\n")
+		assign.WriteString(renderPickerLine("Unassign", 0, m.projectCursor, styles, m.width) + "\n")
 		if len(m.projects) == 0 {
 			assign.WriteString(styles.muted.Render("no projects") + "\n")
 		} else {
 			for i, project := range m.projects {
-				cursor := " "
-				if i == m.projectCursor {
-					cursor = ">"
-				}
 				code := ""
 				if project.Code != nil && *project.Code != "" {
 					code = " (" + *project.Code + ")"
 				}
-				line := fmt.Sprintf("%s %s%s", cursor, project.Name, code)
-				style := styles.projectPicker
-				if i == m.projectCursor {
-					style = styles.activePicker
-				}
-				assign.WriteString(style.Render(truncateForWidth(line, timelineWidth(m.width))) + "\n")
+				assign.WriteString(renderPickerLine(project.Name+code, i+1, m.projectCursor, styles, m.width) + "\n")
 			}
 		}
 		sections = append(sections, assign.String())
@@ -449,6 +459,15 @@ func (m AppModel) assignEntries(entryIDs []string, projectID string) error {
 	return nil
 }
 
+func (m AppModel) unassignEntries(entryIDs []string) error {
+	for _, entryID := range entryIDs {
+		if err := m.store.UnassignEntryProject(m.ctx, entryID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func sortEntries(entries []model.TimeEntryDetail) []model.TimeEntryDetail {
 	sorted := append([]model.TimeEntryDetail(nil), entries...)
 	sort.SliceStable(sorted, func(i, j int) bool {
@@ -588,7 +607,7 @@ func renderStatusBar(m AppModel, width int) string {
 	if m.lastSearch != "" {
 		searchHint = " | / search n/N next"
 	}
-	text := fmt.Sprintf("entries %d | drafts %d | pos %s | up/down home/end pgup/pgdn space p enter q%s", len(m.entries), drafts, position, searchHint)
+	text := fmt.Sprintf("entries %d | drafts %d | pos %s | src %s | f/tab filter | up/down home/end pgup/pgdn space p enter q%s", len(m.entries), drafts, position, m.sourceFilter, searchHint)
 	return truncateForWidth(text, width)
 }
 
@@ -632,6 +651,69 @@ func entryMatchesSearch(entry model.TimeEntryDetail, query string) bool {
 	return strings.Contains(haystack, query)
 }
 
+func (m *AppModel) applySourceFilter() {
+	if m.sourceFilter == "" {
+		m.sourceFilter = "all"
+	}
+	if m.sourceFilter == "all" {
+		m.entries = append([]model.TimeEntryDetail(nil), m.allEntries...)
+	} else {
+		filtered := make([]model.TimeEntryDetail, 0, len(m.allEntries))
+		for _, entry := range m.allEntries {
+			if entry.Operator == m.sourceFilter {
+				filtered = append(filtered, entry)
+			}
+		}
+		m.entries = filtered
+	}
+	if len(m.entries) == 0 {
+		m.cursor = 0
+		m.offset = 0
+		m.selected = map[string]bool{}
+		return
+	}
+	if m.cursor >= len(m.entries) {
+		m.cursor = len(m.entries) - 1
+	}
+	m.pruneSelection()
+	m.ensureVisible()
+}
+
+func (m *AppModel) cycleSourceFilter(direction int) {
+	filters := []string{"all", "opencode", "codex", "claude-code", "human"}
+	idx := 0
+	for i, filter := range filters {
+		if filter == m.sourceFilter {
+			idx = i
+			break
+		}
+	}
+	idx += direction
+	if idx < 0 {
+		idx = len(filters) - 1
+	}
+	if idx >= len(filters) {
+		idx = 0
+	}
+	m.sourceFilter = filters[idx]
+	m.applySourceFilter()
+}
+
+func (m *AppModel) pruneSelection() {
+	if len(m.selected) == 0 {
+		return
+	}
+	visibleIDs := map[string]bool{}
+	for _, entry := range m.entries {
+		visibleIDs[entry.ID] = true
+	}
+	for id := range m.selected {
+		if !visibleIDs[id] {
+			delete(m.selected, id)
+		}
+	}
+}
+
 func stripANSI(text string) string {
 	var b strings.Builder
 	inEsc := false
@@ -650,6 +732,19 @@ func stripANSI(text string) string {
 		b.WriteByte(c)
 	}
 	return b.String()
+}
+
+func renderPickerLine(label string, index, current int, styles tuiStyles, width int) string {
+	cursor := " "
+	if index == current {
+		cursor = ">"
+	}
+	line := fmt.Sprintf("%s %s", cursor, label)
+	style := styles.projectPicker
+	if index == current {
+		style = styles.activePicker
+	}
+	return style.Render(truncateForWidth(line, timelineWidth(width)))
 }
 
 func formatRange(start time.Time, end *time.Time) string {

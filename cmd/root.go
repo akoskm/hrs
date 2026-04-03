@@ -35,7 +35,7 @@ var rootCmd = &cobra.Command{
 			return err
 		}
 
-		_, err = tea.NewProgram(model).Run()
+		_, err = tea.NewProgram(model, tea.WithAltScreen()).Run()
 		return err
 	},
 }

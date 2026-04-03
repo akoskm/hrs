@@ -173,6 +173,15 @@ func (s *Store) AssignEntryToProject(ctx context.Context, entryID, projectID str
 	return err
 }
 
+func (s *Store) UnassignEntryProject(ctx context.Context, entryID string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE time_entries
+		SET project_id = NULL, status = ?, updated_at = ?
+		WHERE id = ?
+	`, model.StatusDraft, nowUTC().Format(timeFormat), entryID)
+	return err
+}
+
 func (s *Store) HasOverlappingImportedEntry(ctx context.Context, cwd string, startedAt, endedAt time.Time, description string) (bool, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT description, started_at, ended_at
