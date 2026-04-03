@@ -160,6 +160,91 @@ func TestAssignDialogStaysWithinScreenHeight(t *testing.T) {
 	}
 }
 
+func TestManageProjectsToggleCreateAndArchive(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	project, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "elaiia",
+		Description:  "Admin",
+		StartedAt:    time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
+	app = updated.(AppModel)
+	if app.mode != modeAssign || app.dialogMode != projectDialogManage {
+		t.Fatalf("dialog state = %q/%q, want assign/manage", app.mode, app.dialogMode)
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	app = updated.(AppModel)
+	updatedProject, err := store.ProjectByID(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("ProjectByID() error = %v", err)
+	}
+	if updatedProject.BillableDefault {
+		t.Fatal("billable_default = true, want false")
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	app = updated.(AppModel)
+	if app.dialogMode != projectDialogCreate {
+		t.Fatalf("dialogMode = %q, want create", app.dialogMode)
+	}
+	for _, r := range []rune("Delta Labs") {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = updated.(AppModel)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.dialogMode != projectDialogManage {
+		t.Fatalf("dialogMode after create = %q, want manage", app.dialogMode)
+	}
+	projects, err := store.ListProjects(ctx)
+	if err != nil {
+		t.Fatalf("ListProjects() error = %v", err)
+	}
+	if len(projects) != 2 {
+		t.Fatalf("len(projects) = %d, want 2", len(projects))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	app = updated.(AppModel)
+	projects, err = store.ListProjects(ctx)
+	if err != nil {
+		t.Fatalf("ListProjects() error = %v", err)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("len(projects) after archive = %d, want 1", len(projects))
+	}
+	archived, err := store.ProjectByID(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("ProjectByID() error = %v", err)
+	}
+	if archived.ArchivedAt == nil {
+		t.Fatal("archived_at = nil, want value")
+	}
+	if !strings.Contains(stripANSI(app.View()), "Manage Projects") {
+		t.Fatalf("view missing manage dialog: %q", stripANSI(app.View()))
+	}
+}
+
 func TestTimelineTruncatesLongDescriptionToWidth(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -621,10 +706,13 @@ func TestTimelineSourceFilterCycles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAppModel() error = %v", err)
 	}
-	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 160, Height: 20})
 	app := updated.(AppModel)
 	if app.sourceFilter != "all" {
 		t.Fatalf("sourceFilter = %q, want all", app.sourceFilter)
+	}
+	if !strings.Contains(stripANSI(app.View()), "P projects") {
+		t.Fatalf("status bar missing project manage hint: %q", stripANSI(app.View()))
 	}
 	if !strings.Contains(stripANSI(app.View()), "Human entry") || !strings.Contains(stripANSI(app.View()), "Refactor the auth module") {
 		t.Fatalf("all filter missing mixed entries: %q", stripANSI(app.View()))

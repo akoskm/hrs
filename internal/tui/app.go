@@ -17,10 +17,16 @@ import (
 
 type mode string
 
+type projectDialogMode string
+
 const (
 	modeTimeline mode = "timeline"
 	modeAssign   mode = "assign"
 	modeSearch   mode = "search"
+
+	projectDialogAssign projectDialogMode = "assign"
+	projectDialogManage projectDialogMode = "manage"
+	projectDialogCreate projectDialogMode = "create"
 )
 
 type AppModel struct {
@@ -38,6 +44,8 @@ type AppModel struct {
 	offset        int
 	cursor        int
 	projectCursor int
+	dialogMode    projectDialogMode
+	projectInput  string
 	mode          mode
 	err           error
 	quitting      bool
@@ -59,7 +67,7 @@ func NewAppModel(ctx context.Context, store *db.Store) (AppModel, error) {
 		return AppModel{}, err
 	}
 	sorted := sortEntries(entries)
-	model := AppModel{ctx: ctx, store: store, allEntries: sorted, projects: projects, selected: map[string]bool{}, mode: modeTimeline, sourceFilter: "all"}
+	model := AppModel{ctx: ctx, store: store, allEntries: sorted, projects: projects, selected: map[string]bool{}, mode: modeTimeline, dialogMode: projectDialogAssign, sourceFilter: "all"}
 	model.applySourceFilter()
 	return model, nil
 }
@@ -92,6 +100,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.mode == modeAssign {
+			return m, m.handleProjectDialogKey(msg)
+		}
 		switch msg.String() {
 		case "ctrl+c", "q":
 			m.quitting = true
@@ -108,44 +119,26 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cycleSourceFilter(-1)
 			}
 		case "up", "k":
-			if m.mode == modeAssign {
-				if m.projectCursor > 0 {
-					m.projectCursor--
-				}
-			} else if m.cursor > 0 {
+			if m.cursor > 0 {
 				m.cursor--
 				m.ensureVisible()
 			}
 		case "home":
-			if m.mode == modeAssign {
-				m.projectCursor = 0
-			} else {
-				m.cursor = 0
+			m.cursor = 0
+			m.ensureVisible()
+		case "end":
+			if len(m.entries) > 0 {
+				m.cursor = len(m.entries) - 1
 				m.ensureVisible()
 			}
-		case "end":
-			if m.mode == modeAssign {
-				m.projectCursor = len(m.projects)
-			} else {
-				if len(m.entries) > 0 {
-					m.cursor = len(m.entries) - 1
-					m.ensureVisible()
-				}
-			}
 		case "pgdown", "ctrl+f":
-			if m.mode == modeAssign {
-				step := maxInt(1, m.timelineRows())
-				m.projectCursor = minInt(len(m.projects), m.projectCursor+step)
-			} else if len(m.entries) > 0 {
+			if len(m.entries) > 0 {
 				step := maxInt(1, m.timelineRows())
 				m.cursor = minInt(len(m.entries)-1, m.cursor+step)
 				m.ensureVisible()
 			}
 		case "pgup", "ctrl+b":
-			if m.mode == modeAssign {
-				step := maxInt(1, m.timelineRows())
-				m.projectCursor = maxInt(0, m.projectCursor-step)
-			} else if len(m.entries) > 0 {
+			if len(m.entries) > 0 {
 				step := maxInt(1, m.timelineRows())
 				m.cursor = maxInt(0, m.cursor-step)
 				m.ensureVisible()
@@ -170,42 +163,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ensureVisible()
 			}
 		case "enter":
-			if m.mode == modeTimeline {
-				if len(m.entries) > 0 {
-					m.mode = modeAssign
-				}
-				return m, nil
+			if len(m.entries) > 0 {
+				m.openProjectDialog(projectDialogAssign)
 			}
-			if len(m.entries) == 0 {
-				m.mode = modeTimeline
-				return m, nil
-			}
-			entry := m.entries[m.cursor]
-			targetIDs := m.assignmentTargets(entry.ID)
-			var err error
-			if m.projectCursor == 0 {
-				err = m.unassignEntries(targetIDs)
-			} else {
-				project := m.projects[m.projectCursor-1]
-				err = m.assignEntries(targetIDs, project.ID)
-			}
-			if err != nil {
-				m.err = err
-				m.mode = modeTimeline
-				return m, nil
-			}
-			entries, err := m.store.ListEntries(m.ctx)
-			if err != nil {
-				m.err = err
-				m.mode = modeTimeline
-				return m, nil
-			}
-			m.allEntries = sortEntries(entries)
-			m.applySourceFilter()
-			m.selected = map[string]bool{}
-			m.mode = modeTimeline
-		case "esc":
-			m.mode = modeTimeline
+			return m, nil
 		case " ", "space":
 			if m.mode == modeTimeline && len(m.entries) > 0 {
 				entry := m.entries[m.cursor]
@@ -216,7 +177,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "p":
 			if m.mode == modeTimeline && len(m.selected) > 0 && len(m.projects) > 0 {
-				m.mode = modeAssign
+				m.openProjectDialog(projectDialogAssign)
+			}
+		case "P":
+			if len(m.entries) > 0 || len(m.projects) > 0 {
+				m.openProjectDialog(projectDialogManage)
 			}
 		case "n":
 			if m.mode == modeTimeline && m.lastSearch != "" {
@@ -455,6 +420,240 @@ func (m AppModel) unassignEntries(entryIDs []string) error {
 	return nil
 }
 
+func (m *AppModel) openProjectDialog(dialogMode projectDialogMode) {
+	m.mode = modeAssign
+	m.dialogMode = dialogMode
+	m.projectInput = ""
+	m.projectCursor = 0
+	m.err = nil
+	if dialogMode == projectDialogManage && len(m.projects) > 0 {
+		m.projectCursor = 1
+	}
+}
+
+func (m *AppModel) closeProjectDialog() {
+	m.mode = modeTimeline
+	m.dialogMode = projectDialogAssign
+	m.projectInput = ""
+	m.projectCursor = 0
+}
+
+func (m *AppModel) handleProjectDialogKey(msg tea.KeyMsg) tea.Cmd {
+	if m.dialogMode == projectDialogCreate {
+		switch msg.String() {
+		case "ctrl+c", "q":
+			m.quitting = true
+			return tea.Quit
+		case "esc":
+			m.dialogMode = projectDialogManage
+			m.projectInput = ""
+		case "enter":
+			name := strings.TrimSpace(m.projectInput)
+			if name == "" {
+				m.err = fmt.Errorf("project name required")
+				return nil
+			}
+			project, err := m.store.CreateProject(m.ctx, db.ProjectCreateInput{Name: name, Currency: model.CurrencyEUR})
+			if err != nil {
+				m.err = err
+				return nil
+			}
+			if err := m.reloadProjects(); err != nil {
+				m.err = err
+				return nil
+			}
+			m.dialogMode = projectDialogManage
+			m.projectInput = ""
+			m.projectCursor = m.projectIndex(project.ID) + 1
+		case "backspace":
+			if len(m.projectInput) > 0 {
+				m.projectInput = m.projectInput[:len(m.projectInput)-1]
+			}
+		default:
+			if msg.Type == tea.KeyRunes {
+				m.projectInput += string(msg.Runes)
+			}
+		}
+		return nil
+	}
+
+	switch msg.String() {
+	case "ctrl+c", "q":
+		m.quitting = true
+		return tea.Quit
+	case "esc":
+		m.closeProjectDialog()
+	case "tab":
+		if m.dialogMode == projectDialogAssign {
+			m.dialogMode = projectDialogManage
+			if m.projectCursor == 0 && len(m.projects) > 0 {
+				m.projectCursor = 1
+			}
+		} else {
+			m.dialogMode = projectDialogAssign
+		}
+	case "shift+tab":
+		if m.dialogMode == projectDialogAssign {
+			m.dialogMode = projectDialogManage
+		} else {
+			m.dialogMode = projectDialogAssign
+		}
+	case "up", "k":
+		if m.projectCursor > m.projectCursorMin() {
+			m.projectCursor--
+		}
+	case "down", "j":
+		if m.projectCursor < len(m.projects) {
+			m.projectCursor++
+		}
+	case "home":
+		m.projectCursor = m.projectCursorMin()
+	case "end":
+		if len(m.projects) > 0 {
+			m.projectCursor = len(m.projects)
+		}
+	case "pgdown", "ctrl+f":
+		step := maxInt(1, m.timelineRows())
+		m.projectCursor = minInt(len(m.projects), m.projectCursor+step)
+		if m.projectCursor < m.projectCursorMin() {
+			m.projectCursor = m.projectCursorMin()
+		}
+	case "pgup", "ctrl+b":
+		step := maxInt(1, m.timelineRows())
+		m.projectCursor = maxInt(m.projectCursorMin(), m.projectCursor-step)
+	case "a":
+		if m.dialogMode == projectDialogManage {
+			m.dialogMode = projectDialogCreate
+			m.projectInput = ""
+		}
+	case "b":
+		if m.dialogMode == projectDialogManage {
+			m.toggleProjectBillable()
+		}
+	case "x":
+		if m.dialogMode == projectDialogManage {
+			m.archiveSelectedProject()
+		}
+	case "enter":
+		if m.dialogMode == projectDialogAssign {
+			m.confirmProjectAssignment()
+		}
+	}
+	return nil
+}
+
+func (m AppModel) projectCursorMin() int {
+	if m.dialogMode == projectDialogManage {
+		if len(m.projects) == 0 {
+			return 0
+		}
+		return 1
+	}
+	return 0
+}
+
+func (m *AppModel) confirmProjectAssignment() {
+	if len(m.entries) == 0 {
+		m.closeProjectDialog()
+		return
+	}
+	entry := m.entries[m.cursor]
+	targetIDs := m.assignmentTargets(entry.ID)
+	var err error
+	if m.projectCursor == 0 {
+		err = m.unassignEntries(targetIDs)
+	} else if m.projectCursor-1 < len(m.projects) {
+		err = m.assignEntries(targetIDs, m.projects[m.projectCursor-1].ID)
+	}
+	if err != nil {
+		m.err = err
+		m.closeProjectDialog()
+		return
+	}
+	if err := m.reloadEntries(); err != nil {
+		m.err = err
+		m.closeProjectDialog()
+		return
+	}
+	m.selected = map[string]bool{}
+	m.closeProjectDialog()
+}
+
+func (m *AppModel) toggleProjectBillable() {
+	project := m.selectedProject()
+	if project == nil {
+		return
+	}
+	updated, err := m.store.UpdateProjectBillableDefaultByID(m.ctx, project.ID, !project.BillableDefault)
+	if err != nil {
+		m.err = err
+		return
+	}
+	if err := m.reloadProjects(); err != nil {
+		m.err = err
+		return
+	}
+	m.projectCursor = m.projectIndex(updated.ID) + 1
+}
+
+func (m *AppModel) archiveSelectedProject() {
+	project := m.selectedProject()
+	if project == nil {
+		return
+	}
+	if err := m.store.ArchiveProjectByID(m.ctx, project.ID); err != nil {
+		m.err = err
+		return
+	}
+	if err := m.reloadProjects(); err != nil {
+		m.err = err
+		return
+	}
+	if len(m.projects) == 0 {
+		m.projectCursor = 0
+		return
+	}
+	m.projectCursor = minInt(m.projectCursor, len(m.projects))
+	if m.projectCursor == 0 {
+		m.projectCursor = 1
+	}
+}
+
+func (m *AppModel) selectedProject() *model.Project {
+	if m.projectCursor <= 0 || m.projectCursor > len(m.projects) {
+		return nil
+	}
+	return &m.projects[m.projectCursor-1]
+}
+
+func (m *AppModel) reloadProjects() error {
+	projects, err := m.store.ListProjects(m.ctx)
+	if err != nil {
+		return err
+	}
+	m.projects = projects
+	return nil
+}
+
+func (m *AppModel) reloadEntries() error {
+	entries, err := m.store.ListEntries(m.ctx)
+	if err != nil {
+		return err
+	}
+	m.allEntries = sortEntries(entries)
+	m.applySourceFilter()
+	return nil
+}
+
+func (m AppModel) projectIndex(id string) int {
+	for i, project := range m.projects {
+		if project.ID == id {
+			return i
+		}
+	}
+	return 0
+}
+
 func sortEntries(entries []model.TimeEntryDetail) []model.TimeEntryDetail {
 	sorted := append([]model.TimeEntryDetail(nil), entries...)
 	sort.SliceStable(sorted, func(i, j int) bool {
@@ -580,7 +779,7 @@ func renderEntryRow(cursor string, entry *model.TimeEntryDetail, desc, project s
 
 func renderStatusBar(m AppModel, width int) string {
 	if m.mode == modeAssign {
-		return truncateForWidth("project dialog | up/down home/end pgup/pgdn enter assign esc cancel", width)
+		return truncateForWidth(projectDialogHelp(m), width)
 	}
 	if m.mode == modeSearch {
 		return truncateForWidth("/"+m.searchQuery+" | enter search | esc cancel", width)
@@ -599,7 +798,7 @@ func renderStatusBar(m AppModel, width int) string {
 	if m.lastSearch != "" {
 		searchHint = " | / search n/N next"
 	}
-	text := fmt.Sprintf("entries %d | drafts %d | pos %s | src %s | f/tab filter | up/down home/end pgup/pgdn space p enter q%s", len(m.entries), drafts, position, m.sourceFilter, searchHint)
+	text := fmt.Sprintf("entries %d | drafts %d | pos %s | src %s | f/tab filter | up/down home/end pgup/pgdn space p assign P projects enter q%s", len(m.entries), drafts, position, m.sourceFilter, searchHint)
 	return truncateForWidth(text, width)
 }
 
@@ -731,23 +930,42 @@ func renderProjectDialog(m AppModel, styles tuiStyles, background string) string
 	innerWidth := maxInt(20, dialogWidth-6)
 
 	var content strings.Builder
-	content.WriteString(styles.title.Render("Assign Project") + "\n")
+	content.WriteString(styles.title.Render(projectDialogTitle(m)) + "\n")
 	content.WriteString(styles.muted.Render(projectDialogSummary(m)) + "\n\n")
-	content.WriteString(renderPickerLine("Unassign", 0, m.projectCursor, styles, innerWidth) + "\n")
+	if m.dialogMode == projectDialogAssign {
+		content.WriteString(renderPickerLine("Unassign", 0, m.projectCursor, styles, innerWidth) + "\n")
+	}
 	if len(m.projects) == 0 {
-		content.WriteString(styles.muted.Render("no projects") + "\n")
+		content.WriteString(styles.muted.Render(projectDialogEmpty(m)) + "\n")
 	} else {
 		for i, project := range m.projects {
-			content.WriteString(renderPickerLine(projectDialogLabel(project), i+1, m.projectCursor, styles, innerWidth) + "\n")
+			content.WriteString(renderPickerLine(projectDialogLabel(m, project), i+1, m.projectCursor, styles, innerWidth) + "\n")
 		}
 	}
-	content.WriteString("\n" + styles.muted.Render("enter assign | esc cancel"))
+	if m.dialogMode == projectDialogCreate {
+		content.WriteString("\n" + styles.activePicker.Render(truncateForWidth("> "+m.projectInput, innerWidth)))
+	}
+	content.WriteString("\n" + styles.muted.Render(projectDialogHelp(m)))
 
 	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
 	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)
 }
 
 func projectDialogSummary(m AppModel) string {
+	if m.dialogMode == projectDialogManage {
+		project := m.selectedProject()
+		if project == nil {
+			return "manage active projects"
+		}
+		state := "non-billable"
+		if project.BillableDefault {
+			state = "billable"
+		}
+		return truncateForWidth(project.Name+" | default "+state, 48)
+	}
+	if m.dialogMode == projectDialogCreate {
+		return "new project name"
+	}
 	if len(m.entries) == 0 {
 		return "no entry selected"
 	}
@@ -762,11 +980,48 @@ func projectDialogSummary(m AppModel) string {
 	return truncateForWidth(entry.ID, 48)
 }
 
-func projectDialogLabel(project model.Project) string {
-	if project.Code == nil || *project.Code == "" {
-		return project.Name
+func projectDialogLabel(m AppModel, project model.Project) string {
+	prefix := ""
+	if m.dialogMode == projectDialogManage {
+		if project.BillableDefault {
+			prefix = "[billable] "
+		} else {
+			prefix = "[non-billable] "
+		}
 	}
-	return project.Name + " (" + *project.Code + ")"
+	if project.Code == nil || *project.Code == "" {
+		return prefix + project.Name
+	}
+	return prefix + project.Name + " (" + *project.Code + ")"
+}
+
+func projectDialogTitle(m AppModel) string {
+	switch m.dialogMode {
+	case projectDialogManage:
+		return "Manage Projects"
+	case projectDialogCreate:
+		return "New Project"
+	default:
+		return "Assign Project"
+	}
+}
+
+func projectDialogEmpty(m AppModel) string {
+	if m.dialogMode == projectDialogAssign {
+		return "no projects"
+	}
+	return "no active projects"
+}
+
+func projectDialogHelp(m AppModel) string {
+	switch m.dialogMode {
+	case projectDialogManage:
+		return "a new | b billable | x archive | tab assign | esc close"
+	case projectDialogCreate:
+		return "type name | enter create | esc back"
+	default:
+		return "enter assign | tab manage | esc cancel"
+	}
 }
 
 func projectDialogWidth(width int) int {

@@ -68,3 +68,47 @@ func TestCreateImportedEntryAndAssign(t *testing.T) {
 		t.Fatalf("project_id = %v, want %q", updated.ProjectID, project.ID)
 	}
 }
+
+func TestProjectUpdateAndArchiveByID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+
+	project, err := store.CreateProject(ctx, ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Currency: model.CurrencyCHF})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	updated, err := store.UpdateProjectBillableDefaultByID(ctx, project.ID, false)
+	if err != nil {
+		t.Fatalf("UpdateProjectBillableDefaultByID() error = %v", err)
+	}
+	if updated.BillableDefault {
+		t.Fatal("billable_default = true, want false")
+	}
+
+	if err := store.ArchiveProjectByID(ctx, project.ID); err != nil {
+		t.Fatalf("ArchiveProjectByID() error = %v", err)
+	}
+
+	projects, err := store.ListProjects(ctx)
+	if err != nil {
+		t.Fatalf("ListProjects() error = %v", err)
+	}
+	if len(projects) != 0 {
+		t.Fatalf("len(projects) = %d, want 0", len(projects))
+	}
+
+	archived, err := store.ProjectByID(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("ProjectByID() error = %v", err)
+	}
+	if archived.ArchivedAt == nil {
+		t.Fatal("archived_at = nil, want value")
+	}
+}

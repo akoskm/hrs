@@ -32,11 +32,15 @@ func (s *Store) UpdateProjectBillableDefault(ctx context.Context, ident string, 
 	if err != nil {
 		return model.Project{}, err
 	}
+	return s.UpdateProjectBillableDefaultByID(ctx, project.ID, billable)
+}
+
+func (s *Store) UpdateProjectBillableDefaultByID(ctx context.Context, id string, billable bool) (model.Project, error) {
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE projects
 		SET billable_default = ?, updated_at = ?
 		WHERE id = ?
-	`, boolToInt(billable), nowUTC().Format(timeFormat), project.ID)
+	`, boolToInt(billable), nowUTC().Format(timeFormat), id)
 	if err != nil {
 		return model.Project{}, err
 	}
@@ -47,7 +51,26 @@ func (s *Store) UpdateProjectBillableDefault(ctx context.Context, ident string, 
 	if rows == 0 {
 		return model.Project{}, ErrProjectNotFound
 	}
-	return s.ProjectByID(ctx, project.ID)
+	return s.ProjectByID(ctx, id)
+}
+
+func (s *Store) ArchiveProjectByID(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE projects
+		SET archived_at = ?, updated_at = ?
+		WHERE id = ? AND archived_at IS NULL
+	`, nowUTC().Format(timeFormat), nowUTC().Format(timeFormat), id)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrProjectNotFound
+	}
+	return nil
 }
 
 func (s *Store) CreateProject(ctx context.Context, input ProjectCreateInput) (model.Project, error) {
