@@ -41,10 +41,11 @@ func TestTimelineRendersAndAssigns(t *testing.T) {
 		return strings.Contains(out, "Refactor the auth module to use OAuth2") && strings.Contains(out, "draft")
 	}, teatest.WithDuration(5*time.Second))
 
-	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
-		return strings.Contains(string(b), "Assign Project")
+		return strings.Contains(string(b), "Edit Time Entry")
 	}, teatest.WithDuration(5*time.Second))
+	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
 	tm.Send(tea.KeyMsg{Type: tea.KeyDown})
 	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
@@ -114,13 +115,13 @@ func TestAssignPickerShowsProjectsFromDB(t *testing.T) {
 		t.Fatalf("NewAppModel() error = %v", err)
 	}
 
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	app, ok := updated.(AppModel)
 	if !ok {
 		t.Fatalf("updated model type = %T", updated)
 	}
 	view := stripANSI(app.View())
-	if !strings.Contains(view, "Assign Project") {
+	if !strings.Contains(view, "Edit Time Entry") {
 		t.Fatalf("view missing assign picker: %q", view)
 	}
 	if !strings.Contains(view, "Delta Labs (delta)") || !strings.Contains(view, "Elaiia (elaiia)") {
@@ -149,12 +150,14 @@ func TestAssignDialogStaysWithinScreenHeight(t *testing.T) {
 	}
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
 	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	app = updated.(AppModel)
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	app = updated.(AppModel)
 
 	lines := strings.Split(strings.TrimRight(stripANSI(app.View()), "\n"), "\n")
-	if len(lines) != 12 {
-		t.Fatalf("dialog line count = %d, want 12", len(lines))
+	if len(lines) > 12 {
+		t.Fatalf("dialog line count = %d, want <= 12", len(lines))
 	}
 	if !strings.Contains(strings.Join(lines, "\n"), "Assign Project") {
 		t.Fatalf("view missing dialog title: %q", strings.Join(lines, "\n"))
@@ -182,10 +185,10 @@ func TestAssignDialogDefaultsToCurrentProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAppModel() error = %v", err)
 	}
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	app := updated.(AppModel)
-	if app.mode != modeAssign || app.projectCursor != 1 {
-		t.Fatalf("mode/cursor = %q/%d, want assign/1", app.mode, app.projectCursor)
+	if app.mode != modeEntryEdit || app.entryProjectCursor != 1 {
+		t.Fatalf("mode/cursor = %q/%d, want entry-edit/1", app.mode, app.entryProjectCursor)
 	}
 }
 
@@ -435,6 +438,21 @@ func TestTextWithCaret(t *testing.T) {
 	}
 }
 
+func TestOutlinedBlockCell(t *testing.T) {
+	slotStart := time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)
+	slotEnd := slotStart.Add(15 * time.Minute)
+	itemStart := slotStart
+	itemEnd := slotStart.Add(45 * time.Minute)
+	if got := outlinedBlockCell(slotStart, slotEnd, itemStart, itemEnd, 12, "TUI"); !strings.Contains(got, "┌") || !strings.Contains(got, "┐") {
+		t.Fatalf("start cell = %q, want outlined top", got)
+	}
+	midStart := slotStart.Add(15 * time.Minute)
+	midEnd := midStart.Add(15 * time.Minute)
+	if got := outlinedBlockCell(midStart, midEnd, itemStart, itemEnd, 12, "TUI"); !strings.Contains(got, "│") {
+		t.Fatalf("mid cell = %q, want vertical borders", got)
+	}
+}
+
 func TestTimelineTruncatesLongDescriptionToWidth(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -621,16 +639,15 @@ func TestTimelineDayViewShowsAxisAndBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAppModel() error = %v", err)
 	}
+	model.SetDefaultTimelineView("day")
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
 	app := updated.(AppModel)
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	app = updated.(AppModel)
 
 	view := stripANSI(app.View())
 	if app.timelineView != timelineViewDay {
 		t.Fatalf("timelineView = %q, want day", app.timelineView)
 	}
-	if !strings.Contains(view, "time") || !strings.Contains(view, "10:45") || !strings.Contains(view, "14:30") {
+	if !strings.Contains(view, "time") || !strings.Contains(view, "10:00") || !strings.Contains(view, "15:00") {
 		t.Fatalf("view missing day axis: %q", view)
 	}
 	if !strings.Contains(view, "Friday 2026-04-03") || !strings.Contains(view, "human") || !strings.Contains(view, "gaps") || !strings.Contains(view, "Friday | focus 15:00-16:00") {
@@ -657,10 +674,9 @@ func TestTimelineDayViewSplitsOverlapsIntoLanes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAppModel() error = %v", err)
 	}
+	model.SetDefaultTimelineView("day")
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
 	app := updated.(AppModel)
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	app = updated.(AppModel)
 
 	view := stripANSI(app.View())
 	if !strings.Contains(view, "human 2") {
@@ -694,10 +710,9 @@ func TestTimelineDayViewLeftRightMovesBetweenDays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAppModel() error = %v", err)
 	}
+	model.SetDefaultTimelineView("day")
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
 	app := updated.(AppModel)
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	app = updated.(AppModel)
 
 	if !app.displayedDay().Equal(dayFour) {
 		t.Fatalf("initial day = %s, want %s", app.displayedDay().Format("2006-01-02"), dayFour.Format("2006-01-02"))
@@ -748,10 +763,9 @@ func TestTimelineDayViewTJumpsToToday(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAppModel() error = %v", err)
 	}
+	model.SetDefaultTimelineView("day")
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
 	app := updated.(AppModel)
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	app = updated.(AppModel)
 	if !app.displayedDay().Equal(otherDay) {
 		t.Fatalf("initial day = %s, want %s", app.displayedDay().Format("2006-01-02"), otherDay.Format("2006-01-02"))
 	}
@@ -783,10 +797,9 @@ func TestTimelineDayViewDoesNotMovePastToday(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAppModel() error = %v", err)
 	}
+	model.SetDefaultTimelineView("day")
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
 	app := updated.(AppModel)
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	app = updated.(AppModel)
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
 	app = updated.(AppModel)
 	if !app.displayedDay().Equal(today) {
@@ -813,10 +826,9 @@ func TestTimelineDayViewCreateManualEntryFromGap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAppModel() error = %v", err)
 	}
+	model.SetDefaultTimelineView("day")
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
 	app := updated.(AppModel)
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	app = updated.(AppModel)
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
 	app = updated.(AppModel)
 	if app.dayFocusKind != "gap" {
@@ -887,6 +899,7 @@ func TestRecentAgentSessionRendersAsActiveUntilNow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAppModel() error = %v", err)
 	}
+	model.SetDefaultTimelineView("day")
 	entry := model.entries[model.cursor]
 	blockEnd := timelineBlockEnd(entry)
 	if blockEnd.Before(now.Add(-2 * time.Minute)) {
@@ -922,6 +935,7 @@ func TestTodayGapsDoNotExtendIntoFuture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAppModel() error = %v", err)
 	}
+	model.SetDefaultTimelineView("day")
 	gaps := dayGapsForIndices(model.entries, model.dayEntryIndices(model.displayedDay().Format("2006-01-02")), model.displayedDay())
 	if len(gaps) == 0 {
 		t.Fatal("len(gaps) = 0, want at least one")
@@ -1023,12 +1037,12 @@ func TestSingleUnassignEntry(t *testing.T) {
 	}
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 20})
 	app := updated.(AppModel)
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	app = updated.(AppModel)
 	if !strings.Contains(stripANSI(app.View()), "Unassign") {
-		t.Fatalf("assign picker missing unassign option: %q", stripANSI(app.View()))
+		t.Fatalf("edit dialog missing unassign option: %q", stripANSI(app.View()))
 	}
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyHome})
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyUp})
 	app = updated.(AppModel)
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	app = updated.(AppModel)

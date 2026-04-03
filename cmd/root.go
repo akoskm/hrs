@@ -36,6 +36,7 @@ var rootCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		model.SetDefaultTimelineView("day")
 
 		_, err = tea.NewProgram(model, tea.WithAltScreen()).Run()
 		return err
