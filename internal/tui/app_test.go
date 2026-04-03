@@ -398,6 +398,59 @@ func TestTimelineGroupJumpKeys(t *testing.T) {
 	}
 }
 
+func TestTimelineSlashSearchAndNextPrev(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	_, _ = store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Alpha task", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)})
+	_, _ = store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Beta task", StartedAt: time.Date(2026, 4, 2, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC)})
+	_, _ = store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Beta followup", StartedAt: time.Date(2026, 4, 1, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)})
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	app := updated.(AppModel)
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	app = updated.(AppModel)
+	if app.mode != modeSearch {
+		t.Fatalf("mode = %q, want search", app.mode)
+	}
+	for _, r := range []rune("beta") {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = updated.(AppModel)
+	}
+	if !strings.Contains(stripANSI(app.View()), "/beta") {
+		t.Fatalf("search prompt missing query: %q", stripANSI(app.View()))
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.mode != modeTimeline || app.lastSearch != "beta" {
+		t.Fatalf("search state not applied: mode=%q lastSearch=%q", app.mode, app.lastSearch)
+	}
+	if !strings.Contains(stripANSI(app.View()), "Beta task") {
+		t.Fatalf("view missing first beta match: %q", stripANSI(app.View()))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	app = updated.(AppModel)
+	if !strings.Contains(stripANSI(app.View()), "Beta followup") {
+		t.Fatalf("view missing next beta match: %q", stripANSI(app.View()))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("N")})
+	app = updated.(AppModel)
+	if !strings.Contains(stripANSI(app.View()), "Beta task") {
+		t.Fatalf("view missing previous beta match: %q", stripANSI(app.View()))
+	}
+}
+
 func openTestStore(t *testing.T) *db.Store {
 	t.Helper()
 	store, err := db.Open(":memory:")

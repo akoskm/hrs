@@ -28,14 +28,31 @@ var syncClaudeCmd = &cobra.Command{
 	},
 }
 
+var syncCodexCmd = &cobra.Command{
+	Use:   "codex",
+	Short: "Import Codex logs",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		store, err := db.Open(dbPath)
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		return sync.ImportCodexLogs(cmd.Context(), store, codexLogsPath)
+	},
+}
+
 var claudeLogsPath string
+var codexLogsPath string
 
 func init() {
 	home, err := os.UserHomeDir()
 	defaultClaudePath := filepath.Join(home, ".claude", "projects")
+	defaultCodexPath := filepath.Join(home, ".codex", "sessions")
 	if err != nil {
 		defaultClaudePath = ".claude/projects"
+		defaultCodexPath = ".codex/sessions"
 	}
 	syncClaudeCmd.Flags().StringVar(&claudeLogsPath, "path", defaultClaudePath, "Claude projects directory")
-	syncCmd.AddCommand(syncClaudeCmd)
+	syncCodexCmd.Flags().StringVar(&codexLogsPath, "path", defaultCodexPath, "Codex sessions directory")
+	syncCmd.AddCommand(syncClaudeCmd, syncCodexCmd)
 }

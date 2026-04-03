@@ -20,6 +20,7 @@ type mode string
 const (
 	modeTimeline mode = "timeline"
 	modeAssign   mode = "assign"
+	modeSearch   mode = "search"
 )
 
 type AppModel struct {
@@ -28,6 +29,8 @@ type AppModel struct {
 	entries       []model.TimeEntryDetail
 	projects      []model.Project
 	selected      map[string]bool
+	searchQuery   string
+	lastSearch    string
 	width         int
 	height        int
 	offset        int
@@ -61,10 +64,36 @@ func (m AppModel) Init() tea.Cmd { return nil }
 func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.mode == modeSearch {
+			switch msg.String() {
+			case "esc":
+				m.mode = modeTimeline
+				m.searchQuery = ""
+			case "enter":
+				m.lastSearch = strings.TrimSpace(m.searchQuery)
+				m.mode = modeTimeline
+				m.searchQuery = ""
+				if m.lastSearch != "" {
+					m.jumpToSearchMatch(m.cursor, 1, true)
+				}
+			case "backspace":
+				if len(m.searchQuery) > 0 {
+					m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
+				}
+			default:
+				if msg.Type == tea.KeyRunes {
+					m.searchQuery += string(msg.Runes)
+				}
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "ctrl+c", "q":
 			m.quitting = true
 			return m, tea.Quit
+		case "/":
+			m.mode = modeSearch
+			m.searchQuery = ""
 		case "up", "k":
 			if m.mode == modeAssign {
 				if m.projectCursor > 0 {
@@ -171,6 +200,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.mode == modeTimeline && len(m.selected) > 0 && len(m.projects) > 0 {
 				m.mode = modeAssign
 			}
+		case "n":
+			if m.mode == modeTimeline && m.lastSearch != "" {
+				m.jumpToSearchMatch(m.cursor, 1, false)
+			}
+		case "N":
+			if m.mode == modeTimeline && m.lastSearch != "" {
+				m.jumpToSearchMatch(m.cursor, -1, false)
+			}
 		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -251,6 +288,9 @@ func (m AppModel) View() string {
 			}
 		}
 		sections = append(sections, assign.String())
+	}
+	if m.mode == modeSearch {
+		sections = append(sections, styles.title.Render("Search")+"\n"+styles.activePicker.Render("/"+m.searchQuery))
 	}
 	sections = append(sections, styles.statusBar.Render(renderStatusBar(m, timelineWidth(m.width))))
 	return strings.Join(sections, "\n")
@@ -531,6 +571,9 @@ func renderEntryRow(cursor string, entry *model.TimeEntryDetail, desc, project s
 }
 
 func renderStatusBar(m AppModel, width int) string {
+	if m.mode == modeSearch {
+		return truncateForWidth("/"+m.searchQuery+" | enter search | esc cancel", width)
+	}
 	drafts := 0
 	for _, entry := range m.entries {
 		if entry.Status == model.StatusDraft {
@@ -541,8 +584,52 @@ func renderStatusBar(m AppModel, width int) string {
 	if len(m.entries) > 0 {
 		position = strconv.Itoa(m.cursor+1) + "/" + strconv.Itoa(len(m.entries))
 	}
-	text := fmt.Sprintf("entries %d | drafts %d | pos %s | up/down home/end pgup/pgdn space p enter q", len(m.entries), drafts, position)
+	searchHint := ""
+	if m.lastSearch != "" {
+		searchHint = " | / search n/N next"
+	}
+	text := fmt.Sprintf("entries %d | drafts %d | pos %s | up/down home/end pgup/pgdn space p enter q%s", len(m.entries), drafts, position, searchHint)
 	return truncateForWidth(text, width)
+}
+
+func (m *AppModel) jumpToSearchMatch(start, direction int, includeCurrent bool) {
+	if len(m.entries) == 0 || m.lastSearch == "" {
+		return
+	}
+	query := strings.ToLower(strings.TrimSpace(m.lastSearch))
+	if query == "" {
+		return
+	}
+	index := start
+	if !includeCurrent {
+		index += direction
+	}
+	for checked := 0; checked < len(m.entries); checked++ {
+		if index < 0 {
+			index = len(m.entries) - 1
+		}
+		if index >= len(m.entries) {
+			index = 0
+		}
+		if entryMatchesSearch(m.entries[index], query) {
+			m.cursor = index
+			m.ensureVisible()
+			return
+		}
+		index += direction
+	}
+}
+
+func entryMatchesSearch(entry model.TimeEntryDetail, query string) bool {
+	parts := []string{entry.ProjectName, string(entry.Status), entry.Operator}
+	if entry.Description != nil {
+		parts = append(parts, *entry.Description)
+	}
+	if entry.ProjectCode != nil {
+		parts = append(parts, *entry.ProjectCode)
+	}
+	haystack := strings.ToLower(strings.Join(parts, " "))
+	return strings.Contains(haystack, query)
 }
 
 func stripANSI(text string) string {
