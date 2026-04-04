@@ -356,7 +356,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "a":
-			if m.timelineView == timelineViewDay && m.dayFocusKind == "gap" {
+			if m.timelineView == timelineViewDay && (m.dayFocusKind == "gap" || m.dayFocusKind == "slot") {
 				m.openGapEntryDialog()
 				return m, cursorBlinkCmd()
 			}
@@ -860,10 +860,10 @@ func (m *AppModel) jumpDayItem(direction int) {
 		return
 	}
 	if m.dayFocusKind == "slot" {
-		target := m.daySlotStart
+		slotEnd := m.daySlotStart.Add(m.daySlotSpan)
 		if direction > 0 {
 			for _, item := range items {
-				if !item.start.Before(target) {
+				if !item.start.Before(slotEnd) {
 					m.focusDayItem(item)
 					return
 				}
@@ -871,7 +871,7 @@ func (m *AppModel) jumpDayItem(direction int) {
 			return
 		}
 		for i := len(items) - 1; i >= 0; i-- {
-			if !items[i].end.After(target) {
+			if !items[i].end.After(m.daySlotStart) {
 				m.focusDayItem(items[i])
 				return
 			}
@@ -883,7 +883,15 @@ func (m *AppModel) jumpDayItem(direction int) {
 		return
 	}
 	next := current + direction
-	if next < 0 || next >= len(items) {
+	if next < 0 {
+		item := items[current]
+		slotStart := item.start.Add(-15 * time.Minute)
+		m.setSlotFocus(slotStart, 15*time.Minute)
+		return
+	}
+	if next >= len(items) {
+		item := items[current]
+		m.setSlotFocus(item.end, 15*time.Minute)
 		return
 	}
 	m.focusDayItem(items[next])
@@ -917,8 +925,7 @@ func (m AppModel) currentDayItemPosition(items []dayTimelineItem) int {
 
 func (m *AppModel) focusDayItem(item dayTimelineItem) {
 	if item.kind == "gap" {
-		m.dayFocusKind = "gap"
-		m.dayGapFocus = item.gapIndex
+		m.setSlotFocus(item.start, item.end.Sub(item.start))
 		return
 	}
 	m.dayFocusKind = "entry"
@@ -2051,8 +2058,17 @@ func inspectorLines(m AppModel) []string {
 	}
 }
 
+func (m AppModel) effectiveEntryIndex() int {
+	if m.dayFocusKind == "slot" {
+		if idx := m.overlappingEntryIndexForSlot(); idx >= 0 {
+			return idx
+		}
+	}
+	return m.cursor
+}
+
 func overviewInspectorLines(m AppModel) []string {
-	if m.dayFocusKind == "slot" && !m.daySlotStart.IsZero() {
+	if m.dayFocusKind == "slot" && !m.daySlotStart.IsZero() && m.overlappingEntryIndexForSlot() < 0 {
 		return []string{
 			"Time slot",
 			fmt.Sprintf("Range: %s-%s", clock(m.daySlotStart), clock(m.daySlotStart.Add(m.daySlotSpan))),
@@ -2068,10 +2084,11 @@ func overviewInspectorLines(m AppModel) []string {
 			"Action: Enter adds manual entry",
 		}
 	}
-	if len(m.entries) == 0 {
+	idx := m.effectiveEntryIndex()
+	if len(m.entries) == 0 || idx >= len(m.entries) {
 		return []string{"No entry selected"}
 	}
-	entry := m.entries[m.cursor]
+	entry := m.entries[idx]
 	project := "unassigned"
 	if entry.ProjectName != "" {
 		project = entry.ProjectName
@@ -2098,16 +2115,17 @@ func overviewInspectorLines(m AppModel) []string {
 }
 
 func sessionInspectorLines(m AppModel) []string {
-	if m.dayFocusKind == "slot" {
+	if m.dayFocusKind == "slot" && m.overlappingEntryIndexForSlot() < 0 {
 		return []string{"No session", "Time slots are creation targets, not sessions."}
 	}
 	if m.dayFocusKind == "gap" {
 		return []string{"No session", "Gaps do not have source session detail."}
 	}
-	if len(m.entries) == 0 {
+	idx := m.effectiveEntryIndex()
+	if len(m.entries) == 0 || idx >= len(m.entries) {
 		return []string{"No session selected"}
 	}
-	entry := m.entries[m.cursor]
+	entry := m.entries[idx]
 	if entry.Operator == "human" {
 		return []string{"Manual entry", "No agent session attached."}
 	}
@@ -2235,7 +2253,7 @@ func renderVerticalTimelineRow(m AppModel, row dayTimelineRow, colWidths []int, 
 
 func renderVerticalTimeCell(m AppModel, row dayTimelineRow, styles tuiStyles) string {
 	label := padRight(row.label, 5)
-	if m.dayFocusKind == "slot" && !m.daySlotStart.IsZero() {
+	if m.dayFocusKind == "slot" && !m.daySlotStart.IsZero() && m.overlappingEntryIndexForSlot() < 0 {
 		slotStart := m.daySlotStart
 		slotEnd := m.daySlotStart.Add(m.daySlotSpan)
 		if !m.slotMarkStart.IsZero() {

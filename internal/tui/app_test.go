@@ -986,11 +986,12 @@ func TestTimelineDayViewCreateManualEntryFromGap(t *testing.T) {
 	app := updated.(AppModel)
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
 	app = updated.(AppModel)
-	if app.dayFocusKind != "gap" {
-		t.Fatalf("focus kind = %q, want gap", app.dayFocusKind)
+	if app.dayFocusKind != "slot" {
+		t.Fatalf("focus kind = %q, want slot", app.dayFocusKind)
 	}
-	if gap := app.focusedGap(); gap == nil || formatRange(gap.start, &gap.end) != "12:00-14:00" {
-		t.Fatalf("focused gap = %#v, want 12:00-14:00", app.focusedGap())
+	rng := app.selectedCreateRange()
+	if rng == nil || formatRange(rng.start, &rng.end) != "12:00-14:00" {
+		t.Fatalf("selected range = %#v, want 12:00-14:00", rng)
 	}
 
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
@@ -1505,6 +1506,69 @@ func openTestStore(t *testing.T) *db.Store {
 		t.Fatalf("db.Open() error = %v", err)
 	}
 	return store
+}
+
+func TestDayViewJKNavigatesAndEnterEdits(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, time.UTC)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Morning work", StartedAt: today, EndedAt: today.Add(time.Hour)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	app.InitializeTodayTimelineView()
+	updated, _ := app.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
+	app = updated.(AppModel)
+
+	if app.dayFocusKind != "slot" {
+		t.Fatalf("initial focus = %q, want slot", app.dayFocusKind)
+	}
+
+	// j should jump to the entry
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	app = updated.(AppModel)
+	if app.dayFocusKind != "entry" {
+		t.Fatalf("after j focus = %q, want entry", app.dayFocusKind)
+	}
+
+	// enter should open edit dialog
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.mode != modeEntryEdit {
+		t.Fatalf("after enter mode = %q, want entry-edit", app.mode)
+	}
+
+	// enter should save
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.mode != modeTimeline {
+		t.Fatalf("after save mode = %q, want timeline", app.mode)
+	}
+
+	// j past last entry should go to slot
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	app = updated.(AppModel)
+	// could be entry (re-focused) or gap or slot depending on items
+	// press j again to go past
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	app = updated.(AppModel)
+	if app.dayFocusKind != "slot" {
+		t.Fatalf("after navigating past entries focus = %q, want slot", app.dayFocusKind)
+	}
 }
 
 func TestDeleteEntryConfirmDialog(t *testing.T) {
