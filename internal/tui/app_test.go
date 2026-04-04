@@ -1591,6 +1591,212 @@ func TestDayViewJKNeverStaysOnSameEntry(t *testing.T) {
 	}
 }
 
+func TestSpaceMarkSlotRangeAndCreateEntry(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", HourlyRate: 100, Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	// Start in day view at a known slot
+	now := time.Now()
+	today := dayStart(now)
+	app.timelineView = timelineViewDay
+	app.dayDate = today
+	app.daySlotSpan = 15 * time.Minute
+	app.daySlotStart = time.Date(today.Year(), today.Month(), today.Day(), 9, 0, 0, 0, time.Local)
+	app.dayFocusKind = "slot"
+	updated, _ := app.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
+	app = updated.(AppModel)
+
+	// Verify we're on a slot
+	if app.dayFocusKind != "slot" {
+		t.Fatalf("initial focus = %q, want slot", app.dayFocusKind)
+	}
+	if !app.slotMarkStart.IsZero() {
+		t.Fatal("slotMarkStart should be zero before space")
+	}
+
+	// Press space to start marking
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	app = updated.(AppModel)
+	if app.slotMarkStart.IsZero() {
+		t.Fatal("slotMarkStart should be set after space")
+	}
+	markStart := app.slotMarkStart
+
+	// Move down 4 times (4 * 15min = 1 hour)
+	for i := 0; i < 4; i++ {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+		app = updated.(AppModel)
+	}
+
+	// Verify mark is still anchored and range expanded
+	if app.slotMarkStart != markStart {
+		t.Fatalf("mark anchor moved: got %v, want %v", app.slotMarkStart, markStart)
+	}
+	rng := app.selectedCreateRange()
+	if rng == nil {
+		t.Fatal("selectedCreateRange() is nil")
+	}
+	// Should span from 09:00 to 10:15 (anchor 09:00-09:15, current 10:00-10:15)
+	expectedStart := "09:00"
+	expectedEnd := "10:15"
+	gotRange := formatRange(rng.start, &rng.end)
+	if gotRange != expectedStart+"-"+expectedEnd {
+		t.Fatalf("marked range = %s, want %s-%s", gotRange, expectedStart, expectedEnd)
+	}
+
+	// Press enter to open gap dialog — should have the marked range
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.mode != modeGapEntry {
+		t.Fatalf("mode = %q, want gap-entry", app.mode)
+	}
+	if app.gapStartInput != "09:00" {
+		t.Fatalf("gapStartInput = %q, want 09:00", app.gapStartInput)
+	}
+	if app.gapEndInput != "10:15" {
+		t.Fatalf("gapEndInput = %q, want 10:15", app.gapEndInput)
+	}
+
+	// Mark should be cleared after opening dialog
+	if !app.slotMarkStart.IsZero() {
+		t.Fatal("slotMarkStart should be cleared after opening dialog")
+	}
+
+	// Type description, select project, save
+	for _, r := range "Marked entry" {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = updated.(AppModel)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+
+	if app.mode != modeTimeline {
+		t.Fatalf("mode after save = %q, want timeline", app.mode)
+	}
+
+	// Verify entry was created with correct range
+	entries, _ := store.ListEntries(ctx)
+	found := false
+	for _, e := range entries {
+		if e.Description != nil && *e.Description == "Marked entry" {
+			r := formatRange(e.StartedAt, e.EndedAt)
+			if r != "09:00-10:15" {
+				t.Fatalf("created entry range = %s, want 09:00-10:15", r)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("marked entry not found in DB")
+	}
+
+	// --- Now edit the created entry ---
+	// Cursor should be on the new entry after create
+	if app.entries[app.cursor].Description == nil || *app.entries[app.cursor].Description != "Marked entry" {
+		t.Fatalf("cursor not on created entry, got %q", descriptionOrID(app.entries[app.cursor]))
+	}
+
+	// Press enter to open edit dialog
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.mode != modeEntryEdit {
+		t.Fatalf("mode = %q, want entry-edit", app.mode)
+	}
+	if app.entryInput != "Marked entry" {
+		t.Fatalf("entryInput = %q, want 'Marked entry'", app.entryInput)
+	}
+
+	// Clear description and type new one
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDelete})
+	app = updated.(AppModel)
+	if app.entryInput != "" {
+		t.Fatalf("entryInput after delete = %q, want empty", app.entryInput)
+	}
+	for _, r := range "Updated description" {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = updated.(AppModel)
+	}
+
+	// Press enter to save
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.mode != modeTimeline {
+		t.Fatalf("mode after edit save = %q, want timeline", app.mode)
+	}
+
+	// Verify description updated in DB
+	entries, _ = store.ListEntries(ctx)
+	foundUpdated := false
+	for _, e := range entries {
+		if e.Description != nil && *e.Description == "Updated description" {
+			r := formatRange(e.StartedAt, e.EndedAt)
+			if r != "09:00-10:15" {
+				t.Fatalf("edited entry range changed: %s, want 09:00-10:15", r)
+			}
+			foundUpdated = true
+		}
+	}
+	if !foundUpdated {
+		t.Fatal("edited entry not found in DB")
+	}
+
+	// Verify timeline reflects updated description
+	if app.entries[app.cursor].Description == nil || *app.entries[app.cursor].Description != "Updated description" {
+		t.Fatalf("timeline not updated, got %q", descriptionOrID(app.entries[app.cursor]))
+	}
+}
+
+func TestSpaceTogglesCancelsMark(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	today := dayStart(time.Now())
+	app.timelineView = timelineViewDay
+	app.dayDate = today
+	app.daySlotSpan = 15 * time.Minute
+	app.daySlotStart = time.Date(today.Year(), today.Month(), today.Day(), 9, 0, 0, 0, time.Local)
+	app.dayFocusKind = "slot"
+
+	// Space starts mark
+	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	app = updated.(AppModel)
+	if app.slotMarkStart.IsZero() {
+		t.Fatal("mark not started")
+	}
+
+	// Space again cancels mark
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	app = updated.(AppModel)
+	if !app.slotMarkStart.IsZero() {
+		t.Fatal("mark not cancelled by second space")
+	}
+
+	// Esc also cancels mark
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	app = updated.(AppModel)
+	if !app.slotMarkStart.IsZero() {
+		t.Fatal("mark not cancelled by esc")
+	}
+}
+
 func TestDayViewJKRenderedOutputChangesEachPress(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
