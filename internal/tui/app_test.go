@@ -1002,6 +1002,8 @@ func TestTimelineDayViewCreateManualEntryFromGap(t *testing.T) {
 		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		app = updated.(AppModel)
 	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = updated.(AppModel)
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	app = updated.(AppModel)
 	if app.mode != modeTimeline {
