@@ -36,7 +36,7 @@ var rootCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		model.SetDefaultTimelineView("day")
+		model.InitializeTodayTimelineView()
 
 		_, err = tea.NewProgram(model, tea.WithAltScreen()).Run()
 		return err
@@ -58,6 +58,7 @@ func init() {
 	rootCmd.AddCommand(pathCmd)
 	rootCmd.AddCommand(syncCmd)
 	rootCmd.AddCommand(addCmd)
+	rootCmd.AddCommand(entryCmd)
 	rootCmd.AddCommand(reportCmd)
 }
 

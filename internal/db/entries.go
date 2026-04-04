@@ -31,6 +31,18 @@ type ManualEntryInput struct {
 	Billable     *bool
 }
 
+type AgentEntryUpsertInput struct {
+	ProjectIdent string
+	Description  string
+	StartedAt    time.Time
+	EndedAt      time.Time
+	Operator     string
+	SourceRef    string
+	GitBranch    string
+	Cwd          string
+	Metadata     map[string]any
+}
+
 func (s *Store) HasImport(ctx context.Context, source, sessionID string) (bool, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT 1 FROM import_log WHERE source = ? AND session_id = ?`, source, sessionID)
 	var one int
@@ -231,6 +243,59 @@ func (s *Store) UpdateEntryDescriptionAndProject(ctx context.Context, entryID st
 		WHERE id = ?
 	`, description, dbProjectID, status, nowUTC().Format(timeFormat), entryID)
 	return err
+}
+
+func (s *Store) UpsertAgentEntry(ctx context.Context, input AgentEntryUpsertInput) (model.TimeEntry, error) {
+	now := nowUTC()
+	duration := int(input.EndedAt.Sub(input.StartedAt).Seconds())
+	metadataBytes, err := json.Marshal(input.Metadata)
+	if err != nil {
+		return model.TimeEntry{}, err
+	}
+	metadata := string(metadataBytes)
+	var projectID any
+	status := model.StatusDraft
+	billable := 1
+	if strings.TrimSpace(input.ProjectIdent) != "" {
+		project, err := s.ProjectByCodeOrName(ctx, strings.TrimSpace(input.ProjectIdent))
+		if err != nil {
+			return model.TimeEntry{}, err
+		}
+		projectID = project.ID
+		status = model.StatusConfirmed
+		if !project.BillableDefault {
+			billable = 0
+		}
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id FROM time_entries WHERE operator = ? AND source_ref = ? AND deleted_at IS NULL
+	`, input.Operator, input.SourceRef)
+	var existingID string
+	if err := row.Scan(&existingID); err != nil {
+		if err != sql.ErrNoRows {
+			return model.TimeEntry{}, err
+		}
+		id := ulid.Make().String()
+		_, err = s.db.ExecContext(ctx, `
+			INSERT INTO time_entries (
+				id, project_id, description, started_at, ended_at, duration_secs, billable, status, operator,
+				source_ref, git_branch, cwd, metadata, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, id, projectID, input.Description, input.StartedAt.UTC().Format(timeFormat), input.EndedAt.UTC().Format(timeFormat), duration, billable, status, input.Operator, input.SourceRef, input.GitBranch, input.Cwd, metadata, now.Format(timeFormat), now.Format(timeFormat))
+		if err != nil {
+			return model.TimeEntry{}, err
+		}
+		return s.EntryByID(ctx, id)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE time_entries
+		SET project_id = ?, description = ?, started_at = ?, ended_at = ?, duration_secs = ?, billable = ?, status = ?, git_branch = ?, cwd = ?, metadata = ?, updated_at = ?
+		WHERE id = ?
+	`, projectID, input.Description, input.StartedAt.UTC().Format(timeFormat), input.EndedAt.UTC().Format(timeFormat), duration, billable, status, input.GitBranch, input.Cwd, metadata, now.Format(timeFormat), existingID)
+	if err != nil {
+		return model.TimeEntry{}, err
+	}
+	return s.EntryByID(ctx, existingID)
 }
 
 func (s *Store) HasOverlappingImportedEntry(ctx context.Context, cwd string, startedAt, endedAt time.Time, description string) (bool, error) {

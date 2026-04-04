@@ -775,8 +775,84 @@ func TestTimelineDayViewTJumpsToToday(t *testing.T) {
 	if !app.displayedDay().Equal(today) {
 		t.Fatalf("day after t = %s, want %s", app.displayedDay().Format("2006-01-02"), today.Format("2006-01-02"))
 	}
-	if gap := app.focusedGap(); gap == nil {
-		t.Fatal("today without entries should focus full-day gap")
+	if app.dayFocusKind != "slot" {
+		t.Fatalf("focus kind after t = %q, want slot", app.dayFocusKind)
+	}
+}
+
+func TestDayViewUpDownMovesSlot(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.InitializeTodayTimelineView()
+	model.daySlotSpan = 15 * time.Minute
+	model.daySlotStart = maxSlotStartForDay(model.displayedDay(), model.daySlotSpan).Add(-time.Hour)
+	start := model.daySlotStart
+	model.moveSlot(15*time.Minute, 15*time.Minute)
+	if model.daySlotStart.Sub(start) != 15*time.Minute {
+		t.Fatalf("slot delta after down = %s, want 15m", model.daySlotStart.Sub(start))
+	}
+	model.moveSlot(-time.Hour, time.Hour)
+	if model.daySlotSpan != time.Hour {
+		t.Fatalf("slot span after shift+up = %s, want 1h", model.daySlotSpan)
+	}
+}
+
+func TestDayViewPastTodayClampsAtEndOfDay(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.InitializeTodayTimelineView()
+	today := dayStart(time.Now())
+	model.dayDate = today
+	model.daySlotSpan = 15 * time.Minute
+	model.daySlotStart = maxSlotStartForDay(today, model.daySlotSpan)
+	model.moveSlot(15*time.Minute, 15*time.Minute)
+	if !model.displayedDay().Equal(today) {
+		t.Fatalf("displayedDay = %s, want today", model.displayedDay().Format("2006-01-02"))
+	}
+	if !model.daySlotStart.Equal(maxSlotStartForDay(today, model.daySlotSpan)) {
+		t.Fatalf("daySlotStart = %s, want clamped end of day", model.daySlotStart.Format(time.RFC3339))
+	}
+}
+
+func TestGapDialogDefaultsToSelectedSlotRange(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.InitializeTodayTimelineView()
+	model.daySlotStart = time.Date(2026, 4, 3, 15, 15, 0, 0, time.Local)
+	model.daySlotSpan = time.Hour
+	model.dayFocusKind = "slot"
+	rangeSel := model.selectedCreateRange()
+	if rangeSel == nil || formatRange(rangeSel.start, &rangeSel.end) != "15:15-16:15" {
+		t.Fatalf("selected range = %#v, want 15:15-16:15", rangeSel)
+	}
+	model.openGapEntryDialog()
+	if model.gapInputField != "description" {
+		t.Fatalf("gapInputField = %q, want description", model.gapInputField)
+	}
+	view := stripANSI(renderGapEntryDialog(model, newStyles(100), ""))
+	if strings.Index(view, "Description") > strings.Index(view, "Project") {
+		t.Fatalf("description should render before project: %q", view)
 	}
 }
 
@@ -843,8 +919,6 @@ func TestTimelineDayViewCreateManualEntryFromGap(t *testing.T) {
 	if app.mode != modeGapEntry {
 		t.Fatalf("mode = %q, want gap-entry", app.mode)
 	}
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
-	app = updated.(AppModel)
 	for _, r := range []rune("Deep work") {
 		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		app = updated.(AppModel)
@@ -908,6 +982,25 @@ func TestRecentAgentSessionRendersAsActiveUntilNow(t *testing.T) {
 	view := stripANSI(model.View())
 	if !strings.Contains(view, "opencode") {
 		t.Fatalf("view missing opencode lane: %q", view)
+	}
+}
+
+func TestSessionInspectorLoadsSourceDetail(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	if err := sync.ImportClaudeFixtures(ctx, store, filepath.Join("..", "..", "testdata", "claude-sessions")); err != nil {
+		t.Fatalf("ImportClaudeFixtures() error = %v", err)
+	}
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.SetDefaultTimelineView("day")
+	model.inspectorTab = inspectorSession
+	view := stripANSI(model.View())
+	if !strings.Contains(view, "Source: claude-code") || !strings.Contains(view, "Messages:") || !strings.Contains(view, "Path:") {
+		t.Fatalf("session inspector missing source detail: %q", view)
 	}
 }
 
