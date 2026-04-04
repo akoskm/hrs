@@ -1505,6 +1505,56 @@ func openTestStore(t *testing.T) *db.Store {
 	return store
 }
 
+func TestDeleteEntryConfirmDialog(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	entry, err := store.CreateImportedEntry(ctx, db.EntryImport{Description: "To delete", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC), Operator: "opencode", SourceRef: "sess-del2", Cwd: "/tmp", Metadata: map[string]any{}})
+	if err != nil {
+		t.Fatalf("CreateImportedEntry() error = %v", err)
+	}
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+
+	// press d to open confirm dialog
+	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	app = updated.(AppModel)
+	if app.mode != modeDeleteConfirm {
+		t.Fatalf("mode = %q, want %q", app.mode, modeDeleteConfirm)
+	}
+	if app.confirmDeleteID != entry.ID {
+		t.Fatalf("confirmDeleteID = %q, want %q", app.confirmDeleteID, entry.ID)
+	}
+
+	// press n to cancel
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	app = updated.(AppModel)
+	if app.mode != modeTimeline {
+		t.Fatalf("mode after cancel = %q, want %q", app.mode, modeTimeline)
+	}
+	entries, _ := store.ListEntries(ctx)
+	if len(entries) != 1 {
+		t.Fatalf("entry count after cancel = %d, want 1", len(entries))
+	}
+
+	// press d then y to confirm delete
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	app = updated.(AppModel)
+	if app.mode != modeTimeline {
+		t.Fatalf("mode after confirm = %q, want %q", app.mode, modeTimeline)
+	}
+	entries, _ = store.ListEntries(ctx)
+	if len(entries) != 0 {
+		t.Fatalf("entry count after delete = %d, want 0", len(entries))
+	}
+}
+
 func descriptionOrID(entry model.TimeEntryDetail) string {
 	if entry.Description != nil && *entry.Description != "" {
 		return *entry.Description

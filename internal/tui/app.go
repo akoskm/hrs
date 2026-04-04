@@ -25,11 +25,12 @@ type timelineViewMode string
 type inspectorTab string
 
 const (
-	modeTimeline  mode = "timeline"
-	modeAssign    mode = "assign"
-	modeEntryEdit mode = "entry-edit"
-	modeGapEntry  mode = "gap-entry"
-	modeSearch    mode = "search"
+	modeTimeline      mode = "timeline"
+	modeAssign        mode = "assign"
+	modeEntryEdit     mode = "entry-edit"
+	modeGapEntry      mode = "gap-entry"
+	modeSearch        mode = "search"
+	modeDeleteConfirm mode = "delete-confirm"
 
 	projectDialogAssign projectDialogMode = "assign"
 	projectDialogManage projectDialogMode = "manage"
@@ -85,6 +86,7 @@ type AppModel struct {
 	syncStatusErr      error
 	timelineView       timelineViewMode
 	inspectorTab       inspectorTab
+	confirmDeleteID    string
 	mode               mode
 	err                error
 	quitting           bool
@@ -191,6 +193,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.mode == modeAssign {
 			return m, m.handleProjectDialogKey(msg)
+		}
+		if m.mode == modeDeleteConfirm {
+			return m, m.handleDeleteConfirmKey(msg)
 		}
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -383,6 +388,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.syncStatusErr = nil
 				return m, tea.Batch(runSyncCmd(m.syncFn), syncPulseCmd(40*time.Millisecond))
 			}
+		case "d":
+			if m.mode == modeTimeline && len(m.entries) > 0 {
+				m.confirmDeleteID = m.entries[m.cursor].ID
+				m.mode = modeDeleteConfirm
+			}
 		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -498,6 +508,9 @@ func (m AppModel) View() string {
 	}
 	if m.mode == modeEntryEdit {
 		return renderEntryEditDialog(m, styles, view)
+	}
+	if m.mode == modeDeleteConfirm {
+		return renderDeleteConfirmDialog(m, styles, view)
 	}
 	return view
 }
@@ -1239,6 +1252,33 @@ func (m *AppModel) closeEntryEditDialog() {
 	m.entryProjectCursor = 0
 	m.entryProjectOnly = false
 	m.caretVisible = false
+}
+
+func (m *AppModel) handleDeleteConfirmKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		m.quitting = true
+		return tea.Quit
+	case "y", "enter":
+		if err := m.store.SoftDeleteEntry(m.ctx, m.confirmDeleteID); err != nil {
+			m.err = err
+			m.mode = modeTimeline
+			m.confirmDeleteID = ""
+			return nil
+		}
+		if err := m.reloadEntries(); err != nil {
+			m.err = err
+		}
+		if m.cursor >= len(m.entries) && m.cursor > 0 {
+			m.cursor = len(m.entries) - 1
+		}
+		m.mode = modeTimeline
+		m.confirmDeleteID = ""
+	case "n", "esc":
+		m.mode = modeTimeline
+		m.confirmDeleteID = ""
+	}
+	return nil
 }
 
 func (m *AppModel) handleEntryEditKey(msg tea.KeyMsg) tea.Cmd {
@@ -2719,6 +2759,9 @@ func renderBaseStatusBar(m AppModel, width int) string {
 	if m.mode == modeAssign {
 		return truncateForWidth(projectDialogHelp(m), width)
 	}
+	if m.mode == modeDeleteConfirm {
+		return truncateForWidth("delete entry? | y confirm | n/esc cancel", width)
+	}
 	if m.mode == modeGapEntry {
 		return truncateForWidth("gap entry | up/down project | tab focus | enter create | esc cancel", width)
 	}
@@ -3009,6 +3052,29 @@ func renderEntryEditDialog(m AppModel, styles tuiStyles, background string) stri
 	content.WriteString("\n" + styles.muted.Render("End") + "\n")
 	content.WriteString(endStyle.Render(truncateForWidth("> "+textWithCaret(m.entryEndInput, m.caretVisible, m.entryInputField == "end"), innerWidth)))
 	content.WriteString("\n\n" + styles.muted.Render(entryEditHelp(m)))
+
+	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
+	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)
+}
+
+func renderDeleteConfirmDialog(m AppModel, styles tuiStyles, background string) string {
+	dialogWidth := minInt(50, maxInt(30, m.width/3))
+	var entry model.TimeEntryDetail
+	for _, e := range m.entries {
+		if e.ID == m.confirmDeleteID {
+			entry = e
+			break
+		}
+	}
+	var content strings.Builder
+	content.WriteString(styles.title.Render("Delete Entry") + "\n\n")
+	desc := "(no description)"
+	if entry.Description != nil && *entry.Description != "" {
+		desc = truncateForWidth(*entry.Description, dialogWidth-6)
+	}
+	content.WriteString(desc + "\n")
+	content.WriteString(styles.muted.Render(formatRange(entry.StartedAt, entry.EndedAt)) + "\n\n")
+	content.WriteString("Delete this entry? (y/n)")
 
 	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
 	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)

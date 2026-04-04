@@ -313,6 +313,13 @@ func (s *Store) UpsertAgentEntry(ctx context.Context, input AgentEntryUpsertInpu
 	return s.EntryByID(ctx, existingID)
 }
 
+func (s *Store) SoftDeleteEntry(ctx context.Context, entryID string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE time_entries SET deleted_at = ?, updated_at = ? WHERE id = ?
+	`, nowUTC().Format(timeFormat), nowUTC().Format(timeFormat), entryID)
+	return err
+}
+
 func (s *Store) HasOverlappingImportedEntry(ctx context.Context, cwd string, startedAt, endedAt time.Time, description string) (bool, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT description, started_at, ended_at
