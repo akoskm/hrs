@@ -64,8 +64,12 @@ type AppModel struct {
 	dialogMode         projectDialogMode
 	projectInput       string
 	gapInput           string
+	gapStartInput      string
+	gapEndInput        string
 	gapInputField      string
 	entryInput         string
+	entryStartInput    string
+	entryEndInput      string
 	entryInputField    string
 	entryProjectOnly   bool
 	dayFocusKind       string
@@ -327,22 +331,24 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cursor = idx
 					m.dayFocusKind = "entry"
 					m.openEntryEditDialog(false)
-					return m, nil
+					return m, cursorBlinkCmd()
 				}
 				m.openGapEntryDialog()
-				return m, nil
+				return m, cursorBlinkCmd()
 			}
 			if m.timelineView == timelineViewDay && m.dayFocusKind == "gap" {
 				m.openGapEntryDialog()
-				return m, nil
+				return m, cursorBlinkCmd()
 			}
 			if len(m.entries) > 0 {
 				m.openEntryEditDialog(false)
+				return m, cursorBlinkCmd()
 			}
 			return m, nil
 		case "a":
 			if m.timelineView == timelineViewDay && m.dayFocusKind == "gap" {
 				m.openGapEntryDialog()
+				return m, cursorBlinkCmd()
 			}
 		case " ", "space":
 			if m.mode == modeTimeline && len(m.entries) > 0 {
@@ -361,7 +367,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.openProjectDialog(projectDialogManage)
 			}
 		case "n":
-			if m.mode == modeTimeline && m.lastSearch != "" {
+			if m.timelineView == timelineViewDay {
+				m.jumpToClosestSlot()
+			} else if m.mode == modeTimeline && m.lastSearch != "" {
 				m.jumpToSearchMatch(m.cursor, 1, false)
 			}
 		case "N":
@@ -462,7 +470,6 @@ func (m AppModel) View() string {
 	body := b.String()
 	if m.mode == modeTimeline && m.timelineView == timelineViewDay {
 		inspector := renderInspectorPane(m, styles, timelineWidth(m.width), inspectorHeight(m.height))
-		spacer := ""
 		if m.height > 0 {
 			used := lineCount(renderHeader(m.entries, m.width)) + lineCount(body) + lineCount(inspector) + 1
 			if m.err != nil {
@@ -470,10 +477,10 @@ func (m AppModel) View() string {
 			}
 			remaining := m.height - used
 			if remaining > 0 {
-				spacer = strings.Repeat("\n", remaining)
+				body += strings.Repeat("\n", remaining)
 			}
 		}
-		body = body + spacer + inspector
+		body += inspector
 	}
 	sections = append(sections, body)
 	if m.mode == modeSearch {
@@ -536,6 +543,12 @@ type dayTimelineItem struct {
 type dayOperatorLane struct {
 	label  string
 	blocks []timelineBlock
+}
+
+type dayTimelineRow struct {
+	start time.Time
+	end   time.Time
+	label string
 }
 
 func (m *AppModel) ensureVisible() {
@@ -772,6 +785,11 @@ func clampSlotStartToDay(start, day time.Time, span time.Duration) time.Time {
 	return roundDownToStep(start, span)
 }
 
+func alignWindowStart(ts time.Time) time.Time {
+	local := ts.In(time.Local)
+	return time.Date(local.Year(), local.Month(), local.Day(), local.Hour(), 0, 0, 0, local.Location())
+}
+
 func roundDownToStep(ts time.Time, step time.Duration) time.Time {
 	if step <= 0 {
 		return ts
@@ -801,11 +819,11 @@ func (m *AppModel) ensureSlotVisible() {
 	}
 	windowEnd := m.dayWindowStart.Add(10 * time.Hour)
 	if m.daySlotStart.Before(m.dayWindowStart) {
-		m.dayWindowStart = clampDayWindowStart(m.daySlotStart, m.displayedDay())
+		m.dayWindowStart = clampDayWindowStart(alignWindowStart(m.daySlotStart), m.displayedDay())
 		return
 	}
 	if !m.daySlotStart.Before(windowEnd) {
-		m.dayWindowStart = clampDayWindowStart(m.daySlotStart.Add(-9*time.Hour), m.displayedDay())
+		m.dayWindowStart = clampDayWindowStart(alignWindowStart(m.daySlotStart.Add(-9*time.Hour)), m.displayedDay())
 	}
 }
 
@@ -846,6 +864,19 @@ func (m *AppModel) jumpDayItem(direction int) {
 	}
 	m.focusDayItem(items[next])
 	m.ensureVisible()
+}
+
+func (m *AppModel) jumpToClosestSlot() {
+	if m.timelineView != timelineViewDay {
+		return
+	}
+	if rng := m.selectedCreateRange(); rng != nil {
+		m.setSlotFocus(rng.start, 15*time.Minute)
+		return
+	}
+	if len(m.entries) > 0 {
+		m.setSlotFocus(m.entries[m.cursor].StartedAt, 15*time.Minute)
+	}
 }
 
 func (m AppModel) currentDayItemPosition(items []dayTimelineItem) int {
@@ -1023,13 +1054,145 @@ func (m AppModel) defaultProjectCursor(dialogMode projectDialogMode) int {
 	return idx + 1
 }
 
+func nextEntryField(current string) string {
+	switch current {
+	case "description":
+		return "project"
+	case "project":
+		return "start"
+	case "start":
+		return "end"
+	default:
+		return "description"
+	}
+}
+
+func nextGapField(current string) string {
+	switch current {
+	case "description":
+		return "project"
+	case "project":
+		return "start"
+	case "start":
+		return "end"
+	default:
+		return "description"
+	}
+}
+
+func entryEditFieldIsText(field string) bool {
+	return field == "description" || field == "start" || field == "end"
+}
+
+func gapEntryFieldIsText(field string) bool {
+	return field == "description" || field == "start" || field == "end"
+}
+
+func (m *AppModel) appendEntryFieldInput(text string) {
+	switch m.entryInputField {
+	case "description":
+		m.entryInput += text
+	case "start":
+		m.entryStartInput += text
+	case "end":
+		m.entryEndInput += text
+	}
+}
+
+func (m *AppModel) backspaceEntryFieldInput() {
+	switch m.entryInputField {
+	case "description":
+		if len(m.entryInput) > 0 {
+			m.entryInput = m.entryInput[:len(m.entryInput)-1]
+		}
+	case "start":
+		if len(m.entryStartInput) > 0 {
+			m.entryStartInput = m.entryStartInput[:len(m.entryStartInput)-1]
+		}
+	case "end":
+		if len(m.entryEndInput) > 0 {
+			m.entryEndInput = m.entryEndInput[:len(m.entryEndInput)-1]
+		}
+	}
+}
+
+func (m *AppModel) clearEntryFieldInput() {
+	switch m.entryInputField {
+	case "description":
+		m.entryInput = ""
+	case "start":
+		m.entryStartInput = ""
+	case "end":
+		m.entryEndInput = ""
+	}
+}
+
+func (m *AppModel) appendGapFieldInput(text string) {
+	switch m.gapInputField {
+	case "description":
+		m.gapInput += text
+	case "start":
+		m.gapStartInput += text
+	case "end":
+		m.gapEndInput += text
+	}
+}
+
+func (m *AppModel) backspaceGapFieldInput() {
+	switch m.gapInputField {
+	case "description":
+		if len(m.gapInput) > 0 {
+			m.gapInput = m.gapInput[:len(m.gapInput)-1]
+		}
+	case "start":
+		if len(m.gapStartInput) > 0 {
+			m.gapStartInput = m.gapStartInput[:len(m.gapStartInput)-1]
+		}
+	case "end":
+		if len(m.gapEndInput) > 0 {
+			m.gapEndInput = m.gapEndInput[:len(m.gapEndInput)-1]
+		}
+	}
+}
+
+func (m *AppModel) clearGapFieldInput() {
+	switch m.gapInputField {
+	case "description":
+		m.gapInput = ""
+	case "start":
+		m.gapStartInput = ""
+	case "end":
+		m.gapEndInput = ""
+	}
+}
+
+func parseDialogRange(base time.Time, startText, endText string) (time.Time, time.Time, error) {
+	loc := time.Local
+	day := base.In(loc).Format("2006-01-02")
+	startedAt, err := time.ParseInLocation("2006-01-02 15:04", day+" "+strings.TrimSpace(startText), loc)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("invalid start time")
+	}
+	endedAt, err := time.ParseInLocation("2006-01-02 15:04", day+" "+strings.TrimSpace(endText), loc)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("invalid end time")
+	}
+	if !endedAt.After(startedAt) {
+		return time.Time{}, time.Time{}, fmt.Errorf("end must be after start")
+	}
+	return startedAt, endedAt, nil
+}
+
 func (m *AppModel) openGapEntryDialog() {
 	if m.selectedCreateRange() == nil {
 		return
 	}
+	rng := m.selectedCreateRange()
 	m.mode = modeGapEntry
 	m.gapInput = ""
 	m.gapInputField = "description"
+	m.gapStartInput = clock(rng.start)
+	m.gapEndInput = clock(rng.end)
 	m.gapProjectCursor = 0
 	m.err = nil
 	m.caretVisible = true
@@ -1053,6 +1216,12 @@ func (m *AppModel) openEntryEditDialog(projectOnly bool) {
 	if entry.Description != nil {
 		m.entryInput = *entry.Description
 	}
+	m.entryStartInput = clock(entry.StartedAt)
+	if entry.EndedAt != nil {
+		m.entryEndInput = clock(*entry.EndedAt)
+	} else {
+		m.entryEndInput = clock(entry.StartedAt.Add(time.Hour))
+	}
 	m.entryProjectCursor = 0
 	if entry.ProjectID != nil {
 		m.entryProjectCursor = m.projectIndex(*entry.ProjectID) + 1
@@ -1065,14 +1234,16 @@ func (m *AppModel) closeEntryEditDialog() {
 	m.mode = modeTimeline
 	m.entryInput = ""
 	m.entryInputField = ""
+	m.entryStartInput = ""
+	m.entryEndInput = ""
 	m.entryProjectCursor = 0
 	m.entryProjectOnly = false
 	m.caretVisible = false
 }
 
 func (m *AppModel) handleEntryEditKey(msg tea.KeyMsg) tea.Cmd {
-	if !m.entryProjectOnly && m.entryInputField == "description" && msg.Type == tea.KeyRunes {
-		m.entryInput += string(msg.Runes)
+	if !m.entryProjectOnly && msg.Type == tea.KeyRunes && entryEditFieldIsText(m.entryInputField) {
+		m.appendEntryFieldInput(string(msg.Runes))
 		return nil
 	}
 	switch msg.String() {
@@ -1083,11 +1254,7 @@ func (m *AppModel) handleEntryEditKey(msg tea.KeyMsg) tea.Cmd {
 		m.closeEntryEditDialog()
 	case "tab":
 		if !m.entryProjectOnly {
-			if m.entryInputField == "project" {
-				m.entryInputField = "description"
-			} else {
-				m.entryInputField = "project"
-			}
+			m.entryInputField = nextEntryField(m.entryInputField)
 		}
 	case "up", "k":
 		if m.entryProjectCursor > 0 {
@@ -1098,16 +1265,16 @@ func (m *AppModel) handleEntryEditKey(msg tea.KeyMsg) tea.Cmd {
 			m.entryProjectCursor++
 		}
 	case "backspace":
-		if !m.entryProjectOnly && m.entryInputField == "description" && len(m.entryInput) > 0 {
-			m.entryInput = m.entryInput[:len(m.entryInput)-1]
+		if !m.entryProjectOnly {
+			m.backspaceEntryFieldInput()
 		}
 	case " ", "space":
 		if !m.entryProjectOnly && m.entryInputField == "description" {
 			m.entryInput += " "
 		}
 	case "delete":
-		if !m.entryProjectOnly && m.entryInputField == "description" {
-			m.entryInput = ""
+		if !m.entryProjectOnly {
+			m.clearEntryFieldInput()
 		}
 	case "enter":
 		m.saveEntryEdit()
@@ -1129,7 +1296,12 @@ func (m *AppModel) saveEntryEdit() {
 	if m.entryProjectOnly && entry.Description != nil {
 		description = *entry.Description
 	}
-	if err := m.store.UpdateEntryDescriptionAndProject(m.ctx, entry.ID, description, projectID); err != nil {
+	startedAt, endedAt, err := parseDialogRange(entry.StartedAt, m.entryStartInput, m.entryEndInput)
+	if err != nil {
+		m.err = err
+		return
+	}
+	if err := m.store.UpdateEntry(m.ctx, entry.ID, description, projectID, startedAt, endedAt); err != nil {
 		m.err = err
 		return
 	}
@@ -1144,14 +1316,16 @@ func (m *AppModel) saveEntryEdit() {
 func (m *AppModel) closeGapEntryDialog() {
 	m.mode = modeTimeline
 	m.gapInput = ""
+	m.gapStartInput = ""
+	m.gapEndInput = ""
 	m.gapInputField = ""
 	m.gapProjectCursor = 0
 	m.caretVisible = false
 }
 
 func (m *AppModel) handleGapEntryKey(msg tea.KeyMsg) tea.Cmd {
-	if m.gapInputField == "description" && msg.Type == tea.KeyRunes {
-		m.gapInput += string(msg.Runes)
+	if msg.Type == tea.KeyRunes && gapEntryFieldIsText(m.gapInputField) {
+		m.appendGapFieldInput(string(msg.Runes))
 		return nil
 	}
 	switch msg.String() {
@@ -1161,31 +1335,23 @@ func (m *AppModel) handleGapEntryKey(msg tea.KeyMsg) tea.Cmd {
 	case "esc":
 		m.closeGapEntryDialog()
 	case "tab":
-		if m.gapInputField == "project" {
-			m.gapInputField = "description"
-		} else {
-			m.gapInputField = "project"
-		}
+		m.gapInputField = nextGapField(m.gapInputField)
 	case "up", "k":
-		if m.gapInputField == "project" && m.gapProjectCursor > 1 {
+		if m.gapProjectCursor > 1 {
 			m.gapProjectCursor--
 		}
 	case "down", "j":
-		if m.gapInputField == "project" && m.gapProjectCursor < len(m.projects) {
+		if m.gapProjectCursor < len(m.projects) {
 			m.gapProjectCursor++
 		}
 	case "backspace":
-		if m.gapInputField == "description" && len(m.gapInput) > 0 {
-			m.gapInput = m.gapInput[:len(m.gapInput)-1]
-		}
+		m.backspaceGapFieldInput()
 	case " ", "space":
 		if m.gapInputField == "description" {
 			m.gapInput += " "
 		}
 	case "delete":
-		if m.gapInputField == "description" {
-			m.gapInput = ""
-		}
+		m.clearGapFieldInput()
 	case "enter":
 		m.createGapEntry()
 	}
@@ -1208,11 +1374,16 @@ func (m *AppModel) createGapEntry() {
 	if project.Code != nil && *project.Code != "" {
 		ident = *project.Code
 	}
+	startedAt, endedAt, err := parseDialogRange(gap.start, m.gapStartInput, m.gapEndInput)
+	if err != nil {
+		m.err = err
+		return
+	}
 	entry, err := m.store.CreateManualEntry(m.ctx, db.ManualEntryInput{
 		ProjectIdent: ident,
 		Description:  strings.TrimSpace(m.gapInput),
-		StartedAt:    gap.start,
-		EndedAt:      gap.end,
+		StartedAt:    startedAt,
+		EndedAt:      endedAt,
 	})
 	if err != nil {
 		m.err = err
@@ -1730,7 +1901,7 @@ func renderDayTimeline(m AppModel, styles tuiStyles) string {
 	gaps := dayGapsForIndices(m.entries, indices, m.displayedDay())
 	window := dayTimelineWindow(dayEntries, m.displayedDay(), m.dayWindowStart)
 	operatorLanes := buildOperatorLanes(m.entries, indices)
-	rowCount, slot, rowsPerHour := dayTimelineRowConfig(window, m.height)
+	rows := dayTimelineRows(window, m.height)
 	chartCols := verticalTimelineColumns(m.width, operatorLanes)
 
 	var b strings.Builder
@@ -1738,10 +1909,8 @@ func renderDayTimeline(m AppModel, styles tuiStyles) string {
 	b.WriteString(styles.muted.Render(fmt.Sprintf("%d entries | %d lanes | %d gaps | %s-%s", len(dayEntries), len(operatorLanes), len(gaps), clock(window.start), clock(window.end))) + "\n")
 	b.WriteString(renderVerticalTimelineHeader(chartCols, operatorLanes) + "\n")
 	b.WriteString(styles.rule.Render(strings.Repeat("-", timelineWidth(m.width))) + "\n")
-	for i := 0; i < rowCount; i++ {
-		slotStart := window.start.Add(time.Duration(i) * slot)
-		slotEnd := slotStart.Add(slot)
-		b.WriteString(renderVerticalTimelineRow(m, i, rowsPerHour, slotStart, slotEnd, chartCols, operatorLanes, gaps, styles) + "\n")
+	for _, row := range rows {
+		b.WriteString(renderVerticalTimelineRow(m, row, chartCols, operatorLanes, gaps, styles) + "\n")
 	}
 	if m.dayFocusKind == "slot" && !m.daySlotStart.IsZero() {
 		b.WriteString(styles.muted.Render(fmt.Sprintf("%s | slot %s-%s | enter create or edit overlap", selectedWeekday, clock(m.daySlotStart), clock(m.daySlotStart.Add(m.daySlotSpan)))))
@@ -1943,14 +2112,37 @@ func metadataString(md map[string]any, key string) string {
 	}
 }
 
-func dayTimelineRowConfig(window dayWindow, height int) (int, time.Duration, int) {
-	rowsPerHour := 1
-	if height > 0 {
-		rowsPerHour = maxInt(1, (height-8)/10)
+func dayTimelineRows(window dayWindow, height int) []dayTimelineRow {
+	available := maxInt(10, height-6)
+	base := available / 10
+	extra := available % 10
+	if base < 1 {
+		base = 1
+		extra = 0
 	}
-	rowCount := rowsPerHour * 10
-	step := time.Hour / time.Duration(rowsPerHour)
-	return rowCount, step, rowsPerHour
+	rows := make([]dayTimelineRow, 0, available)
+	hourStart := window.start
+	for hour := 0; hour < 10; hour++ {
+		rowsThisHour := base
+		if hour < extra {
+			rowsThisHour++
+		}
+		step := time.Hour / time.Duration(rowsThisHour)
+		for i := 0; i < rowsThisHour; i++ {
+			start := hourStart.Add(time.Duration(i) * step)
+			end := start.Add(step)
+			if i == rowsThisHour-1 {
+				end = hourStart.Add(time.Hour)
+			}
+			label := ""
+			if i == 0 {
+				label = clock(hourStart)
+			}
+			rows = append(rows, dayTimelineRow{start: start, end: end, label: label})
+		}
+		hourStart = hourStart.Add(time.Hour)
+	}
+	return rows
 }
 
 func verticalTimelineColumns(width int, lanes []dayOperatorLane) []int {
@@ -1975,27 +2167,20 @@ func renderVerticalTimelineHeader(colWidths []int, lanes []dayOperatorLane) stri
 	return strings.Join(parts, "")
 }
 
-func renderVerticalTimelineRow(m AppModel, rowIndex, rowsPerHour int, slotStart, slotEnd time.Time, colWidths []int, lanes []dayOperatorLane, gaps []dayGap, styles tuiStyles) string {
-	parts := []string{renderVerticalTimeCell(m, slotStart, slotEnd, rowIndex, rowsPerHour, styles), " ", renderVerticalGapCell(slotStart, slotEnd, gaps, m, colWidths[0], styles)}
+func renderVerticalTimelineRow(m AppModel, row dayTimelineRow, colWidths []int, lanes []dayOperatorLane, gaps []dayGap, styles tuiStyles) string {
+	parts := []string{renderVerticalTimeCell(m, row, styles), " ", renderVerticalGapCell(row.start, row.end, gaps, m, colWidths[0], styles)}
 	for i, lane := range lanes {
-		parts = append(parts, " ", renderVerticalLaneCell(slotStart, slotEnd, lane.blocks, m, colWidths[i+1], styles))
+		parts = append(parts, " ", renderVerticalLaneCell(row.start, row.end, lane.blocks, m, colWidths[i+1], styles))
 	}
 	return strings.Join(parts, "")
 }
 
-func renderVerticalTimeCell(m AppModel, slotStart, slotEnd time.Time, rowIndex, rowsPerHour int, styles tuiStyles) string {
-	label := padRight(verticalTimeLabel(slotStart, rowIndex, rowsPerHour), 5)
-	if m.dayFocusKind == "slot" && !m.daySlotStart.IsZero() && rangesOverlap(slotStart, slotEnd, m.daySlotStart, m.daySlotStart.Add(m.daySlotSpan)) {
+func renderVerticalTimeCell(m AppModel, row dayTimelineRow, styles tuiStyles) string {
+	label := padRight(row.label, 5)
+	if m.dayFocusKind == "slot" && !m.daySlotStart.IsZero() && rangesOverlap(row.start, row.end, m.daySlotStart, m.daySlotStart.Add(m.daySlotSpan)) {
 		return styles.activePicker.Width(5).Render(label)
 	}
 	return label
-}
-
-func verticalTimeLabel(slotStart time.Time, rowIndex, rowsPerHour int) string {
-	if rowsPerHour <= 1 || rowIndex%rowsPerHour == 0 {
-		return clock(slotStart)
-	}
-	return ""
 }
 
 func renderVerticalGapCell(slotStart, slotEnd time.Time, gaps []dayGap, m AppModel, width int, styles tuiStyles) string {
@@ -2018,7 +2203,7 @@ func renderVerticalLaneCell(slotStart, slotEnd time.Time, blocks []timelineBlock
 		if !rangesOverlap(slotStart, slotEnd, block.start, block.end) {
 			continue
 		}
-		focused := m.dayFocusKind != "gap" && block.index == m.cursor
+		focused := (m.dayFocusKind == "entry" && block.index == m.cursor) || (m.dayFocusKind == "slot" && slotOverlapsBlock(m, block))
 		cellStyle := styles.confirmed
 		if block.entry.Status == model.StatusDraft {
 			cellStyle = styles.draft
@@ -2029,6 +2214,14 @@ func renderVerticalLaneCell(slotStart, slotEnd time.Time, blocks []timelineBlock
 		return renderVerticalEntryCell(slotStart, slotEnd, block.start, block.end, focused, width, timelineBlockLabel(block.entry), cellStyle, styles)
 	}
 	return padRight("", width)
+}
+
+func slotOverlapsBlock(m AppModel, block timelineBlock) bool {
+	if m.dayFocusKind != "slot" || m.daySlotStart.IsZero() || m.daySlotSpan <= 0 {
+		return false
+	}
+	slotEnd := m.daySlotStart.Add(m.daySlotSpan)
+	return rangesOverlap(m.daySlotStart, slotEnd, block.start, block.end)
 }
 
 func renderVerticalEntryCell(slotStart, slotEnd, itemStart, itemEnd time.Time, focused bool, width int, label string, baseStyle lipgloss.Style, styles tuiStyles) string {
@@ -2763,6 +2956,18 @@ func renderGapEntryDialog(m AppModel, styles tuiStyles, background string) strin
 			content.WriteString(renderPickerLine(projectDialogLabel(AppModel{}, project), i+1, m.gapProjectCursor, styles, innerWidth) + "\n")
 		}
 	}
+	startStyle := styles.muted
+	if m.gapInputField == "start" {
+		startStyle = styles.activePicker
+	}
+	endStyle := styles.muted
+	if m.gapInputField == "end" {
+		endStyle = styles.activePicker
+	}
+	content.WriteString("\n" + styles.muted.Render("Start") + "\n")
+	content.WriteString(startStyle.Render(truncateForWidth("> "+textWithCaret(m.gapStartInput, m.caretVisible, m.gapInputField == "start"), innerWidth)))
+	content.WriteString("\n" + styles.muted.Render("End") + "\n")
+	content.WriteString(endStyle.Render(truncateForWidth("> "+textWithCaret(m.gapEndInput, m.caretVisible, m.gapInputField == "end"), innerWidth)))
 	content.WriteString("\n\n" + styles.muted.Render("tab focus | enter create | esc cancel"))
 
 	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
@@ -2791,6 +2996,18 @@ func renderEntryEditDialog(m AppModel, styles tuiStyles, background string) stri
 	for i, project := range m.projects {
 		content.WriteString(renderPickerLine(projectDialogLabel(AppModel{}, project), i+1, m.entryProjectCursor, styles, innerWidth) + "\n")
 	}
+	startStyle := styles.muted
+	if m.entryInputField == "start" {
+		startStyle = styles.activePicker
+	}
+	endStyle := styles.muted
+	if m.entryInputField == "end" {
+		endStyle = styles.activePicker
+	}
+	content.WriteString("\n" + styles.muted.Render("Start") + "\n")
+	content.WriteString(startStyle.Render(truncateForWidth("> "+textWithCaret(m.entryStartInput, m.caretVisible, m.entryInputField == "start"), innerWidth)))
+	content.WriteString("\n" + styles.muted.Render("End") + "\n")
+	content.WriteString(endStyle.Render(truncateForWidth("> "+textWithCaret(m.entryEndInput, m.caretVisible, m.entryInputField == "end"), innerWidth)))
 	content.WriteString("\n\n" + styles.muted.Render(entryEditHelp(m)))
 
 	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
@@ -2896,7 +3113,7 @@ func textWithCaret(text string, visible, active bool) string {
 		return text
 	}
 	if visible {
-		return text + "_"
+		return text + "█"
 	}
 	return text + " "
 }

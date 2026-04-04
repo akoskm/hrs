@@ -245,6 +245,21 @@ func (s *Store) UpdateEntryDescriptionAndProject(ctx context.Context, entryID st
 	return err
 }
 
+func (s *Store) UpdateEntry(ctx context.Context, entryID string, description string, projectID *string, startedAt, endedAt time.Time) error {
+	status := model.StatusDraft
+	var dbProjectID any
+	if projectID != nil {
+		status = model.StatusConfirmed
+		dbProjectID = *projectID
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE time_entries
+		SET description = ?, project_id = ?, started_at = ?, ended_at = ?, duration_secs = ?, status = ?, updated_at = ?
+		WHERE id = ?
+	`, description, dbProjectID, startedAt.UTC().Format(timeFormat), endedAt.UTC().Format(timeFormat), int(endedAt.Sub(startedAt).Seconds()), status, nowUTC().Format(timeFormat), entryID)
+	return err
+}
+
 func (s *Store) UpsertAgentEntry(ctx context.Context, input AgentEntryUpsertInput) (model.TimeEntry, error) {
 	now := nowUTC()
 	duration := int(input.EndedAt.Sub(input.StartedAt).Seconds())

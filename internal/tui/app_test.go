@@ -422,6 +422,50 @@ func TestDeleteClearsFocusedEntryDescription(t *testing.T) {
 	}
 }
 
+func TestEditDialogUpdatesTimes(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	entry, err := store.CreateImportedEntry(ctx, db.EntryImport{Description: "Auth", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC), Operator: "opencode", SourceRef: "sess-time", Cwd: "/Users/akoskm/Projects/hrs", Metadata: map[string]any{}})
+	if err != nil {
+		t.Fatalf("CreateImportedEntry() error = %v", err)
+	}
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDelete})
+	app = updated.(AppModel)
+	for _, r := range []rune("09:30") {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = updated.(AppModel)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDelete})
+	app = updated.(AppModel)
+	for _, r := range []rune("10:45") {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = updated.(AppModel)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	updatedEntry, err := store.EntryByID(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("EntryByID() error = %v", err)
+	}
+	if formatRange(updatedEntry.StartedAt, updatedEntry.EndedAt) != "09:30-10:45" {
+		t.Fatalf("updated range = %s, want 09:30-10:45", formatRange(updatedEntry.StartedAt, updatedEntry.EndedAt))
+	}
+}
+
 func TestPickerHighlightsFullRow(t *testing.T) {
 	line := renderPickerLine("Test Project", 1, 1, newStyles(80), 20)
 	if !strings.Contains(line, "Test Project") {
@@ -433,8 +477,8 @@ func TestPickerHighlightsFullRow(t *testing.T) {
 }
 
 func TestTextWithCaret(t *testing.T) {
-	if got := textWithCaret("Auth", true, true); got != "Auth_" {
-		t.Fatalf("textWithCaret() = %q, want Auth_", got)
+	if got := textWithCaret("Auth", true, true); got != "Auth█" {
+		t.Fatalf("textWithCaret() = %q, want Auth█", got)
 	}
 }
 
@@ -853,6 +897,41 @@ func TestGapDialogDefaultsToSelectedSlotRange(t *testing.T) {
 	view := stripANSI(renderGapEntryDialog(model, newStyles(100), ""))
 	if strings.Index(view, "Description") > strings.Index(view, "Project") {
 		t.Fatalf("description should render before project: %q", view)
+	}
+}
+
+func TestGapDialogUsesEditedTimesOnCreate(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.InitializeTodayTimelineView()
+	model.daySlotStart = time.Date(2026, 4, 3, 15, 15, 0, 0, time.Local)
+	model.daySlotSpan = time.Hour
+	model.dayFocusKind = "slot"
+	model.openGapEntryDialog()
+	model.gapInput = "Deep work"
+	model.gapProjectCursor = 1
+	model.gapInputField = "start"
+	model.gapStartInput = "15:30"
+	model.gapInputField = "end"
+	model.gapEndInput = "16:45"
+	model.createGapEntry()
+	entries, err := store.ListEntries(ctx)
+	if err != nil {
+		t.Fatalf("ListEntries() error = %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if formatRange(entries[0].StartedAt, entries[0].EndedAt) != "15:30-16:45" {
+		t.Fatalf("created range = %s, want 15:30-16:45", formatRange(entries[0].StartedAt, entries[0].EndedAt))
 	}
 }
 
