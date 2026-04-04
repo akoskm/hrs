@@ -86,6 +86,7 @@ type AppModel struct {
 	syncStatusErr      error
 	timelineView       timelineViewMode
 	inspectorTab       inspectorTab
+	slotMarkStart      time.Time
 	confirmDeleteID    string
 	mode               mode
 	err                error
@@ -201,6 +202,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "q":
 			m.quitting = true
 			return m, tea.Quit
+		case "esc":
+			if !m.slotMarkStart.IsZero() {
+				m.slotMarkStart = time.Time{}
+			}
 		case "/":
 			m.mode = modeSearch
 			m.searchQuery = ""
@@ -356,7 +361,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cursorBlinkCmd()
 			}
 		case " ", "space":
-			if m.mode == modeTimeline && len(m.entries) > 0 {
+			if m.mode == modeTimeline && m.timelineView == timelineViewDay && m.dayFocusKind == "slot" {
+				if m.slotMarkStart.IsZero() {
+					m.slotMarkStart = m.daySlotStart
+				} else {
+					m.slotMarkStart = time.Time{}
+				}
+			} else if m.mode == modeTimeline && len(m.entries) > 0 {
 				entry := m.entries[m.cursor]
 				m.selected[entry.ID] = !m.selected[entry.ID]
 				if !m.selected[entry.ID] {
@@ -968,7 +979,13 @@ func (m AppModel) selectedCreateRange() *dayGap {
 		return gap
 	}
 	if m.dayFocusKind == "slot" && !m.daySlotStart.IsZero() {
-		gap := dayGap{start: m.daySlotStart, end: m.daySlotStart.Add(m.daySlotSpan)}
+		start := m.daySlotStart
+		end := m.daySlotStart.Add(m.daySlotSpan)
+		if !m.slotMarkStart.IsZero() {
+			start = minTime(m.slotMarkStart, m.daySlotStart)
+			end = maxTime(m.slotMarkStart.Add(m.daySlotSpan), m.daySlotStart.Add(m.daySlotSpan))
+		}
+		gap := dayGap{start: start, end: end}
 		return &gap
 	}
 	return nil
@@ -1201,6 +1218,7 @@ func (m *AppModel) openGapEntryDialog() {
 		return
 	}
 	rng := m.selectedCreateRange()
+	m.slotMarkStart = time.Time{}
 	m.mode = modeGapEntry
 	m.gapInput = ""
 	m.gapInputField = "description"
@@ -1953,7 +1971,12 @@ func renderDayTimeline(m AppModel, styles tuiStyles) string {
 		b.WriteString(renderVerticalTimelineRow(m, row, chartCols, operatorLanes, styles) + "\n")
 	}
 	if m.dayFocusKind == "slot" && !m.daySlotStart.IsZero() {
-		b.WriteString(styles.muted.Render(fmt.Sprintf("%s | slot %s-%s | enter create or edit overlap", selectedWeekday, clock(m.daySlotStart), clock(m.daySlotStart.Add(m.daySlotSpan)))))
+		if !m.slotMarkStart.IsZero() {
+			rng := m.selectedCreateRange()
+			b.WriteString(styles.muted.Render(fmt.Sprintf("%s | marking %s-%s | up/down extend | enter create | esc cancel", selectedWeekday, clock(rng.start), clock(rng.end))))
+		} else {
+			b.WriteString(styles.muted.Render(fmt.Sprintf("%s | slot %s-%s | space mark range | enter create or edit overlap", selectedWeekday, clock(m.daySlotStart), clock(m.daySlotStart.Add(m.daySlotSpan)))))
+		}
 		return b.String()
 	}
 	if gap := m.focusedGap(); gap != nil {
@@ -2215,8 +2238,16 @@ func renderVerticalTimelineRow(m AppModel, row dayTimelineRow, colWidths []int, 
 
 func renderVerticalTimeCell(m AppModel, row dayTimelineRow, styles tuiStyles) string {
 	label := padRight(row.label, 5)
-	if m.dayFocusKind == "slot" && !m.daySlotStart.IsZero() && rangesOverlap(row.start, row.end, m.daySlotStart, m.daySlotStart.Add(m.daySlotSpan)) {
-		return styles.activePicker.Width(5).Render(label)
+	if m.dayFocusKind == "slot" && !m.daySlotStart.IsZero() {
+		slotStart := m.daySlotStart
+		slotEnd := m.daySlotStart.Add(m.daySlotSpan)
+		if !m.slotMarkStart.IsZero() {
+			slotStart = minTime(m.slotMarkStart, m.daySlotStart)
+			slotEnd = maxTime(m.slotMarkStart.Add(m.daySlotSpan), m.daySlotStart.Add(m.daySlotSpan))
+		}
+		if rangesOverlap(row.start, row.end, slotStart, slotEnd) {
+			return styles.activePicker.Width(5).Render(label)
+		}
 	}
 	return label
 }
@@ -3244,6 +3275,20 @@ func minInt(a, b int) int {
 
 func maxInt(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
 		return a
 	}
 	return b
