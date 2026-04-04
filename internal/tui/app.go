@@ -1950,7 +1950,7 @@ func renderDayTimeline(m AppModel, styles tuiStyles) string {
 	b.WriteString(renderVerticalTimelineHeader(chartCols, operatorLanes) + "\n")
 	b.WriteString(styles.rule.Render(strings.Repeat("-", timelineWidth(m.width))) + "\n")
 	for _, row := range rows {
-		b.WriteString(renderVerticalTimelineRow(m, row, chartCols, operatorLanes, gaps, styles) + "\n")
+		b.WriteString(renderVerticalTimelineRow(m, row, chartCols, operatorLanes, styles) + "\n")
 	}
 	if m.dayFocusKind == "slot" && !m.daySlotStart.IsZero() {
 		b.WriteString(styles.muted.Render(fmt.Sprintf("%s | slot %s-%s | enter create or edit overlap", selectedWeekday, clock(m.daySlotStart), clock(m.daySlotStart.Add(m.daySlotSpan)))))
@@ -2186,31 +2186,29 @@ func dayTimelineRows(window dayWindow, height int) []dayTimelineRow {
 }
 
 func verticalTimelineColumns(width int, lanes []dayOperatorLane) []int {
-	count := len(lanes) + 1
-	cols := make([]int, count)
-	cols[0] = 5
+	cols := make([]int, len(lanes))
 	for i, lane := range lanes {
 		maxLabel := lipgloss.Width(lane.label)
 		for _, block := range lane.blocks {
 			maxLabel = maxInt(maxLabel, lipgloss.Width(timelineBlockLabel(block.entry)))
 		}
-		cols[i+1] = minInt(36, maxInt(12, maxLabel+2))
+		cols[i] = minInt(36, maxInt(12, maxLabel+2))
 	}
 	return cols
 }
 
 func renderVerticalTimelineHeader(colWidths []int, lanes []dayOperatorLane) string {
-	parts := []string{padRight("time", 5), " ", padRight("gap", colWidths[0])}
+	parts := []string{padRight("time", 5)}
 	for i, lane := range lanes {
-		parts = append(parts, " ", padRight(truncateForWidth(lane.label, colWidths[i+1]), colWidths[i+1]))
+		parts = append(parts, " ", padRight(truncateForWidth(lane.label, colWidths[i]), colWidths[i]))
 	}
 	return strings.Join(parts, "")
 }
 
-func renderVerticalTimelineRow(m AppModel, row dayTimelineRow, colWidths []int, lanes []dayOperatorLane, gaps []dayGap, styles tuiStyles) string {
-	parts := []string{renderVerticalTimeCell(m, row, styles), " ", renderVerticalGapCell(row.start, row.end, gaps, m, colWidths[0], styles)}
+func renderVerticalTimelineRow(m AppModel, row dayTimelineRow, colWidths []int, lanes []dayOperatorLane, styles tuiStyles) string {
+	parts := []string{renderVerticalTimeCell(m, row, styles)}
 	for i, lane := range lanes {
-		parts = append(parts, " ", renderVerticalLaneCell(row.start, row.end, lane.blocks, m, colWidths[i+1], styles))
+		parts = append(parts, " ", renderVerticalLaneCell(row.start, row.end, lane.blocks, m, colWidths[i], styles))
 	}
 	return strings.Join(parts, "")
 }
@@ -2221,21 +2219,6 @@ func renderVerticalTimeCell(m AppModel, row dayTimelineRow, styles tuiStyles) st
 		return styles.activePicker.Width(5).Render(label)
 	}
 	return label
-}
-
-func renderVerticalGapCell(slotStart, slotEnd time.Time, gaps []dayGap, m AppModel, width int, styles tuiStyles) string {
-	for i, gap := range gaps {
-		if !rangesOverlap(slotStart, slotEnd, gap.start, gap.end) {
-			continue
-		}
-		focused := m.dayFocusKind == "gap" && i == m.dayGapFocus
-		label := "g"
-		if focused && width > 2 {
-			label = "gap"
-		}
-		return renderVerticalRangeCell(slotStart, slotEnd, gap.start, gap.end, focused, width, label, styles.muted, styles)
-	}
-	return padRight("", width)
 }
 
 func renderVerticalLaneCell(slotStart, slotEnd time.Time, blocks []timelineBlock, m AppModel, width int, styles tuiStyles) string {
