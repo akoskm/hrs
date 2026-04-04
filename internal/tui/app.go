@@ -859,12 +859,16 @@ func (m *AppModel) jumpDayItem(direction int) {
 	if len(items) == 0 {
 		return
 	}
+	prevEntry := m.effectiveEntryIndex()
 	if m.dayFocusKind == "slot" {
 		slotEnd := m.daySlotStart.Add(m.daySlotSpan)
 		if direction > 0 {
 			for _, item := range items {
 				if !item.start.Before(slotEnd) {
 					m.focusDayItem(item)
+					if m.effectiveEntryIndex() == prevEntry && prevEntry >= 0 {
+						continue
+					}
 					return
 				}
 			}
@@ -873,6 +877,9 @@ func (m *AppModel) jumpDayItem(direction int) {
 		for i := len(items) - 1; i >= 0; i-- {
 			if !items[i].end.After(m.daySlotStart) {
 				m.focusDayItem(items[i])
+				if m.effectiveEntryIndex() == prevEntry && prevEntry >= 0 {
+					continue
+				}
 				return
 			}
 		}
@@ -883,19 +890,22 @@ func (m *AppModel) jumpDayItem(direction int) {
 		return
 	}
 	next := current + direction
-	if next < 0 {
+	for next >= 0 && next < len(items) {
+		m.focusDayItem(items[next])
+		if m.effectiveEntryIndex() != prevEntry {
+			m.ensureVisible()
+			return
+		}
+		next += direction
+	}
+	if direction < 0 {
 		item := items[current]
 		slotStart := item.start.Add(-15 * time.Minute)
 		m.setSlotFocus(slotStart, 15*time.Minute)
-		return
-	}
-	if next >= len(items) {
+	} else {
 		item := items[current]
 		m.setSlotFocus(item.end, 15*time.Minute)
-		return
 	}
-	m.focusDayItem(items[next])
-	m.ensureVisible()
 }
 
 func (m *AppModel) jumpToClosestSlot() {
@@ -2060,9 +2070,7 @@ func inspectorLines(m AppModel) []string {
 
 func (m AppModel) effectiveEntryIndex() int {
 	if m.dayFocusKind == "slot" {
-		if idx := m.overlappingEntryIndexForSlot(); idx >= 0 {
-			return idx
-		}
+		return m.overlappingEntryIndexForSlot()
 	}
 	return m.cursor
 }
@@ -2085,7 +2093,7 @@ func overviewInspectorLines(m AppModel) []string {
 		}
 	}
 	idx := m.effectiveEntryIndex()
-	if len(m.entries) == 0 || idx >= len(m.entries) {
+	if len(m.entries) == 0 || idx < 0 || idx >= len(m.entries) {
 		return []string{"No entry selected"}
 	}
 	entry := m.entries[idx]
@@ -2122,7 +2130,7 @@ func sessionInspectorLines(m AppModel) []string {
 		return []string{"No session", "Gaps do not have source session detail."}
 	}
 	idx := m.effectiveEntryIndex()
-	if len(m.entries) == 0 || idx >= len(m.entries) {
+	if len(m.entries) == 0 || idx < 0 || idx >= len(m.entries) {
 		return []string{"No session selected"}
 	}
 	entry := m.entries[idx]

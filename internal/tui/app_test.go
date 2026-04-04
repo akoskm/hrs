@@ -1508,6 +1508,133 @@ func openTestStore(t *testing.T) *db.Store {
 	return store
 }
 
+func TestDayViewJKNeverStaysOnSameEntry(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", HourlyRate: 100, Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	// Three entries with gaps between them:
+	// A: 09:00-10:00, gap 10:00-11:00, B: 11:00-12:00, gap 12:00-13:00, C: 13:00-14:00
+	for _, e := range []struct{ desc, start, end string }{
+		{"A", "09:00", "10:00"},
+		{"B", "11:00", "12:00"},
+		{"C", "13:00", "14:00"},
+	} {
+		s, _ := time.Parse("2006-01-02 15:04", "2026-04-03 "+e.start)
+		end, _ := time.Parse("2006-01-02 15:04", "2026-04-03 "+e.end)
+		if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: e.desc, StartedAt: s, EndedAt: end}); err != nil {
+			t.Fatalf("CreateManualEntry(%s) error = %v", e.desc, err)
+		}
+	}
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	app.SetDefaultTimelineView("day")
+	updated, _ := app.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
+	app = updated.(AppModel)
+
+	// Start on entry C (last entry, default focus)
+	if app.dayFocusKind != "entry" {
+		t.Fatalf("initial focus = %q, want entry", app.dayFocusKind)
+	}
+	startDesc := descriptionOrID(app.entries[app.cursor])
+	if startDesc != "C" {
+		t.Fatalf("initial entry = %q, want C", startDesc)
+	}
+
+	// Navigate backward with k — should never stay on same entry
+	seen := []string{"C"}
+	for i := 0; i < 6; i++ {
+		prevIdx := app.effectiveEntryIndex()
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+		app = updated.(AppModel)
+		currIdx := app.effectiveEntryIndex()
+		if currIdx >= 0 && currIdx == prevIdx {
+			t.Fatalf("k press %d stayed on same entry index %d", i+1, currIdx)
+		}
+		if currIdx >= 0 {
+			seen = append(seen, descriptionOrID(app.entries[currIdx]))
+		} else {
+			seen = append(seen, "slot")
+		}
+	}
+
+	// Verify we visited gap and entry alternately (C -> gap -> B -> gap -> A -> slot)
+	hasB := false
+	hasA := false
+	for _, s := range seen {
+		if s == "B" {
+			hasB = true
+		}
+		if s == "A" {
+			hasA = true
+		}
+	}
+	if !hasA || !hasB {
+		t.Fatalf("didn't visit all entries, seen = %v", seen)
+	}
+
+	// Navigate forward with j — should never stay on same entry
+	for i := 0; i < 6; i++ {
+		prevIdx := app.effectiveEntryIndex()
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+		app = updated.(AppModel)
+		currIdx := app.effectiveEntryIndex()
+		if currIdx >= 0 && currIdx == prevIdx {
+			t.Fatalf("j press %d stayed on same entry index %d", i+1, currIdx)
+		}
+	}
+}
+
+func TestDayViewJKRenderedOutputChangesEachPress(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", HourlyRate: 100, Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	// Human entry and overlapping agent entry (different lanes)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "manual work", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 30, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := store.CreateImportedEntry(ctx, db.EntryImport{Description: "agent session", StartedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 11, 0, 0, 0, time.UTC), Operator: "opencode", SourceRef: "s1", Cwd: "/tmp", Metadata: map[string]any{}}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "afternoon", StartedAt: time.Date(2026, 4, 3, 14, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 15, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	app.SetDefaultTimelineView("day")
+	updated, _ := app.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
+	app = updated.(AppModel)
+
+	// Navigate forward with j, verify effective entry changes each press
+	// (until we pass the last entry and hit a boundary slot)
+	for i := 0; i < 8; i++ {
+		prevIdx := app.effectiveEntryIndex()
+		prevFocus := app.dayFocusKind
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+		app = updated.(AppModel)
+		currIdx := app.effectiveEntryIndex()
+		// If we were on an entry, we must move to a different one or to a slot
+		if prevFocus == "entry" || (prevFocus == "slot" && prevIdx >= 0) {
+			if currIdx >= 0 && currIdx == prevIdx {
+				t.Fatalf("j press %d stayed on same entry index %d (focus=%s)", i+1, currIdx, app.dayFocusKind)
+			}
+		}
+	}
+}
+
 func TestDayViewJKNavigatesAndEnterEdits(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
