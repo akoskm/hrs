@@ -2226,7 +2226,7 @@ func renderVerticalLaneCell(slotStart, slotEnd time.Time, blocks []timelineBlock
 		if !rangesOverlap(slotStart, slotEnd, block.start, block.end) {
 			continue
 		}
-		focused := (m.dayFocusKind == "entry" && block.index == m.cursor) || (m.dayFocusKind == "slot" && slotOverlapsBlock(m, block))
+		focused := (m.dayFocusKind == "entry" && block.index == m.cursor) || (m.dayFocusKind == "slot" && slotOverlapsLaneBlock(m, block, blocks))
 		cellStyle := styles.confirmed
 		if block.entry.Status == model.StatusDraft {
 			cellStyle = styles.draft
@@ -2239,12 +2239,20 @@ func renderVerticalLaneCell(slotStart, slotEnd time.Time, blocks []timelineBlock
 	return padRight("", width)
 }
 
-func slotOverlapsBlock(m AppModel, block timelineBlock) bool {
+func slotOverlapsLaneBlock(m AppModel, block timelineBlock, laneBlocks []timelineBlock) bool {
 	if m.dayFocusKind != "slot" || m.daySlotStart.IsZero() || m.daySlotSpan <= 0 {
 		return false
 	}
 	slotEnd := m.daySlotStart.Add(m.daySlotSpan)
-	return rangesOverlap(m.daySlotStart, slotEnd, block.start, block.end)
+	if !rangesOverlap(m.daySlotStart, slotEnd, block.start, block.end) {
+		return false
+	}
+	for _, b := range laneBlocks {
+		if rangesOverlap(m.daySlotStart, slotEnd, b.start, b.end) {
+			return b.index == block.index
+		}
+	}
+	return false
 }
 
 func renderVerticalEntryCell(slotStart, slotEnd, itemStart, itemEnd time.Time, focused bool, width int, label string, baseStyle lipgloss.Style, styles tuiStyles) string {
