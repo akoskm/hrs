@@ -166,6 +166,88 @@ func TestParseClaudeFileSlotTimesRoundedTo15Min(t *testing.T) {
 	}
 }
 
+func TestCleanPromptTextFiltersNoise(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"[Image: source: /Users/akoskm/.claude/image-cache/abc.png]", ""},
+		{"[Image #14] some text", ""},
+		{"<task-notification> stuff", ""},
+		{"[Request interrupted by user]", ""},
+		{"<system-reminder> blah", ""},
+		{"short", ""},
+		{"fix the authentication bug in login flow", "fix the authentication bug in login flow"},
+		{"implement scroll [Image #5] in timeline", "implement scroll  in timeline"},
+		{"okay commit this now", "okay commit this now"},
+	}
+	for _, tt := range tests {
+		got := cleanPromptText(tt.input)
+		if got != tt.want {
+			t.Errorf("cleanPromptText(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestParseClaudeFileCapturesBranchAndTokens(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "rich.jsonl")
+	content := `{"sessionId":"s1","timestamp":"2026-01-29T14:00:00.000Z","cwd":"/tmp","gitBranch":"feat/auth","message":{"role":"user","content":"fix auth module","usage":{"input_tokens":500,"output_tokens":200}}}` + "\n" +
+		`{"sessionId":"s1","timestamp":"2026-01-29T14:01:00.000Z","cwd":"/tmp","gitBranch":"feat/auth","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":1000,"output_tokens":800}}}` + "\n" +
+		`{"sessionId":"s1","timestamp":"2026-01-29T14:02:00.000Z","cwd":"/tmp","gitBranch":"feat/auth","message":{"role":"user","content":"now add tests for it"}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	slots, err := ParseClaudeFile(path)
+	if err != nil {
+		t.Fatalf("ParseClaudeFile() error = %v", err)
+	}
+	if len(slots) != 1 {
+		t.Fatalf("len(slots) = %d, want 1", len(slots))
+	}
+	s := slots[0]
+	if s.GitBranch != "feat/auth" {
+		t.Errorf("GitBranch = %q, want feat/auth", s.GitBranch)
+	}
+	if s.TokenInput != 1500 {
+		t.Errorf("TokenInput = %d, want 1500", s.TokenInput)
+	}
+	if s.TokenOutput != 1000 {
+		t.Errorf("TokenOutput = %d, want 1000", s.TokenOutput)
+	}
+	if len(s.UserTexts) != 2 {
+		t.Fatalf("len(UserTexts) = %d, want 2", len(s.UserTexts))
+	}
+	if s.UserTexts[0] != "fix auth module" {
+		t.Errorf("UserTexts[0] = %q, want 'fix auth module'", s.UserTexts[0])
+	}
+	if s.UserTexts[1] != "now add tests for it" {
+		t.Errorf("UserTexts[1] = %q, want 'now add tests for it'", s.UserTexts[1])
+	}
+}
+
+func TestParseClaudeFileDeduplicatesPrompts(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "dedup.jsonl")
+	content := `{"sessionId":"s1","timestamp":"2026-01-29T14:00:00.000Z","cwd":"/tmp","gitBranch":"main","message":{"role":"user","content":"fix the bug"}}` + "\n" +
+		`{"sessionId":"s1","timestamp":"2026-01-29T14:00:30.000Z","cwd":"/tmp","gitBranch":"main","message":{"role":"user","content":"fix the bug"}}` + "\n" +
+		`{"sessionId":"s1","timestamp":"2026-01-29T14:01:00.000Z","cwd":"/tmp","gitBranch":"main","message":{"role":"user","content":"actually add tests too"}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	slots, err := ParseClaudeFile(path)
+	if err != nil {
+		t.Fatalf("ParseClaudeFile() error = %v", err)
+	}
+	if len(slots) != 1 {
+		t.Fatalf("len(slots) = %d, want 1", len(slots))
+	}
+	if len(slots[0].UserTexts) != 2 {
+		t.Fatalf("len(UserTexts) = %d, want 2 (deduped)", len(slots[0].UserTexts))
+	}
+}
+
 func TestParseClaudeSessionStillWorks(t *testing.T) {
 	t.Parallel()
 
