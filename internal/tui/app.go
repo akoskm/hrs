@@ -773,7 +773,31 @@ func (m *AppModel) moveSlot(delta, span time.Duration) {
 	if start.IsZero() {
 		start = roundDownToStep(time.Now().In(time.Local), span)
 	}
-	candidate := roundDownToStep(start.Add(delta), span)
+	// snap to row boundaries when inside the visible timeline, fall back to fixed step
+	dayEntries := dayEntriesForDate(m.entries, day.Format("2006-01-02"))
+	window := dayTimelineWindow(dayEntries, day, m.dayWindowStart)
+	rows := dayTimelineRows(window, m.height)
+	candidate := time.Time{}
+	if len(rows) > 0 && !start.Before(rows[0].start) && start.Before(rows[len(rows)-1].end) {
+		if delta > 0 {
+			for _, row := range rows {
+				if row.start.After(start) {
+					candidate = row.start
+					break
+				}
+			}
+		} else if delta < 0 {
+			for i := len(rows) - 1; i >= 0; i-- {
+				if rows[i].start.Before(start) {
+					candidate = rows[i].start
+					break
+				}
+			}
+		}
+	}
+	if candidate.IsZero() {
+		candidate = roundDownToStep(start.Add(delta), span)
+	}
 	dayFloor := dayStart(day)
 	dayMax := maxSlotStartForDay(day, span)
 	if candidate.Before(dayFloor) {
@@ -788,6 +812,13 @@ func (m *AppModel) moveSlot(delta, span time.Duration) {
 		} else {
 			m.dayDate = nextDay
 			candidate = clampSlotStartToDay(time.Date(nextDay.Year(), nextDay.Month(), nextDay.Day(), candidate.In(time.Local).Hour(), candidate.In(time.Local).Minute(), 0, 0, nextDay.Location()), nextDay, span)
+		}
+	}
+	// set span to match the row duration at the candidate position if within visible rows
+	for _, row := range rows {
+		if row.start.Equal(candidate) {
+			span = row.end.Sub(row.start)
+			break
 		}
 	}
 	m.daySlotSpan = span
