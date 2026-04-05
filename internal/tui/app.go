@@ -208,6 +208,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.slotMarkStart.IsZero() {
 				m.slotMarkStart = time.Time{}
 			}
+			if len(m.selected) > 0 {
+				m.selected = map[string]bool{}
+			}
 		case "/":
 			m.mode = modeSearch
 			m.searchQuery = ""
@@ -386,7 +389,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "n":
 			if m.timelineView == timelineViewDay {
-				m.jumpToClosestSlot()
+				m.jumpToNow()
 			} else if m.mode == modeTimeline && m.lastSearch != "" {
 				m.jumpToSearchMatch(m.cursor, 1, false)
 			}
@@ -905,16 +908,36 @@ func (m *AppModel) jumpDayItem(direction int) {
 	}
 }
 
-func (m *AppModel) jumpToClosestSlot() {
+func (m *AppModel) jumpToNow() {
 	if m.timelineView != timelineViewDay {
 		return
 	}
-	if rng := m.selectedCreateRange(); rng != nil {
-		m.setSlotFocus(rng.start, 15*time.Minute)
-		return
+	now := time.Now().In(time.Local)
+	today := dayStart(now)
+	m.dayDate = today
+	items := m.dayTimelineItems()
+	// Find entry closest to now (skip gaps)
+	bestIdx := -1
+	bestDist := time.Duration(1<<63 - 1)
+	for i, item := range items {
+		if item.kind != "entry" {
+			continue
+		}
+		mid := item.start.Add(item.end.Sub(item.start) / 2)
+		dist := now.Sub(mid)
+		if dist < 0 {
+			dist = -dist
+		}
+		if dist < bestDist {
+			bestDist = dist
+			bestIdx = i
+		}
 	}
-	if len(m.entries) > 0 {
-		m.setSlotFocus(m.entries[m.cursor].StartedAt, 15*time.Minute)
+	if bestIdx >= 0 {
+		m.focusDayItem(items[bestIdx])
+		m.ensureSlotVisible()
+	} else {
+		m.setSlotFocus(now, 15*time.Minute)
 	}
 }
 

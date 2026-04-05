@@ -1765,7 +1765,7 @@ func TestDeleteConfirmDialogRenders(t *testing.T) {
 	}
 }
 
-func TestJumpToClosestSlot(t *testing.T) {
+func TestJumpToNow(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
 	defer store.Close()
@@ -1773,7 +1773,15 @@ func TestJumpToClosestSlot(t *testing.T) {
 	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", HourlyRate: 100, Currency: "USD"}); err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "Work", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)}); err != nil {
+	// Create entry around current time
+	now := time.Now().UTC()
+	start := now.Add(-30 * time.Minute)
+	end := now.Add(30 * time.Minute)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "Current", StartedAt: start, EndedAt: end}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	// Create entry far in the past
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "Old", StartedAt: time.Date(2026, 4, 5, 2, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 5, 3, 0, 0, 0, time.UTC)}); err != nil {
 		t.Fatalf("err = %v", err)
 	}
 
@@ -1785,15 +1793,24 @@ func TestJumpToClosestSlot(t *testing.T) {
 	updated, _ := app.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
 	app = updated.(AppModel)
 
-	// Should start focused on entry
-	if app.dayFocusKind != "entry" {
-		t.Fatalf("initial focus = %q, want entry", app.dayFocusKind)
-	}
-	// Press n to jump to closest slot
+	// Move to old entry
+	app.cursor = 0
+	app.dayFocusKind = "entry"
+
+	// Press n to jump to now — should land on "Current" entry, not a gap
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	app = updated.(AppModel)
-	if app.dayFocusKind != "slot" {
-		t.Fatalf("after n focus = %q, want slot", app.dayFocusKind)
+
+	if app.dayFocusKind != "entry" {
+		t.Fatalf("after n, focus = %q, want entry (not gap/slot)", app.dayFocusKind)
+	}
+	idx := app.effectiveEntryIndex()
+	if idx < 0 || idx >= len(app.entries) {
+		t.Fatalf("after n, no entry focused (idx=%d)", idx)
+	}
+	desc := descriptionOrID(app.entries[idx])
+	if desc != "Current" {
+		t.Fatalf("after n, focused = %q, want Current", desc)
 	}
 }
 
