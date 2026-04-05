@@ -16,6 +16,9 @@ var schema string
 //go:embed migrations/002_activity_slots.sql
 var migration002 string
 
+//go:embed migrations/003_activity_slot_details.sql
+var migration003 string
+
 type Store struct {
 	db *sql.DB
 }
@@ -46,16 +49,25 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY)`); err != nil {
 		return err
 	}
-	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = '002'`).Scan(&count); err != nil {
-		return err
+	migrations := []struct {
+		version string
+		sql     string
+	}{
+		{"002", migration002},
+		{"003", migration003},
 	}
-	if count == 0 {
-		if _, err := s.db.ExecContext(ctx, migration002); err != nil {
+	for _, m := range migrations {
+		var count int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, m.version).Scan(&count); err != nil {
 			return err
 		}
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES ('002')`); err != nil {
-			return err
+		if count == 0 {
+			if _, err := s.db.ExecContext(ctx, m.sql); err != nil {
+				return err
+			}
+			if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES (?)`, m.version); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

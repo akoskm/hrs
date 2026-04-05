@@ -67,11 +67,15 @@ const (
 )
 
 type ActivitySlot struct {
-	SlotTime  time.Time
-	Operator  string
-	Cwd       string
-	MsgCount  int
-	FirstText string
+	SlotTime    time.Time
+	Operator    string
+	Cwd         string
+	MsgCount    int
+	FirstText   string
+	GitBranch   string
+	UserTexts   []string
+	TokenInput  int
+	TokenOutput int
 }
 
 type TimeEntry struct {

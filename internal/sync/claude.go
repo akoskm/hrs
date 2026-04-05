@@ -53,9 +53,13 @@ type claudeMessage struct {
 	Timestamp string `json:"timestamp"`
 	Cwd       string `json:"cwd"`
 	GitBranch string `json:"gitBranch"`
-	Message   *struct {
+	Message *struct {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
+		Usage   *struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 	} `json:"message"`
 }
 
@@ -107,13 +111,28 @@ func ParseClaudeFile(path string) ([]model.ActivitySlot, error) {
 		if msg.Cwd != "" && slot.Cwd == "" {
 			slot.Cwd = msg.Cwd
 		}
-		if slot.FirstText == "" && msg.Message != nil && msg.Message.Role == "user" {
-			text, err := firstUserText(msg.Message.Content)
-			if err != nil {
-				return nil, fmt.Errorf("parse content %s: %w", path, err)
+		if msg.GitBranch != "" && slot.GitBranch == "" {
+			slot.GitBranch = msg.GitBranch
+		}
+		if msg.Message != nil {
+			if msg.Message.Usage != nil {
+				slot.TokenInput += msg.Message.Usage.InputTokens
+				slot.TokenOutput += msg.Message.Usage.OutputTokens
 			}
-			if text != "" {
-				slot.FirstText = normalizeDescription(text, 80)
+			if msg.Message.Role == "user" {
+				text, err := firstUserText(msg.Message.Content)
+				if err != nil {
+					return nil, fmt.Errorf("parse content %s: %w", path, err)
+				}
+				if text != "" {
+					normalized := normalizeDescription(text, 80)
+					if slot.FirstText == "" {
+						slot.FirstText = normalized
+					}
+					if len(slot.UserTexts) < 5 {
+						slot.UserTexts = append(slot.UserTexts, normalized)
+					}
+				}
 			}
 		}
 	}

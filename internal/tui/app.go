@@ -494,7 +494,7 @@ func (m AppModel) View() string {
 	b.WriteString(styles.title.Render("Timeline") + "\n")
 	if m.timelineView == timelineViewDay {
 		timelineModel := m
-		inspectorWidth := max(20, m.width/6)
+		inspectorWidth := max(20, m.width/2)
 		timelineModel.width = max(40, m.width-inspectorWidth-2)
 		if m.mode == modeTimeline {
 			timelineModel.height = max(12, m.height-4)
@@ -536,7 +536,7 @@ func (m AppModel) View() string {
 	}
 	body := b.String()
 	if m.mode == modeTimeline && m.timelineView == timelineViewDay {
-		inspectorWidth := max(20, m.width/6)
+		inspectorWidth := max(20, m.width/2)
 		inspector := renderInspectorPane(m, styles, inspectorWidth, max(10, m.height-4))
 		scrollbar := renderDayScrollbar(m, styles)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, body, scrollbar, inspector)
@@ -2235,11 +2235,20 @@ func overviewInspectorLines(m AppModel) []string {
 			}
 			for _, slot := range slotActivity {
 				lines = append(lines, fmt.Sprintf("%s (%d msgs)", slot.Operator, slot.MsgCount))
-				if slot.Cwd != "" {
-					lines = append(lines, fmt.Sprintf("  cwd: %s", slot.Cwd))
+				if slot.GitBranch != "" {
+					lines = append(lines, fmt.Sprintf("Branch: %s", slot.GitBranch))
 				}
-				if slot.FirstText != "" {
-					lines = append(lines, fmt.Sprintf("  %s", truncateForWidth(slot.FirstText, 36)))
+				if slot.Cwd != "" {
+					lines = append(lines, fmt.Sprintf("Folder: %s", slot.Cwd))
+				}
+				if slot.TokenInput > 0 || slot.TokenOutput > 0 {
+					lines = append(lines, fmt.Sprintf("Tokens: %s in / %s out", formatTokenCount(slot.TokenInput), formatTokenCount(slot.TokenOutput)))
+				}
+				if len(slot.UserTexts) > 0 {
+					lines = append(lines, "", "Prompts:")
+					for i, text := range slot.UserTexts {
+						lines = append(lines, fmt.Sprintf("  %d. %s", i+1, text))
+					}
 				}
 			}
 			return lines
@@ -2746,6 +2755,13 @@ func formatGapDuration(gap dayGap) string {
 
 func clock(ts time.Time) string {
 	return ts.In(time.Local).Format("15:04")
+}
+
+func formatTokenCount(n int) string {
+	if n >= 1000 {
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	}
+	return strconv.Itoa(n)
 }
 
 func gapDayEnd(day time.Time) time.Time {
