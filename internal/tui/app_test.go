@@ -2432,7 +2432,7 @@ func TestDayViewInspectorShowsActivityDetail(t *testing.T) {
 	m.daySlotSpan = 15 * time.Minute
 	m.dayFocusKind = "slot"
 	m.loadActivitySlots()
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 30})
 	app := updated.(AppModel)
 	view := stripANSI(app.View())
 

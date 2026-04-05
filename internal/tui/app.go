@@ -478,7 +478,7 @@ func (m AppModel) View() string {
 	b.WriteString(styles.title.Render("Timeline") + "\n")
 	if m.timelineView == timelineViewDay {
 		timelineModel := m
-		inspectorWidth := min(40, max(24, m.width/3))
+		inspectorWidth := max(20, m.width/6)
 		timelineModel.width = max(40, m.width-inspectorWidth-2)
 		if m.mode == modeTimeline {
 			timelineModel.height = max(12, m.height-4)
@@ -520,7 +520,7 @@ func (m AppModel) View() string {
 	}
 	body := b.String()
 	if m.mode == modeTimeline && m.timelineView == timelineViewDay {
-		inspectorWidth := min(40, max(24, m.width/3))
+		inspectorWidth := max(20, m.width/6)
 		inspector := renderInspectorPane(m, styles, inspectorWidth, max(10, m.height-4))
 		body = lipgloss.JoinHorizontal(lipgloss.Top, body, " ", inspector)
 	}
