@@ -2662,3 +2662,67 @@ func TestJumpToTodayScrollsViewportToShowNow(t *testing.T) {
 			marginFromStart, marginFromEnd, clock(app.dayWindowStart), clock(windowEnd))
 	}
 }
+
+func TestMouseScrollShiftsViewportAndSnapsSlot(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.InitializeTodayTimelineView()
+	m.height = 30
+	// set window to 08:00-18:00
+	today := dayStart(time.Now())
+	m.dayWindowStart = today.Add(8 * time.Hour)
+	m.daySlotStart = today.Add(10 * time.Hour)
+	m.daySlotSpan = 15 * time.Minute
+	m.dayFocusKind = "slot"
+	startWindow := m.dayWindowStart
+
+	// scroll down — window should shift forward by 1h
+	updated, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	app := updated.(AppModel)
+	if !app.dayWindowStart.After(startWindow) {
+		t.Fatalf("scroll down: window did not shift forward, still at %s", clock(app.dayWindowStart))
+	}
+
+	// scroll up — window should shift back
+	prevWindow := app.dayWindowStart
+	updated, _ = app.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+	app = updated.(AppModel)
+	if !app.dayWindowStart.Before(prevWindow) {
+		t.Fatalf("scroll up: window did not shift back, still at %s", clock(app.dayWindowStart))
+	}
+
+	// slot should stay within visible window after scroll
+	windowEnd := app.dayWindowStart.Add(10 * time.Hour)
+	if app.daySlotStart.Before(app.dayWindowStart) || !app.daySlotStart.Before(windowEnd) {
+		t.Fatalf("slot %s is outside window %s-%s after scroll",
+			clock(app.daySlotStart), clock(app.dayWindowStart), clock(windowEnd))
+	}
+
+	// scroll past end of day — window should clamp, slot should snap
+	for i := 0; i < 20; i++ {
+		updated, _ = app.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+		app = updated.(AppModel)
+	}
+	windowEnd = app.dayWindowStart.Add(10 * time.Hour)
+	if app.daySlotStart.Before(app.dayWindowStart) || !app.daySlotStart.Before(windowEnd) {
+		t.Fatalf("slot %s outside window %s-%s after aggressive scroll down",
+			clock(app.daySlotStart), clock(app.dayWindowStart), clock(windowEnd))
+	}
+
+	// scroll past start of day — same
+	for i := 0; i < 30; i++ {
+		updated, _ = app.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+		app = updated.(AppModel)
+	}
+	windowEnd = app.dayWindowStart.Add(10 * time.Hour)
+	if app.daySlotStart.Before(app.dayWindowStart) || !app.daySlotStart.Before(windowEnd) {
+		t.Fatalf("slot %s outside window %s-%s after aggressive scroll up",
+			clock(app.daySlotStart), clock(app.dayWindowStart), clock(windowEnd))
+	}
+}
