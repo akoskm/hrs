@@ -1392,21 +1392,16 @@ func TestCycleInspectorTab(t *testing.T) {
 	if app.inspectorTab != inspectorOverview {
 		t.Fatalf("initial tab = %q, want overview", app.inspectorTab)
 	}
-	// tab forward: overview -> session -> actions -> overview
+	// tab forward: overview -> actions -> overview
 	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyTab})
 	app = updated.(AppModel)
-	if app.inspectorTab != inspectorSession {
-		t.Fatalf("after tab = %q, want session", app.inspectorTab)
-	}
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
-	app = updated.(AppModel)
 	if app.inspectorTab != inspectorActions {
-		t.Fatalf("after 2nd tab = %q, want actions", app.inspectorTab)
+		t.Fatalf("after tab = %q, want actions", app.inspectorTab)
 	}
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
 	app = updated.(AppModel)
 	if app.inspectorTab != inspectorOverview {
-		t.Fatalf("after 3rd tab = %q, want overview (wrap)", app.inspectorTab)
+		t.Fatalf("after 2nd tab = %q, want overview (wrap)", app.inspectorTab)
 	}
 	// shift+tab backward: overview -> actions
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
@@ -2471,9 +2466,6 @@ func TestDayViewInspectorPanelRendersOnRight(t *testing.T) {
 	if !strings.Contains(view, "Overview") {
 		t.Fatalf("inspector missing Overview tab, got:\n%s", view)
 	}
-	if !strings.Contains(view, "Session") {
-		t.Fatalf("inspector missing Session tab, got:\n%s", view)
-	}
 	if !strings.Contains(view, "Actions") {
 		t.Fatalf("inspector missing Actions tab, got:\n%s", view)
 	}
@@ -2484,5 +2476,57 @@ func TestDayViewInspectorPanelRendersOnRight(t *testing.T) {
 	// verify inspector shows entry info (entry is focused)
 	if !strings.Contains(view, "Morning standup") {
 		t.Fatalf("inspector not showing focused entry description, got:\n%s", view)
+	}
+}
+
+func TestDayViewFullUIElements(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Code review", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 30, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	// place activity slot at 14:00 local — within the visible window (entry is at 11:00-12:30 local)
+	slotUTC := time.Date(2026, 4, 3, 14, 0, 0, 0, time.Local).UTC().Truncate(15 * time.Minute)
+	if err := store.UpsertActivitySlots(ctx, []model.ActivitySlot{
+		{SlotTime: slotUTC, Operator: "claude-code", MsgCount: 7, FirstText: "implement auth", Cwd: "/tmp/project"},
+	}); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 3, 0, 0, 0, 0, time.Local))
+	m.loadActivitySlots()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 35})
+	app := updated.(AppModel)
+	view := stripANSI(app.View())
+
+	checks := map[string]string{
+		"header":          "hrs",
+		"timeline title":  "Timeline",
+		"date header":     "2026-04-03",
+		"time column":     "time",
+		"activity column": "activity",
+		"time label":      ":00",
+		"entry text":      "Code review",
+		"activity marker": "implement auth",
+		"subheader slots": "active slots",
+		"inspector tab":   "Overview",
+		"actions tab":     "Actions",
+		"status bar day":  "day 2026-04-03",
+		"status bar keys": "j/k items",
+	}
+	for name, want := range checks {
+		if !strings.Contains(view, want) {
+			t.Errorf("missing %s (%q) in view:\n%s", name, want, view)
+		}
 	}
 }

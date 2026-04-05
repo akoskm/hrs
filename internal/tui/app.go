@@ -13,7 +13,7 @@ import (
 
 	"github.com/akoskm/hrs/internal/db"
 	"github.com/akoskm/hrs/internal/model"
-	intsync "github.com/akoskm/hrs/internal/sync"
+
 )
 
 type mode string
@@ -40,8 +40,7 @@ const (
 	timelineViewDay  timelineViewMode = "day"
 
 	inspectorOverview inspectorTab = "overview"
-	inspectorSession  inspectorTab = "session"
-	inspectorActions  inspectorTab = "actions"
+	inspectorActions inspectorTab = "actions"
 )
 
 type AppModel struct {
@@ -160,7 +159,7 @@ func (m *AppModel) InitializeTodayTimelineView() {
 }
 
 func (m *AppModel) cycleInspectorTab(step int) {
-	tabs := []inspectorTab{inspectorOverview, inspectorSession, inspectorActions}
+	tabs := []inspectorTab{inspectorOverview, inspectorActions}
 	idx := 0
 	for i, tab := range tabs {
 		if tab == m.inspectorTab {
@@ -2078,7 +2077,6 @@ func renderInspectorTabs(m AppModel, styles tuiStyles) string {
 		id    inspectorTab
 	}{
 		{label: "Overview", id: inspectorOverview},
-		{label: "Session", id: inspectorSession},
 		{label: "Actions", id: inspectorActions},
 	}
 	parts := make([]string, 0, len(tabs))
@@ -2105,8 +2103,6 @@ func renderInspectorBody(m AppModel, width int, height int) string {
 
 func inspectorLines(m AppModel) []string {
 	switch m.inspectorTab {
-	case inspectorSession:
-		return sessionInspectorLines(m)
 	case inspectorActions:
 		return actionInspectorLines(m)
 	default:
@@ -2188,31 +2184,6 @@ func overviewInspectorLines(m AppModel) []string {
 	if entry.GitBranch != nil && *entry.GitBranch != "" {
 		lines = append(lines, "Branch: "+*entry.GitBranch)
 	}
-	return lines
-}
-
-func sessionInspectorLines(m AppModel) []string {
-	if m.dayFocusKind == "slot" && m.overlappingEntryIndexForSlot() < 0 {
-		return []string{"No session", "Time slots are creation targets, not sessions."}
-	}
-	if m.dayFocusKind == "gap" {
-		return []string{"No session", "Gaps do not have source session detail."}
-	}
-	idx := m.effectiveEntryIndex()
-	if len(m.entries) == 0 || idx < 0 || idx >= len(m.entries) {
-		return []string{"No session selected"}
-	}
-	entry := m.entries[idx]
-	if entry.Operator == "human" {
-		return []string{"Manual entry", "No agent session attached."}
-	}
-	lines := []string{fmt.Sprintf("Source: %s", entry.Operator)}
-	if details, err := intsync.LoadSessionDetail(entry); err == nil {
-		lines = append(lines, details...)
-	} else {
-		lines = append(lines, "Detail error: "+err.Error())
-	}
-	lines = append(lines, fmt.Sprintf("Range: %s", formatRange(entry.StartedAt, entry.EndedAt)))
 	return lines
 }
 
