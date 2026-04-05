@@ -478,8 +478,10 @@ func (m AppModel) View() string {
 	b.WriteString(styles.title.Render("Timeline") + "\n")
 	if m.timelineView == timelineViewDay {
 		timelineModel := m
+		inspectorWidth := min(40, max(24, m.width/3))
+		timelineModel.width = max(40, m.width-inspectorWidth-2)
 		if m.mode == modeTimeline {
-			timelineModel.height = max(12, m.height-inspectorHeight(m.height)-4)
+			timelineModel.height = max(12, m.height-4)
 		}
 		b.WriteString(renderDayTimeline(timelineModel, styles))
 	} else if len(m.entries) == 0 {
