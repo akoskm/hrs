@@ -2108,6 +2108,91 @@ func TestSpaceMarkSlotRangeAndCreateEntry(t *testing.T) {
 	}
 }
 
+func TestShiftUpDownSelectsSingleHourSlot(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	today := dayStart(time.Now())
+	app.timelineView = timelineViewDay
+	app.dayDate = today
+	app.daySlotSpan = 15 * time.Minute
+	app.daySlotStart = time.Date(today.Year(), today.Month(), today.Day(), 9, 0, 0, 0, time.Local)
+	app.dayFocusKind = "slot"
+	app.slotMarkStart = time.Time{}
+	app.slotMarkSpan = 0
+
+	// shift+down: should select a single 1-hour slot at 10:00-11:00
+	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyShiftDown})
+	app = updated.(AppModel)
+
+	rng := app.selectedCreateRange()
+	if rng == nil {
+		t.Fatal("selectedCreateRange() is nil after shift+down")
+	}
+	if clock(rng.start) != "10:00" {
+		t.Fatalf("range start = %s, want 10:00", clock(rng.start))
+	}
+	if clock(rng.end) != "11:00" {
+		t.Fatalf("range end = %s, want 11:00", clock(rng.end))
+	}
+
+	// Another shift+down: should move to 11:00-12:00, NOT accumulate
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyShiftDown})
+	app = updated.(AppModel)
+	rng = app.selectedCreateRange()
+	if rng == nil {
+		t.Fatal("selectedCreateRange() is nil after 2nd shift+down")
+	}
+	if clock(rng.start) != "11:00" {
+		t.Fatalf("range start after 2nd shift+down = %s, want 11:00", clock(rng.start))
+	}
+	if clock(rng.end) != "12:00" {
+		t.Fatalf("range end after 2nd shift+down = %s, want 12:00", clock(rng.end))
+	}
+
+	// shift+up: should move to 10:00-11:00
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyShiftUp})
+	app = updated.(AppModel)
+	rng = app.selectedCreateRange()
+	if rng == nil {
+		t.Fatal("selectedCreateRange() is nil after shift+up")
+	}
+	if clock(rng.start) != "10:00" {
+		t.Fatalf("range start after shift+up = %s, want 10:00", clock(rng.start))
+	}
+	if clock(rng.end) != "11:00" {
+		t.Fatalf("range end after shift+up = %s, want 11:00", clock(rng.end))
+	}
+
+	// esc should clear the selection — no mark, back to 15min slot
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	app = updated.(AppModel)
+	if !app.slotMarkStart.IsZero() {
+		t.Fatal("slotMarkStart not cleared by esc")
+	}
+	if app.slotMarkSpan != 0 {
+		t.Fatalf("slotMarkSpan = %v, want 0", app.slotMarkSpan)
+	}
+	rng = app.selectedCreateRange()
+	if rng == nil {
+		t.Fatal("selectedCreateRange() nil after esc")
+	}
+	// After esc the slot should be back to 15min
+	dur := rng.end.Sub(rng.start)
+	if dur != 15*time.Minute {
+		t.Fatalf("range duration after esc = %v, want 15m", dur)
+	}
+	// The range should just be the current daySlotStart, not the marked one
+	if rng.start != app.daySlotStart {
+		t.Fatalf("range start after esc = %s, want current slot %s", clock(rng.start), clock(app.daySlotStart))
+	}
+}
+
 func TestSpaceTogglesCancelsMark(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)

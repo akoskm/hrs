@@ -87,6 +87,7 @@ type AppModel struct {
 	timelineView       timelineViewMode
 	inspectorTab       inspectorTab
 	slotMarkStart      time.Time
+	slotMarkSpan       time.Duration
 	confirmDeleteID    string
 	styles             tuiStyles
 	stylesWidth        int
@@ -207,6 +208,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc":
 			if !m.slotMarkStart.IsZero() {
 				m.slotMarkStart = time.Time{}
+				m.slotMarkSpan = 0
+				m.daySlotSpan = 15 * time.Minute
 			}
 			if len(m.selected) > 0 {
 				m.selected = map[string]bool{}
@@ -285,10 +288,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+up":
 			if m.timelineView == timelineViewDay {
 				m.moveSlot(-time.Hour, time.Hour)
+				m.slotMarkStart = m.daySlotStart
+				m.slotMarkSpan = time.Hour
 			}
 		case "shift+down":
 			if m.timelineView == timelineViewDay {
 				m.moveSlot(time.Hour, time.Hour)
+				m.slotMarkStart = m.daySlotStart
+				m.slotMarkSpan = time.Hour
 			}
 		case "pgdown", "ctrl+f":
 			if len(m.entries) > 0 {
@@ -369,8 +376,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.mode == modeTimeline && m.timelineView == timelineViewDay && m.dayFocusKind == "slot" {
 				if m.slotMarkStart.IsZero() {
 					m.slotMarkStart = m.daySlotStart
+					m.slotMarkSpan = m.daySlotSpan
 				} else {
 					m.slotMarkStart = time.Time{}
+					m.slotMarkSpan = 0
 				}
 			} else if m.mode == modeTimeline && len(m.entries) > 0 {
 				entry := m.entries[m.cursor]
@@ -1019,8 +1028,10 @@ func (m AppModel) selectedCreateRange() *dayGap {
 		start := m.daySlotStart
 		end := m.daySlotStart.Add(m.daySlotSpan)
 		if !m.slotMarkStart.IsZero() {
+			markEnd := m.slotMarkStart.Add(m.slotMarkSpan)
+			cursorEnd := m.daySlotStart.Add(m.slotMarkSpan)
 			start = minTime(m.slotMarkStart, m.daySlotStart)
-			end = maxTime(m.slotMarkStart.Add(m.daySlotSpan), m.daySlotStart.Add(m.daySlotSpan))
+			end = maxTime(markEnd, cursorEnd)
 		}
 		gap := dayGap{start: start, end: end}
 		return &gap
@@ -1256,6 +1267,7 @@ func (m *AppModel) openGapEntryDialog() {
 	}
 	rng := m.selectedCreateRange()
 	m.slotMarkStart = time.Time{}
+	m.slotMarkSpan = 0
 	m.mode = modeGapEntry
 	m.gapInput = ""
 	m.gapInputField = "description"
@@ -2286,7 +2298,7 @@ func renderVerticalTimeCell(m AppModel, row dayTimelineRow, styles tuiStyles) st
 		slotEnd := m.daySlotStart.Add(m.daySlotSpan)
 		if !m.slotMarkStart.IsZero() {
 			slotStart = minTime(m.slotMarkStart, m.daySlotStart)
-			slotEnd = maxTime(m.slotMarkStart.Add(m.daySlotSpan), m.daySlotStart.Add(m.daySlotSpan))
+			slotEnd = maxTime(m.slotMarkStart.Add(m.slotMarkSpan), m.daySlotStart.Add(m.slotMarkSpan))
 		}
 		if rangesOverlap(row.start, row.end, slotStart, slotEnd) {
 			return styles.activePicker.Width(5).Render(label)
