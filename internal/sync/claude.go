@@ -124,13 +124,24 @@ func ParseClaudeFile(path string) ([]model.ActivitySlot, error) {
 				if err != nil {
 					return nil, fmt.Errorf("parse content %s: %w", path, err)
 				}
-				if text != "" {
-					normalized := normalizeDescription(text, 80)
+				cleaned := cleanPromptText(text)
+				if cleaned != "" {
+					normalized := normalizeDescription(cleaned, 0)
 					if slot.FirstText == "" {
 						slot.FirstText = normalized
 					}
 					if len(slot.UserTexts) < 5 {
-						slot.UserTexts = append(slot.UserTexts, normalized)
+						// deduplicate
+						dup := false
+						for _, existing := range slot.UserTexts {
+							if existing == normalized {
+								dup = true
+								break
+							}
+						}
+						if !dup {
+							slot.UserTexts = append(slot.UserTexts, normalized)
+						}
 					}
 				}
 			}
@@ -281,6 +292,42 @@ func normalizeDescription(text string, limit int) string {
 		return text[:limit]
 	}
 	return strings.TrimSpace(text[:limit-3]) + "..."
+}
+
+var noisePatterns = []string{
+	"[Image: source:",
+	"[Image #",
+	"<task-notification>",
+	"[Request interrupted by user]",
+	"<local-command-",
+	"<command-name>",
+	"<system-reminder>",
+	"<teammate-message",
+}
+
+func cleanPromptText(text string) string {
+	text = strings.TrimSpace(text)
+	if len(text) < 10 {
+		return ""
+	}
+	for _, pattern := range noisePatterns {
+		if strings.HasPrefix(text, pattern) {
+			return ""
+		}
+	}
+	// strip inline image references
+	for {
+		start := strings.Index(text, "[Image")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(text[start:], "]")
+		if end < 0 {
+			break
+		}
+		text = text[:start] + text[start+end+1:]
+	}
+	return strings.TrimSpace(text)
 }
 
 func ImportClaudeFixtures(ctx context.Context, store *db.Store, dir string) error {
