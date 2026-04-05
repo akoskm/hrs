@@ -66,6 +66,14 @@ const (
 	StatusConfirmed Status = "confirmed"
 )
 
+type ActivitySlot struct {
+	SlotTime  time.Time
+	Operator  string
+	Cwd       string
+	MsgCount  int
+	FirstText string
+}
+
 type TimeEntry struct {
 	ID           string     `json:"id"            db:"id"`
 	ProjectID    *string    `json:"project_id"    db:"project_id"`

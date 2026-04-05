@@ -13,6 +13,9 @@ import (
 //go:embed migrations/001_initial_schema.sql
 var schema string
 
+//go:embed migrations/002_activity_slots.sql
+var migration002 string
+
 type Store struct {
 	db *sql.DB
 }
@@ -36,7 +39,10 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Migrate(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, schema)
+	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, migration002)
 	return err
 }
 
