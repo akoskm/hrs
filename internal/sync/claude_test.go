@@ -4,60 +4,83 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 )
 
-func TestParseClaudeDir(t *testing.T) {
+func TestParseClaudeFileReturnsActivitySlots(t *testing.T) {
 	t.Parallel()
 
-	sessions, err := ParseClaudeDir(filepath.Join("..", "..", "testdata", "claude-sessions"))
+	dir := filepath.Join("..", "..", "testdata", "claude-sessions")
+
+	// sess_abc123.jsonl has timestamps at 10:00, 10:00:15, 10:01, 10:05, 10:30, 10:30:10, 11:00
+	// Expected 15-min buckets: 10:00, 10:30, 11:00
+	slots, err := ParseClaudeFile(filepath.Join(dir, "sess_abc123.jsonl"))
 	if err != nil {
-		t.Fatalf("ParseClaudeDir() error = %v", err)
+		t.Fatalf("ParseClaudeFile() error = %v", err)
 	}
-	if len(sessions) != 2 {
-		t.Fatalf("len(sessions) = %d, want 2", len(sessions))
+	sort.Slice(slots, func(i, j int) bool { return slots[i].SlotTime.Before(slots[j].SlotTime) })
+
+	if len(slots) != 3 {
+		t.Fatalf("len(slots) = %d, want 3", len(slots))
 	}
 
-	tests := map[string]struct {
-		description string
-		startedAt   string
-		endedAt     string
-		messages    int
+	want := []struct {
+		slotTime time.Time
+		operator string
+		minMsgs  int
 	}{
-		"sess_abc123": {
-			description: "Refactor the auth module to use OAuth2",
-			startedAt:   "2026-04-03T10:00:00Z",
-			endedAt:     "2026-04-03T11:00:00Z",
-			messages:    7,
-		},
-		"sess_def456": {
-			description: "Implement the email automation workflow with Inngest",
-			startedAt:   "2026-04-03T10:15:00Z",
-			endedAt:     "2026-04-03T11:45:00Z",
-			messages:    3,
-		},
+		{time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC), "claude-code", 1},
+		{time.Date(2026, 4, 3, 10, 30, 0, 0, time.UTC), "claude-code", 1},
+		{time.Date(2026, 4, 3, 11, 0, 0, 0, time.UTC), "claude-code", 1},
+	}
+	for i, w := range want {
+		if !slots[i].SlotTime.Equal(w.slotTime) {
+			t.Fatalf("slots[%d].SlotTime = %s, want %s", i, slots[i].SlotTime, w.slotTime)
+		}
+		if slots[i].Operator != w.operator {
+			t.Fatalf("slots[%d].Operator = %q, want %q", i, slots[i].Operator, w.operator)
+		}
+		if slots[i].MsgCount < w.minMsgs {
+			t.Fatalf("slots[%d].MsgCount = %d, want >= %d", i, slots[i].MsgCount, w.minMsgs)
+		}
 	}
 
-	for _, session := range sessions {
-		want, ok := tests[session.SessionID]
-		if !ok {
-			t.Fatalf("unexpected session %q", session.SessionID)
+	// first slot should capture the first user text
+	if slots[0].FirstText == "" {
+		t.Fatal("slots[0].FirstText is empty, want first user prompt")
+	}
+	// all slots should have cwd set
+	for i, s := range slots {
+		if s.Cwd == "" {
+			t.Fatalf("slots[%d].Cwd is empty", i)
 		}
-		if session.Description != want.description {
-			t.Fatalf("description = %q, want %q", session.Description, want.description)
-		}
-		startedAt, _ := time.Parse(time.RFC3339, want.startedAt)
-		endedAt, _ := time.Parse(time.RFC3339, want.endedAt)
-		if !session.StartedAt.Equal(startedAt) {
-			t.Fatalf("started_at = %s, want %s", session.StartedAt, startedAt)
-		}
-		if !session.EndedAt.Equal(endedAt) {
-			t.Fatalf("ended_at = %s, want %s", session.EndedAt, endedAt)
-		}
-		if session.MessageCount != want.messages {
-			t.Fatalf("message_count = %d, want %d", session.MessageCount, want.messages)
-		}
+	}
+}
+
+func TestParseClaudeFileWorktreeSession(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join("..", "..", "testdata", "claude-sessions")
+
+	// sess_def456.jsonl has timestamps at 10:15, 10:15:30, 11:45
+	// Expected 15-min buckets: 10:15, 11:45
+	slots, err := ParseClaudeFile(filepath.Join(dir, "sess_def456.jsonl"))
+	if err != nil {
+		t.Fatalf("ParseClaudeFile() error = %v", err)
+	}
+	sort.Slice(slots, func(i, j int) bool { return slots[i].SlotTime.Before(slots[j].SlotTime) })
+
+	if len(slots) != 2 {
+		t.Fatalf("len(slots) = %d, want 2", len(slots))
+	}
+
+	if !slots[0].SlotTime.Equal(time.Date(2026, 4, 3, 10, 15, 0, 0, time.UTC)) {
+		t.Fatalf("slots[0].SlotTime = %s, want 2026-04-03T10:15:00Z", slots[0].SlotTime)
+	}
+	if !slots[1].SlotTime.Equal(time.Date(2026, 4, 3, 11, 45, 0, 0, time.UTC)) {
+		t.Fatalf("slots[1].SlotTime = %s, want 2026-04-03T11:45:00Z", slots[1].SlotTime)
 	}
 }
 
@@ -84,109 +107,78 @@ func TestParseClaudeFileStringContent(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	session, err := ParseClaudeFile(path)
+	slots, err := ParseClaudeFile(path)
 	if err != nil {
 		t.Fatalf("ParseClaudeFile() error = %v", err)
 	}
-	if session.Description != "Find routes" {
-		t.Fatalf("description = %q, want %q", session.Description, "Find routes")
+	// both timestamps (14:02 and 14:12) truncate to 14:00 -> 1 slot
+	if len(slots) != 1 {
+		t.Fatalf("len(slots) = %d, want 1", len(slots))
+	}
+	if slots[0].FirstText != "Find routes" {
+		t.Fatalf("FirstText = %q, want %q", slots[0].FirstText, "Find routes")
+	}
+	if slots[0].MsgCount != 2 {
+		t.Fatalf("MsgCount = %d, want 2", slots[0].MsgCount)
 	}
 }
 
-func TestParseClaudeFileTruncatesToFirstLineAnd80Chars(t *testing.T) {
+func TestParseClaudeFileEmptyReturnsError(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), "long-content.jsonl")
-	content := `{"sessionId":"sess_long","timestamp":"2026-01-29T14:02:59.712Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"user","content":"This is a very long first line that should be truncated after eighty characters exactly for display purposes.\nSecond line should be ignored."}}` + "\n" +
-		`{"sessionId":"sess_long","timestamp":"2026-01-29T14:12:59.712Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}` + "\n"
+	path := filepath.Join(t.TempDir(), "empty.jsonl")
+	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := ParseClaudeFile(path)
+	if !errors.Is(err, ErrNoSessionData) {
+		t.Fatalf("ParseClaudeFile() error = %v, want ErrNoSessionData", err)
+	}
+}
+
+func TestParseClaudeFileSlotTimesRoundedTo15Min(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "rounding.jsonl")
+	content := `{"sessionId":"sess_round","timestamp":"2026-01-29T14:07:30.000Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"user","content":"work"}}` + "\n" +
+		`{"sessionId":"sess_round","timestamp":"2026-01-29T14:22:00.000Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}` + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	session, err := ParseClaudeFile(path)
+	slots, err := ParseClaudeFile(path)
 	if err != nil {
 		t.Fatalf("ParseClaudeFile() error = %v", err)
 	}
-	if got, want := session.Description, "This is a very long first line that should be truncated after eighty characte..."; got != want {
-		t.Fatalf("description = %q, want %q", got, want)
+	sort.Slice(slots, func(i, j int) bool { return slots[i].SlotTime.Before(slots[j].SlotTime) })
+
+	if len(slots) != 2 {
+		t.Fatalf("len(slots) = %d, want 2", len(slots))
+	}
+	// 14:07:30 truncates to 14:00
+	if !slots[0].SlotTime.Equal(time.Date(2026, 1, 29, 14, 0, 0, 0, time.UTC)) {
+		t.Fatalf("slots[0].SlotTime = %s, want 2026-01-29T14:00:00Z", slots[0].SlotTime)
+	}
+	// 14:22:00 truncates to 14:15
+	if !slots[1].SlotTime.Equal(time.Date(2026, 1, 29, 14, 15, 0, 0, time.UTC)) {
+		t.Fatalf("slots[1].SlotTime = %s, want 2026-01-29T14:15:00Z", slots[1].SlotTime)
 	}
 }
 
-func TestParseClaudeTreeSkipsUnreadableFiles(t *testing.T) {
+func TestParseClaudeSessionStillWorks(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
-	goodPath := filepath.Join(root, "good.jsonl")
-	badPath := filepath.Join(root, "bad.jsonl")
-	goodContent := `{"sessionId":"sess_good","timestamp":"2026-01-29T14:02:59.712Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"user","content":"Find routes"}}` + "\n" +
-		`{"sessionId":"sess_good","timestamp":"2026-01-29T14:12:59.712Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}` + "\n"
-	if err := os.WriteFile(goodPath, []byte(goodContent), 0o644); err != nil {
-		t.Fatalf("WriteFile(good) error = %v", err)
-	}
-	if err := os.WriteFile(badPath, []byte(""), 0o644); err != nil {
-		t.Fatalf("WriteFile(bad) error = %v", err)
-	}
-
-	sessions, err := ParseClaudeTree(root)
+	dir := filepath.Join("..", "..", "testdata", "claude-sessions")
+	session, err := ParseClaudeSession(filepath.Join(dir, "sess_abc123.jsonl"))
 	if err != nil {
-		t.Fatalf("ParseClaudeTree() error = %v", err)
+		t.Fatalf("ParseClaudeSession() error = %v", err)
 	}
-	if len(sessions) != 1 {
-		t.Fatalf("len(sessions) = %d, want 1", len(sessions))
+	if session.SessionID != "sess_abc123" {
+		t.Fatalf("SessionID = %q, want %q", session.SessionID, "sess_abc123")
 	}
-	if sessions[0].SessionID != "sess_good" {
-		t.Fatalf("session_id = %q, want %q", sessions[0].SessionID, "sess_good")
-	}
-}
-
-func TestParseClaudeFileSkipsNoiseSession(t *testing.T) {
-	t.Parallel()
-
-	path := filepath.Join(t.TempDir(), "noise.jsonl")
-	content := `{"sessionId":"sess_noise","timestamp":"2026-01-29T14:02:59.712Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"user","content":"<command-message>noise"}}` + "\n" +
-		`{"sessionId":"sess_noise","timestamp":"2026-01-29T14:12:59.712Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}` + "\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	if _, err := ParseClaudeFile(path); !errors.Is(err, ErrSkipSession) {
-		t.Fatalf("ParseClaudeFile() error = %v, want ErrSkipSession", err)
+	if session.MessageCount != 7 {
+		t.Fatalf("MessageCount = %d, want 7", session.MessageCount)
 	}
 }
 
-func TestParseClaudeFileSkipsZeroDuration(t *testing.T) {
-	t.Parallel()
-
-	path := filepath.Join(t.TempDir(), "zero.jsonl")
-	content := `{"sessionId":"sess_zero","timestamp":"2026-01-29T14:02:59.712Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"user","content":"Real work"}}` + "\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	if _, err := ParseClaudeFile(path); !errors.Is(err, ErrSkipSession) {
-		t.Fatalf("ParseClaudeFile() error = %v, want ErrSkipSession", err)
-	}
-}
-
-func TestParseClaudeFileUsesSessionsIndexSummary(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "sess_summary.jsonl")
-	content := `{"sessionId":"sess_summary","timestamp":"2026-01-29T14:02:59.712Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"user","content":"raw first prompt"}}` + "\n" +
-		`{"sessionId":"sess_summary","timestamp":"2026-01-29T14:12:59.712Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}` + "\n"
-	index := `{"version":1,"entries":[{"sessionId":"sess_summary","summary":"Summary from index"}]}`
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "sessions-index.json"), []byte(index), 0o644); err != nil {
-		t.Fatalf("WriteFile(index) error = %v", err)
-	}
-	session, err := ParseClaudeFile(path)
-	if err != nil {
-		t.Fatalf("ParseClaudeFile() error = %v", err)
-	}
-	if session.Description != "Summary from index" {
-		t.Fatalf("description = %q, want %q", session.Description, "Summary from index")
-	}
-}

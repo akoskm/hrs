@@ -177,44 +177,9 @@ func ParseCodexTree(root string) ([]CodexSession, error) {
 	return sessions, nil
 }
 
+// TODO(task5): rewrite to use activity slots
 func ImportCodexLogs(ctx context.Context, store *db.Store, root string) error {
-	sessions, err := ParseCodexTree(root)
-	if err != nil {
-		return err
-	}
-	for _, session := range sessions {
-		exists, err := store.HasImport(ctx, codexSource, session.SessionID)
-		if err != nil {
-			return err
-		}
-		if exists {
-			continue
-		}
-		projectID, err := store.DetectProjectIDByPath(ctx, session.Cwd)
-		if err != nil {
-			return err
-		}
-		_, err = store.CreateImportedEntry(ctx, db.EntryImport{
-			ProjectID:   projectID,
-			Description: session.Description,
-			StartedAt:   session.StartedAt,
-			EndedAt:     session.EndedAt,
-			Operator:    codexSource,
-			SourceRef:   session.SessionID,
-			Cwd:         session.Cwd,
-			Metadata: map[string]any{
-				"message_count": session.MessageCount,
-				"source_path":   session.SourcePath,
-			},
-		})
-		if err != nil {
-			return err
-		}
-		if err := store.RecordImport(ctx, codexSource, session.SourcePath, session.SessionID, 1); err != nil {
-			return err
-		}
-	}
-	return nil
+	return fmt.Errorf("codex import not yet migrated to activity slots")
 }
 
 func codexSessionIDFromPath(path string) string {

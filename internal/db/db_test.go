@@ -8,7 +8,7 @@ import (
 	"github.com/akoskm/hrs/internal/model"
 )
 
-func TestCreateImportedEntryAndAssign(t *testing.T) {
+func TestUpsertActivitySlotsAndList(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -18,54 +18,40 @@ func TestCreateImportedEntryAndAssign(t *testing.T) {
 	}
 	defer store.Close()
 
-	project, err := store.EnsureProject(ctx, "Elaiia", "elaiia")
-	if err != nil {
-		t.Fatalf("EnsureProject() error = %v", err)
+	slotTime := time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)
+	slots := []model.ActivitySlot{
+		{SlotTime: slotTime, Operator: "claude-code", Cwd: "/tmp/demo", MsgCount: 5, FirstText: "Fix auth"},
+	}
+	if err := store.UpsertActivitySlots(ctx, slots); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
 	}
 
-	startedAt := time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)
-	endedAt := startedAt.Add(time.Hour)
-	entry, err := store.CreateImportedEntry(ctx, EntryImport{
-		Description: "OAuth2 refactor",
-		StartedAt:   startedAt,
-		EndedAt:     endedAt,
-		Operator:    "claude-code",
-		SourceRef:   "sess_abc123",
-		GitBranch:   "feat/auth-refactor",
-		Cwd:         "/Users/akos/code/elaiia",
-		Metadata:    map[string]any{"message_count": 7},
-	})
+	day := time.Date(2026, 4, 3, 0, 0, 0, 0, time.UTC)
+	result, err := store.ListActivitySlotsForDay(ctx, day)
 	if err != nil {
-		t.Fatalf("CreateImportedEntry() error = %v", err)
+		t.Fatalf("ListActivitySlotsForDay() error = %v", err)
 	}
-	if entry.Status != model.StatusDraft {
-		t.Fatalf("status = %q, want %q", entry.Status, model.StatusDraft)
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
 	}
-	if entry.ProjectID != nil {
-		t.Fatalf("project_id = %v, want nil", entry.ProjectID)
+	if result[0].MsgCount != 5 {
+		t.Fatalf("MsgCount = %d, want 5", result[0].MsgCount)
 	}
 
-	entries, err := store.ListEntries(ctx)
+	// upsert again with updated msg_count
+	slots[0].MsgCount = 10
+	if err := store.UpsertActivitySlots(ctx, slots); err != nil {
+		t.Fatalf("UpsertActivitySlots() second run error = %v", err)
+	}
+	result, err = store.ListActivitySlotsForDay(ctx, day)
 	if err != nil {
-		t.Fatalf("ListEntries() error = %v", err)
+		t.Fatalf("ListActivitySlotsForDay() error = %v", err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d after upsert, want 1", len(result))
 	}
-
-	if err := store.AssignEntryToProject(ctx, entry.ID, project.ID); err != nil {
-		t.Fatalf("AssignEntryToProject() error = %v", err)
-	}
-
-	updated, err := store.EntryByID(ctx, entry.ID)
-	if err != nil {
-		t.Fatalf("EntryByID() error = %v", err)
-	}
-	if updated.Status != model.StatusConfirmed {
-		t.Fatalf("status = %q, want %q", updated.Status, model.StatusConfirmed)
-	}
-	if updated.ProjectID == nil || *updated.ProjectID != project.ID {
-		t.Fatalf("project_id = %v, want %q", updated.ProjectID, project.ID)
+	if result[0].MsgCount != 10 {
+		t.Fatalf("MsgCount after upsert = %d, want 10", result[0].MsgCount)
 	}
 }
 

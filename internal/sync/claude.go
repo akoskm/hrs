@@ -10,11 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/akoskm/hrs/internal/db"
+	"github.com/akoskm/hrs/internal/model"
 )
 
 const claudeSource = "claude-code"
@@ -59,7 +59,81 @@ type claudeMessage struct {
 	} `json:"message"`
 }
 
-func ParseClaudeFile(path string) (ClaudeSession, error) {
+// ParseClaudeFile parses a Claude Code JSONL file and returns activity slots
+// bucketed into 15-minute intervals.
+func ParseClaudeFile(path string) ([]model.ActivitySlot, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	type slotKey struct {
+		slotTime time.Time
+		operator string
+	}
+
+	slots := make(map[slotKey]*model.ActivitySlot)
+	var hasData bool
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
+		var msg claudeMessage
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		if msg.SessionID == "" || msg.Timestamp == "" {
+			continue
+		}
+		ts, err := time.Parse(time.RFC3339Nano, msg.Timestamp)
+		if err != nil {
+			return nil, fmt.Errorf("parse timestamp %s: %w", path, err)
+		}
+		hasData = true
+
+		bucket := ts.Truncate(15 * time.Minute)
+		key := slotKey{slotTime: bucket, operator: claudeSource}
+
+		slot, ok := slots[key]
+		if !ok {
+			slot = &model.ActivitySlot{
+				SlotTime: bucket,
+				Operator: claudeSource,
+			}
+			slots[key] = slot
+		}
+		slot.MsgCount++
+		if msg.Cwd != "" && slot.Cwd == "" {
+			slot.Cwd = msg.Cwd
+		}
+		if slot.FirstText == "" && msg.Message != nil && msg.Message.Role == "user" {
+			text, err := firstUserText(msg.Message.Content)
+			if err != nil {
+				return nil, fmt.Errorf("parse content %s: %w", path, err)
+			}
+			if text != "" {
+				slot.FirstText = normalizeDescription(text, 80)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if !hasData {
+		return nil, fmt.Errorf("%w in %s", ErrNoSessionData, path)
+	}
+
+	result := make([]model.ActivitySlot, 0, len(slots))
+	for _, slot := range slots {
+		result = append(result, *slot)
+	}
+	return result, nil
+}
+
+// ParseClaudeSession parses a Claude Code JSONL file and returns a ClaudeSession.
+// Used by detail.go for session inspection.
+func ParseClaudeSession(path string) (ClaudeSession, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return ClaudeSession{}, err
@@ -190,109 +264,51 @@ func normalizeDescription(text string, limit int) string {
 	return strings.TrimSpace(text[:limit-3]) + "..."
 }
 
-func ParseClaudeDir(dir string) ([]ClaudeSession, error) {
-	paths, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
-	if err != nil {
-		return nil, err
-	}
-	sort.Strings(paths)
-	sessions := make([]ClaudeSession, 0, len(paths))
-	for _, path := range paths {
-		session, err := ParseClaudeFile(path)
-		if err != nil {
-			if errors.Is(err, ErrSkipSession) {
-				continue
-			}
-			return nil, err
-		}
-		sessions = append(sessions, session)
-	}
-	return sessions, nil
-}
-
-func ParseClaudeTree(root string) ([]ClaudeSession, error) {
-	var paths []string
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if filepath.Ext(path) != ".jsonl" {
-			return nil
-		}
-		paths = append(paths, path)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	sort.Strings(paths)
-	sessions := make([]ClaudeSession, 0, len(paths))
-	for _, path := range paths {
-		session, err := ParseClaudeFile(path)
-		if err != nil {
-			if errors.Is(err, ErrSkipSession) {
-				continue
-			}
-			continue
-		}
-		sessions = append(sessions, session)
-	}
-	return sessions, nil
-}
-
 func ImportClaudeFixtures(ctx context.Context, store *db.Store, dir string) error {
-	return importClaudeSessions(ctx, store, dir, ParseClaudeDir)
+	return importClaudeSlots(ctx, store, dir, false)
 }
 
 func ImportClaudeLogs(ctx context.Context, store *db.Store, root string) error {
-	return importClaudeSessions(ctx, store, root, ParseClaudeTree)
+	return importClaudeSlots(ctx, store, root, true)
 }
 
-func importClaudeSessions(ctx context.Context, store *db.Store, sourceRoot string, parse func(string) ([]ClaudeSession, error)) error {
-	sessions, err := parse(sourceRoot)
-	if err != nil {
-		return err
-	}
-	for _, session := range sessions {
-		exists, err := store.HasImport(ctx, claudeSource, session.SessionID)
-		if err != nil {
-			return err
-		}
-		if exists {
-			continue
-		}
-		projectID, err := store.DetectProjectIDByPath(ctx, session.Cwd)
-		if err != nil {
-			return err
-		}
-		overlap, err := store.HasOverlappingImportedEntry(ctx, session.Cwd, session.StartedAt, session.EndedAt, session.Description)
-		if err != nil {
-			return err
-		}
-		if overlap {
-			continue
-		}
-		_, err = store.CreateImportedEntry(ctx, db.EntryImport{
-			ProjectID:   projectID,
-			Description: session.Description,
-			StartedAt:   session.StartedAt,
-			EndedAt:     session.EndedAt,
-			Operator:    claudeSource,
-			SourceRef:   session.SessionID,
-			GitBranch:   session.GitBranch,
-			Cwd:         session.Cwd,
-			Metadata: map[string]any{
-				"message_count": session.MessageCount,
-				"source_path":   session.SourcePath,
-			},
+func importClaudeSlots(ctx context.Context, store *db.Store, root string, walk bool) error {
+	var paths []string
+	if walk {
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			if filepath.Ext(path) != ".jsonl" {
+				return nil
+			}
+			paths = append(paths, path)
+			return nil
 		})
 		if err != nil {
 			return err
 		}
-		if err := store.RecordImport(ctx, claudeSource, session.SourcePath, session.SessionID, 1); err != nil {
+	} else {
+		var err error
+		paths, err = filepath.Glob(filepath.Join(root, "*.jsonl"))
+		if err != nil {
+			return err
+		}
+	}
+
+	for _, path := range paths {
+		slots, err := ParseClaudeFile(path)
+		if err != nil {
+			// skip unparseable files
+			continue
+		}
+		if len(slots) == 0 {
+			continue
+		}
+		if err := store.UpsertActivitySlots(ctx, slots); err != nil {
 			return err
 		}
 	}

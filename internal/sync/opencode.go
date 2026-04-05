@@ -23,46 +23,9 @@ type OpenCodeSession struct {
 	SourcePath  string
 }
 
+// TODO(task5): rewrite to use activity slots
 func ImportOpenCodeLogs(ctx context.Context, store *db.Store, dbPath string) error {
-	sessions, err := ParseOpenCodeDB(dbPath)
-	if err != nil {
-		return err
-	}
-	for _, session := range sessions {
-		exists, err := store.HasImport(ctx, opencodeSource, session.SessionID)
-		if err != nil {
-			return err
-		}
-		projectID, err := store.DetectProjectIDByPath(ctx, session.Cwd)
-		if err != nil {
-			return err
-		}
-		importEntry := db.EntryImport{
-			ProjectID:   projectID,
-			Description: session.Description,
-			StartedAt:   session.StartedAt,
-			EndedAt:     session.EndedAt,
-			Operator:    opencodeSource,
-			SourceRef:   session.SessionID,
-			Cwd:         session.Cwd,
-			Metadata: map[string]any{
-				"source_path": dbPath,
-			},
-		}
-		if exists {
-			if _, err := store.UpdateImportedEntryBySourceRef(ctx, opencodeSource, session.SessionID, importEntry); err != nil {
-				return err
-			}
-			continue
-		}
-		if _, err := store.CreateImportedEntry(ctx, importEntry); err != nil {
-			return err
-		}
-		if err := store.RecordImport(ctx, opencodeSource, dbPath, session.SessionID, 1); err != nil {
-			return err
-		}
-	}
-	return nil
+	return fmt.Errorf("opencode import not yet migrated to activity slots")
 }
 
 func ParseOpenCodeDB(path string) ([]OpenCodeSession, error) {

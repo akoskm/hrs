@@ -11,18 +11,6 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-type EntryImport struct {
-	ProjectID   *string
-	Description string
-	StartedAt   time.Time
-	EndedAt     time.Time
-	Operator    string
-	SourceRef   string
-	GitBranch   string
-	Cwd         string
-	Metadata    map[string]any
-}
-
 type ManualEntryInput struct {
 	ProjectIdent string
 	Description  string
@@ -41,95 +29,6 @@ type AgentEntryUpsertInput struct {
 	GitBranch    string
 	Cwd          string
 	Metadata     map[string]any
-}
-
-func (s *Store) HasImport(ctx context.Context, source, sessionID string) (bool, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT 1 FROM import_log WHERE source = ? AND session_id = ?`, source, sessionID)
-	var one int
-	err := row.Scan(&one)
-	if err == sql.ErrNoRows {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func (s *Store) CreateImportedEntry(ctx context.Context, entry EntryImport) (model.TimeEntry, error) {
-	now := nowUTC()
-	id := ulid.Make().String()
-	duration := int(entry.EndedAt.Sub(entry.StartedAt).Seconds())
-	metadataBytes, err := json.Marshal(entry.Metadata)
-	if err != nil {
-		return model.TimeEntry{}, err
-	}
-	metadata := string(metadataBytes)
-	var projectID any
-	if entry.ProjectID != nil {
-		projectID = *entry.ProjectID
-	}
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO time_entries (
-			id, project_id, description, started_at, ended_at, duration_secs, billable, status, operator,
-			source_ref, git_branch, cwd, metadata, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
-		id,
-		projectID,
-		entry.Description,
-		entry.StartedAt.UTC().Format(timeFormat),
-		entry.EndedAt.UTC().Format(timeFormat),
-		duration,
-		model.StatusDraft,
-		entry.Operator,
-		entry.SourceRef,
-		entry.GitBranch,
-		entry.Cwd,
-		metadata,
-		now.Format(timeFormat),
-		now.Format(timeFormat),
-	)
-	if err != nil {
-		return model.TimeEntry{}, err
-	}
-	return s.EntryByID(ctx, id)
-}
-
-func (s *Store) UpdateImportedEntryBySourceRef(ctx context.Context, operator, sourceRef string, entry EntryImport) (model.TimeEntry, error) {
-	now := nowUTC()
-	duration := int(entry.EndedAt.Sub(entry.StartedAt).Seconds())
-	metadataBytes, err := json.Marshal(entry.Metadata)
-	if err != nil {
-		return model.TimeEntry{}, err
-	}
-	metadata := string(metadataBytes)
-	var projectID any
-	if entry.ProjectID != nil {
-		projectID = *entry.ProjectID
-	}
-	result, err := s.db.ExecContext(ctx, `
-		UPDATE time_entries
-		SET project_id = ?, description = ?, started_at = ?, ended_at = ?, duration_secs = ?, cwd = ?, metadata = ?, updated_at = ?
-		WHERE operator = ? AND source_ref = ? AND deleted_at IS NULL
-	`, projectID, entry.Description, entry.StartedAt.UTC().Format(timeFormat), entry.EndedAt.UTC().Format(timeFormat), duration, entry.Cwd, metadata, now.Format(timeFormat), operator, sourceRef)
-	if err != nil {
-		return model.TimeEntry{}, err
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return model.TimeEntry{}, err
-	}
-	if rows == 0 {
-		return model.TimeEntry{}, sql.ErrNoRows
-	}
-	row := s.db.QueryRowContext(ctx, `
-		SELECT id, project_id, task_id, description, started_at, ended_at, duration_secs,
-			billable, status, operator, source_ref, worktree, git_branch, cwd, metadata,
-			deleted_at, created_at, updated_at
-		FROM time_entries WHERE operator = ? AND source_ref = ? AND deleted_at IS NULL
-	`, operator, sourceRef)
-	return scanTimeEntry(row)
 }
 
 func (s *Store) CreateManualEntry(ctx context.Context, entry ManualEntryInput) (model.TimeEntry, error) {
@@ -164,14 +63,6 @@ func (s *Store) CreateManualEntry(ctx context.Context, entry ManualEntryInput) (
 		return model.TimeEntry{}, err
 	}
 	return s.EntryByID(ctx, id)
-}
-
-func (s *Store) RecordImport(ctx context.Context, source, sourcePath, sessionID string, entriesCreated int) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO import_log (id, source, source_path, session_id, entries_created)
-		VALUES (?, ?, ?, ?, ?)
-	`, ulid.Make().String(), source, sourcePath, sessionID, entriesCreated)
-	return err
 }
 
 func (s *Store) ListEntries(ctx context.Context) ([]model.TimeEntryDetail, error) {
@@ -331,109 +222,6 @@ func (s *Store) SoftDeleteEntry(ctx context.Context, entryID string) error {
 		UPDATE time_entries SET deleted_at = ?, updated_at = ? WHERE id = ?
 	`, now, now, entryID)
 	return err
-}
-
-func (s *Store) HasOverlappingImportedEntry(ctx context.Context, cwd string, startedAt, endedAt time.Time, description string) (bool, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT description, started_at, ended_at
-		FROM time_entries
-		WHERE operator = 'claude-code'
-		  AND cwd = ?
-		  AND deleted_at IS NULL
-		  AND ended_at IS NOT NULL
-		  AND started_at < ?
-		  AND ended_at > ?
-	`, cwd, endedAt.UTC().Format(timeFormat), startedAt.UTC().Format(timeFormat))
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var existingDesc sql.NullString
-		var existingStart string
-		var existingEnd string
-		if err := rows.Scan(&existingDesc, &existingStart, &existingEnd); err != nil {
-			return false, err
-		}
-		existingStartedAt, err := parseTime(existingStart)
-		if err != nil {
-			return false, err
-		}
-		existingEndedAt, err := parseTime(existingEnd)
-		if err != nil {
-			return false, err
-		}
-		if overlapsMoreThan90Percent(startedAt, endedAt, existingStartedAt, existingEndedAt) && similarDescription(description, existingDesc.String) {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
-}
-
-func overlapsMoreThan90Percent(aStart, aEnd, bStart, bEnd time.Time) bool {
-	start := maxTime(aStart, bStart)
-	end := minTime(aEnd, bEnd)
-	if !end.After(start) {
-		return false
-	}
-	overlap := end.Sub(start)
-	shorter := minDuration(aEnd.Sub(aStart), bEnd.Sub(bStart))
-	if shorter <= 0 {
-		return false
-	}
-	return float64(overlap)/float64(shorter) > 0.9
-}
-
-func similarDescription(a, b string) bool {
-	a = normalizeCompareText(a)
-	b = normalizeCompareText(b)
-	if a == "" || b == "" {
-		return false
-	}
-	if a == b {
-		return true
-	}
-	return strings.Contains(a, b) || strings.Contains(b, a)
-}
-
-func normalizeCompareText(text string) string {
-	text = strings.ToLower(strings.TrimSpace(text))
-	var b strings.Builder
-	lastSpace := false
-	for _, r := range text {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-			lastSpace = false
-			continue
-		}
-		if !lastSpace {
-			b.WriteByte(' ')
-			lastSpace = true
-		}
-	}
-	return strings.Join(strings.Fields(b.String()), " ")
-}
-
-func minDuration(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func minTime(a, b time.Time) time.Time {
-	if a.Before(b) {
-		return a
-	}
-	return b
-}
-
-func maxTime(a, b time.Time) time.Time {
-	if a.After(b) {
-		return a
-	}
-	return b
 }
 
 type entryScanner interface {

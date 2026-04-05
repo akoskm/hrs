@@ -35,7 +35,7 @@ func loadClaudeSessionDetail(path string) ([]string, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("missing source path")
 	}
-	session, err := ParseClaudeFile(path)
+	session, err := ParseClaudeSession(path)
 	if err != nil {
 		return nil, err
 	}
