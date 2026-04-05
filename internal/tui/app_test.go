@@ -2444,3 +2444,45 @@ func TestDayViewInspectorShowsActivityDetail(t *testing.T) {
 		t.Fatalf("inspector missing message count, got:\n%s", view)
 	}
 }
+
+func TestDayViewInspectorPanelRendersOnRight(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Morning standup", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 3, 0, 0, 0, 0, time.Local))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	app := updated.(AppModel)
+	view := stripANSI(app.View())
+
+	// inspector must show on right side with its tabs
+	if !strings.Contains(view, "Overview") {
+		t.Fatalf("inspector missing Overview tab, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Session") {
+		t.Fatalf("inspector missing Session tab, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Actions") {
+		t.Fatalf("inspector missing Actions tab, got:\n%s", view)
+	}
+	// timeline and inspector must coexist — check both time labels and inspector content
+	if !strings.Contains(view, ":00") {
+		t.Fatalf("missing time labels alongside inspector, got:\n%s", view)
+	}
+	// verify inspector shows entry info (entry is focused)
+	if !strings.Contains(view, "Morning standup") {
+		t.Fatalf("inspector not showing focused entry description, got:\n%s", view)
+	}
+}
