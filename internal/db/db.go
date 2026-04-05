@@ -42,8 +42,23 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, migration002)
-	return err
+	// track applied migrations so destructive statements only run once
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY)`); err != nil {
+		return err
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = '002'`).Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		if _, err := s.db.ExecContext(ctx, migration002); err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES ('002')`); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func nowUTC() time.Time {
