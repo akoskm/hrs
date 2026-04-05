@@ -476,14 +476,14 @@ func (m AppModel) View() string {
 	}
 	var b strings.Builder
 	b.WriteString(styles.title.Render("Timeline") + "\n")
-	if len(m.entries) == 0 {
-		b.WriteString(styles.muted.Render("no entries") + "\n")
-	} else if m.timelineView == timelineViewDay {
+	if m.timelineView == timelineViewDay {
 		timelineModel := m
 		if m.mode == modeTimeline {
 			timelineModel.height = max(12, m.height-inspectorHeight(m.height)-4)
 		}
 		b.WriteString(renderDayTimeline(timelineModel, styles))
+	} else if len(m.entries) == 0 {
+		b.WriteString(styles.muted.Render("no entries") + "\n")
 	} else {
 		cols := timelineColumns(m.width)
 		header := renderTableHeader(cols, styles)

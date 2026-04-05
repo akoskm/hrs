@@ -24,13 +24,16 @@ func (s *Store) UpsertActivitySlots(ctx context.Context, slots []model.ActivityS
 }
 
 func (s *Store) ListActivitySlotsForDay(ctx context.Context, day time.Time) ([]model.ActivitySlot, error) {
-	dayStr := day.UTC().Format("2006-01-02")
+	// day is local midnight; convert to UTC range to avoid timezone date shift
+	local := day.In(time.Local)
+	start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local).UTC()
+	end := start.Add(24 * time.Hour)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT slot_time, operator, cwd, msg_count, first_text
 		FROM activity_slots
-		WHERE date(slot_time) = ?
+		WHERE slot_time >= ? AND slot_time < ?
 		ORDER BY slot_time
-	`, dayStr)
+	`, start.Format(timeFormat), end.Format(timeFormat))
 	if err != nil {
 		return nil, err
 	}

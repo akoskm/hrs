@@ -2176,6 +2176,8 @@ func TestDayViewJKNavigatesAndEnterEdits(t *testing.T) {
 		t.Fatalf("NewAppModel() error = %v", err)
 	}
 	app.InitializeTodayTimelineView()
+	// position slot before the entry so j (forward) finds it
+	app.daySlotStart = today.Add(-time.Hour).In(time.Local)
 	updated, _ := app.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
 	app = updated.(AppModel)
 
@@ -2324,5 +2326,121 @@ func TestAutoSyncOnInit(t *testing.T) {
 	}
 	if m2.Init() != nil {
 		t.Fatal("Init() without syncFn should return nil")
+	}
+}
+
+func TestDayViewRendersTimelineWithNoEntries(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.InitializeTodayTimelineView()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	app := updated.(AppModel)
+	view := stripANSI(app.View())
+
+	// timeline must render even with zero entries
+	if strings.Contains(view, "no entries") {
+		t.Fatal("day view should not show 'no entries' — it should render the timeline grid")
+	}
+	if !strings.Contains(view, "time") || !strings.Contains(view, "activity") {
+		t.Fatalf("day view missing column headers, got:\n%s", view)
+	}
+	// must have time labels
+	if !strings.Contains(view, ":00") {
+		t.Fatalf("day view missing time labels, got:\n%s", view)
+	}
+	// must have status bar
+	if !strings.Contains(view, "entries") && !strings.Contains(view, "day") {
+		t.Fatalf("day view missing status bar, got:\n%s", view)
+	}
+}
+
+func TestDayViewRendersEntriesAndActivity(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Sprint planning", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	// add activity slots
+	if err := store.UpsertActivitySlots(ctx, []model.ActivitySlot{
+		{SlotTime: time.Date(2026, 4, 3, 8, 0, 0, 0, time.UTC), Operator: "claude-code", MsgCount: 5, FirstText: "fix auth module", Cwd: "/tmp"},
+		{SlotTime: time.Date(2026, 4, 3, 8, 15, 0, 0, time.UTC), Operator: "claude-code", MsgCount: 3, FirstText: "add test coverage", Cwd: "/tmp"},
+	}); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 3, 0, 0, 0, 0, time.Local))
+	m.loadActivitySlots()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	app := updated.(AppModel)
+	view := stripANSI(app.View())
+
+	// must show time column and activity column headers
+	if !strings.Contains(view, "time") || !strings.Contains(view, "activity") {
+		t.Fatalf("missing column headers, got:\n%s", view)
+	}
+	// must show the manual entry
+	if !strings.Contains(view, "Sprint planning") {
+		t.Fatalf("missing entry text in view, got:\n%s", view)
+	}
+	// must show activity marker text
+	if !strings.Contains(view, "fix auth module") {
+		t.Fatalf("missing activity marker text in view, got:\n%s", view)
+	}
+	// must show time labels
+	if !strings.Contains(view, ":00") {
+		t.Fatalf("missing time labels, got:\n%s", view)
+	}
+}
+
+func TestDayViewInspectorShowsActivityDetail(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	// create slots at a time that maps to 09:00 local
+	slotUTC := time.Date(2026, 4, 3, 9, 0, 0, 0, time.Local).UTC().Truncate(15 * time.Minute)
+	if err := store.UpsertActivitySlots(ctx, []model.ActivitySlot{
+		{SlotTime: slotUTC, Operator: "claude-code", MsgCount: 12, FirstText: "refactor auth", Cwd: "/Users/akoskm/Projects/hrs"},
+		{SlotTime: slotUTC, Operator: "codex", MsgCount: 3, FirstText: "other work", Cwd: "/Users/akoskm/Projects/elaiia"},
+	}); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 3, 0, 0, 0, 0, time.Local))
+	m.daySlotStart = time.Date(2026, 4, 3, 9, 0, 0, 0, time.Local)
+	m.daySlotSpan = 15 * time.Minute
+	m.dayFocusKind = "slot"
+	m.loadActivitySlots()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	app := updated.(AppModel)
+	view := stripANSI(app.View())
+
+	// inspector should show operator-grouped activity
+	if !strings.Contains(view, "claude-code") {
+		t.Fatalf("inspector missing claude-code operator, got:\n%s", view)
+	}
+	if !strings.Contains(view, "12 msgs") {
+		t.Fatalf("inspector missing message count, got:\n%s", view)
 	}
 }
