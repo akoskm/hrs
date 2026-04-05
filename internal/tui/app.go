@@ -247,7 +247,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "up":
 			if m.timelineView == timelineViewDay {
-				m.moveSlot(-15*time.Minute, 15*time.Minute)
+				if m.dayFocusKind == "entry" && m.cursor >= 0 && m.cursor < len(m.entries) {
+					m.slotBeforeEntry(m.entries[m.cursor])
+				} else {
+					m.moveSlot(-15*time.Minute, 15*time.Minute)
+				}
 			} else if m.cursor > 0 {
 				m.cursor--
 				m.focusCurrentEntryInDayView()
@@ -337,7 +341,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.projectCursor++
 				}
 			} else if m.timelineView == timelineViewDay {
-				m.moveSlot(15*time.Minute, 15*time.Minute)
+				if m.dayFocusKind == "entry" && m.cursor >= 0 && m.cursor < len(m.entries) {
+					m.slotAfterEntry(m.entries[m.cursor])
+				} else {
+					m.moveSlot(15*time.Minute, 15*time.Minute)
+				}
 			} else if m.cursor < len(m.entries)-1 {
 				m.cursor++
 				m.focusCurrentEntryInDayView()
@@ -882,6 +890,39 @@ func (m *AppModel) syncFocusForDisplayedDay() {
 	m.dayGapFocus = 0
 	m.cursor = indices[0]
 	m.ensureVisible()
+}
+
+func (m *AppModel) slotAfterEntry(entry model.TimeEntryDetail) {
+	day := m.displayedDay()
+	dayEntries := dayEntriesForDate(m.entries, day.Format("2006-01-02"))
+	window := dayTimelineWindow(dayEntries, day, m.dayWindowStart)
+	rows := dayTimelineRows(window, m.height)
+	entryEnd := timelineBlockEnd(entry)
+	for _, row := range rows {
+		if !row.start.Before(entryEnd) {
+			m.daySlotStart = row.start
+			m.daySlotSpan = row.end.Sub(row.start)
+			m.dayFocusKind = "slot"
+			m.ensureSlotVisible()
+			return
+		}
+	}
+}
+
+func (m *AppModel) slotBeforeEntry(entry model.TimeEntryDetail) {
+	day := m.displayedDay()
+	dayEntries := dayEntriesForDate(m.entries, day.Format("2006-01-02"))
+	window := dayTimelineWindow(dayEntries, day, m.dayWindowStart)
+	rows := dayTimelineRows(window, m.height)
+	for i := len(rows) - 1; i >= 0; i-- {
+		if !rows[i].end.After(entry.StartedAt) {
+			m.daySlotStart = rows[i].start
+			m.daySlotSpan = rows[i].end.Sub(rows[i].start)
+			m.dayFocusKind = "slot"
+			m.ensureSlotVisible()
+			return
+		}
+	}
 }
 
 func (m *AppModel) scrollWindow(delta time.Duration) {
@@ -2378,18 +2419,23 @@ func renderDayScrollbar(m AppModel, styles tuiStyles) string {
 	return sb.String()
 }
 
+func timeCellIsSlotHighlighted(m AppModel, row dayTimelineRow) bool {
+	if m.dayFocusKind != "slot" || m.daySlotStart.IsZero() {
+		return false
+	}
+	slotStart := m.daySlotStart
+	slotEnd := m.daySlotStart.Add(m.daySlotSpan)
+	if !m.slotMarkStart.IsZero() {
+		slotStart = minTime(m.slotMarkStart, m.daySlotStart)
+		slotEnd = maxTime(m.slotMarkStart.Add(m.slotMarkSpan), m.daySlotStart.Add(m.slotMarkSpan))
+	}
+	return rangesOverlap(row.start, row.end, slotStart, slotEnd)
+}
+
 func renderVerticalTimeCell(m AppModel, row dayTimelineRow, styles tuiStyles) string {
 	label := padRight(row.label, 5)
-	if m.dayFocusKind == "slot" && !m.daySlotStart.IsZero() && m.overlappingEntryIndexForSlot() < 0 {
-		slotStart := m.daySlotStart
-		slotEnd := m.daySlotStart.Add(m.daySlotSpan)
-		if !m.slotMarkStart.IsZero() {
-			slotStart = minTime(m.slotMarkStart, m.daySlotStart)
-			slotEnd = maxTime(m.slotMarkStart.Add(m.slotMarkSpan), m.daySlotStart.Add(m.slotMarkSpan))
-		}
-		if rangesOverlap(row.start, row.end, slotStart, slotEnd) {
-			return styles.activePicker.Width(5).Render(label)
-		}
+	if timeCellIsSlotHighlighted(m, row) {
+		return styles.activePicker.Width(5).Render(label)
 	}
 	return label
 }

@@ -2726,3 +2726,130 @@ func TestMouseScrollShiftsViewportAndSnapsSlot(t *testing.T) {
 			clock(app.daySlotStart), clock(app.dayWindowStart), clock(windowEnd))
 	}
 }
+
+func TestSlotMarkerVisibleWhenSteppingFromEntry(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	// create entry at a fixed time
+	entryStart := time.Date(2026, 4, 3, 13, 0, 0, 0, time.UTC)
+	entryEnd := time.Date(2026, 4, 3, 13, 30, 0, 0, time.UTC)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "Some work", StartedAt: entryStart, EndedAt: entryEnd}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 3, 0, 0, 0, 0, time.Local))
+	m.height = 30
+	m.width = 120
+	// focus on the entry
+	m.dayFocusKind = "entry"
+	m.cursor = 0
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	app := updated.(AppModel)
+
+	// press down once — should immediately show slot marker in the view
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = updated.(AppModel)
+
+	if app.dayFocusKind != "slot" {
+		t.Fatalf("after down from entry: focus = %q, want slot", app.dayFocusKind)
+	}
+
+	view := stripANSI(app.View())
+	// the slot marker renders as a highlighted time cell — the activePicker style
+	// produces a visible block. Check that the view contains the slot time info
+	// in the footer (proves slot is active and positioned)
+	if !strings.Contains(view, "slot") {
+		t.Fatalf("after down from entry: view missing 'slot' in footer, marker not visible:\n%s", view)
+	}
+
+	// critically: the slot must NOT overlap the entry — it must be AFTER it
+	entryEndLocal := entryEnd.In(time.Local)
+	if app.daySlotStart.Before(entryEndLocal) {
+		t.Fatalf("slot at %s overlaps entry ending at %s — marker would be hidden by entry",
+			clock(app.daySlotStart), clock(entryEndLocal))
+	}
+
+	// the slot marker must also not be hidden by overlappingEntryIndexForSlot
+	if app.overlappingEntryIndexForSlot() >= 0 {
+		t.Fatalf("overlappingEntryIndexForSlot = %d, want -1 — slot overlaps entry so marker won't render in time cell",
+			app.overlappingEntryIndexForSlot())
+	}
+}
+
+func TestSlotMarkerAlwaysVisibleInTimeCell(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	entryStart := time.Date(2026, 4, 3, 13, 0, 0, 0, time.UTC)
+	entryEnd := time.Date(2026, 4, 3, 14, 0, 0, 0, time.UTC)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "Long work", StartedAt: entryStart, EndedAt: entryEnd}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 3, 0, 0, 0, 0, time.Local))
+	m.height = 30
+	m.width = 120
+
+	// place slot ON TOP of the entry (overlapping)
+	m.dayFocusKind = "slot"
+	m.daySlotStart = entryStart.In(time.Local)
+	m.daySlotSpan = 15 * time.Minute
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	app := updated.(AppModel)
+
+	// the slot overlaps the entry
+	if app.overlappingEntryIndexForSlot() < 0 {
+		t.Skip("slot doesn't overlap entry in this timezone — test not applicable")
+	}
+
+	// even when overlapping an entry, the time cell should still show the marker
+	dayStr := app.displayedDay().Format("2006-01-02")
+	dayEntries := dayEntriesForDate(app.entries, dayStr)
+	window := dayTimelineWindow(dayEntries, app.displayedDay(), app.dayWindowStart)
+	rows := dayTimelineRows(window, app.height)
+
+	// verify the slot overlaps a row (proving the marker branch is reachable)
+	slotStart := app.daySlotStart
+	slotEnd := app.daySlotStart.Add(app.daySlotSpan)
+	overlappingRows := 0
+	for _, row := range rows {
+		if rangesOverlap(row.start, row.end, slotStart, slotEnd) {
+			overlappingRows++
+		}
+	}
+	if overlappingRows == 0 {
+		t.Fatal("no rows overlap the slot — marker can't render")
+	}
+
+	// verify timeCellIsSlotHighlighted returns true even when slot overlaps an entry
+	highlighted := false
+	for _, row := range rows {
+		if rangesOverlap(row.start, row.end, slotStart, slotEnd) && timeCellIsSlotHighlighted(app, row) {
+			highlighted = true
+			break
+		}
+	}
+	if !highlighted {
+		t.Fatal("timeCellIsSlotHighlighted returned false for slot overlapping entry — marker won't render")
+	}
+}
