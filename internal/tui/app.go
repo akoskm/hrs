@@ -437,9 +437,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeTimeline && m.timelineView == timelineViewDay {
 			switch msg.Button {
 			case tea.MouseButtonWheelUp:
-				m.moveSlot(-15*time.Minute, m.daySlotSpan)
+				m.scrollWindow(-time.Hour)
 			case tea.MouseButtonWheelDown:
-				m.moveSlot(15*time.Minute, m.daySlotSpan)
+				m.scrollWindow(time.Hour)
 			}
 		}
 	case syncPulseMsg:
@@ -884,6 +884,22 @@ func (m *AppModel) syncFocusForDisplayedDay() {
 	m.dayGapFocus = 0
 	m.cursor = indices[0]
 	m.ensureVisible()
+}
+
+func (m *AppModel) scrollWindow(delta time.Duration) {
+	if m.dayWindowStart.IsZero() {
+		m.dayWindowStart = defaultDayWindowStart(m.displayedDay())
+	}
+	candidate := m.dayWindowStart.Add(delta)
+	candidate = clampDayWindowStart(candidate, m.displayedDay())
+	m.dayWindowStart = candidate
+	// snap cursor into visible window if it fell outside
+	windowEnd := m.dayWindowStart.Add(10 * time.Hour)
+	if m.daySlotStart.Before(m.dayWindowStart) {
+		m.daySlotStart = m.dayWindowStart
+	} else if !m.daySlotStart.Before(windowEnd) {
+		m.daySlotStart = windowEnd.Add(-m.daySlotSpan)
+	}
 }
 
 func (m *AppModel) ensureSlotVisible() {
