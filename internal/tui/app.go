@@ -2060,7 +2060,7 @@ func renderDayTimeline(m AppModel, styles tuiStyles) string {
 	dayEntries := dayEntriesForDate(m.entries, selectedDay)
 	window := dayTimelineWindow(dayEntries, m.displayedDay(), m.dayWindowStart)
 	rows := dayTimelineRows(window, m.height)
-	activityColWidth := min(40, max(16, timelineWidth(m.width)-8))
+	activityColWidth := max(16, timelineWidth(m.width)-8)
 
 	var b strings.Builder
 	b.WriteString(styles.dateHeader.Render(renderDateHeader(selectedWeekday+" "+selectedDay, timelineWidth(m.width))) + "\n")
