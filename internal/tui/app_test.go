@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/akoskm/hrs/internal/db"
 	"github.com/akoskm/hrs/internal/model"
-	"github.com/akoskm/hrs/internal/sync"
 )
 
 func TestTimelineRendersAndAssigns(t *testing.T) {
@@ -26,8 +24,13 @@ func TestTimelineRendersAndAssigns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
-	if err := sync.ImportClaudeFixtures(ctx, store, filepath.Join("..", "..", "testdata", "claude-sessions")); err != nil {
-		t.Fatalf("ImportClaudeFixtures() error = %v", err)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "elaiia",
+		Description:  "Auth refactor",
+		StartedAt:    time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 3, 11, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
 	}
 
 	model, err := NewAppModel(ctx, store)
@@ -38,7 +41,7 @@ func TestTimelineRendersAndAssigns(t *testing.T) {
 	tm := teatest.NewTestModel(t, model, teatest.WithInitialTermSize(120, 30))
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
 		out := stripANSI(string(b))
-		return strings.Contains(out, "Refactor the auth module to use OAuth2") && strings.Contains(out, "draft")
+		return strings.Contains(out, "Auth refactor") && strings.Contains(out, "confirmed")
 	}, teatest.WithDuration(5*time.Second))
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
@@ -77,8 +80,13 @@ func TestTimelineQuitsOnQ(t *testing.T) {
 	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
-	if err := sync.ImportClaudeFixtures(ctx, store, filepath.Join("..", "..", "testdata", "claude-sessions")); err != nil {
-		t.Fatalf("ImportClaudeFixtures() error = %v", err)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "elaiia",
+		Description:  "Work",
+		StartedAt:    time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
 	}
 
 	model, err := NewAppModel(ctx, store)
@@ -106,8 +114,13 @@ func TestAssignPickerShowsProjectsFromDB(t *testing.T) {
 	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Delta Labs", Code: "delta", HourlyRate: 12000, Currency: "EUR"}); err != nil {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
-	if err := sync.ImportClaudeFixtures(ctx, store, filepath.Join("..", "..", "testdata", "claude-sessions")); err != nil {
-		t.Fatalf("ImportClaudeFixtures() error = %v", err)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "elaiia",
+		Description:  "Work",
+		StartedAt:    time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 3, 11, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
 	}
 
 	model, err := NewAppModel(ctx, store)
@@ -140,8 +153,13 @@ func TestAssignDialogStaysWithinScreenHeight(t *testing.T) {
 	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Delta Labs", Code: "delta", HourlyRate: 12000, Currency: "EUR"}); err != nil {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
-	if err := sync.ImportClaudeFixtures(ctx, store, filepath.Join("..", "..", "testdata", "claude-sessions")); err != nil {
-		t.Fatalf("ImportClaudeFixtures() error = %v", err)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "elaiia",
+		Description:  "Work",
+		StartedAt:    time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 3, 11, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
 	}
 
 	model, err := NewAppModel(ctx, store)
@@ -169,16 +187,16 @@ func TestAssignDialogDefaultsToCurrentProject(t *testing.T) {
 	store := openTestStore(t)
 	defer store.Close()
 
-	project, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Currency: "CHF"})
-	if err != nil {
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Currency: "CHF"}); err != nil {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
-	entry, err := store.CreateImportedEntry(ctx, db.EntryImport{ProjectID: &project.ID, Description: "Auth", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC), Operator: "opencode", SourceRef: "sess-1", Cwd: "/Users/akoskm/Projects/hrs", Metadata: map[string]any{}})
-	if err != nil {
-		t.Fatalf("CreateImportedEntry() error = %v", err)
-	}
-	if err := store.AssignEntryToProject(ctx, entry.ID, project.ID); err != nil {
-		t.Fatalf("AssignEntryToProject() error = %v", err)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "elaiia",
+		Description:  "Auth",
+		StartedAt:    time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
 	}
 
 	model, err := NewAppModel(ctx, store)
@@ -343,9 +361,14 @@ func TestEnterOpensEntryEditDialogAndSavesDescriptionAndProject(t *testing.T) {
 	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Delta", Code: "delta", Currency: "EUR"}); err != nil {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
-	entry, err := store.CreateImportedEntry(ctx, db.EntryImport{Description: "Auth", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC), Operator: "opencode", SourceRef: "sess-edit", Cwd: "/Users/akoskm/Projects/hrs", Metadata: map[string]any{}})
+	entry, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "elaiia",
+		Description:  "Auth",
+		StartedAt:    time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
+	})
 	if err != nil {
-		t.Fatalf("CreateImportedEntry() error = %v", err)
+		t.Fatalf("CreateManualEntry() error = %v", err)
 	}
 
 	model, err := NewAppModel(ctx, store)
@@ -396,9 +419,17 @@ func TestDeleteClearsFocusedEntryDescription(t *testing.T) {
 	store := openTestStore(t)
 	defer store.Close()
 
-	entry, err := store.CreateImportedEntry(ctx, db.EntryImport{Description: "Auth", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC), Operator: "opencode", SourceRef: "sess-del", Cwd: "/Users/akoskm/Projects/hrs", Metadata: map[string]any{}})
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	entry, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "p",
+		Description:  "Auth",
+		StartedAt:    time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
+	})
 	if err != nil {
-		t.Fatalf("CreateImportedEntry() error = %v", err)
+		t.Fatalf("CreateManualEntry() error = %v", err)
 	}
 	model, err := NewAppModel(ctx, store)
 	if err != nil {
@@ -427,9 +458,17 @@ func TestEditDialogUpdatesTimes(t *testing.T) {
 	store := openTestStore(t)
 	defer store.Close()
 
-	entry, err := store.CreateImportedEntry(ctx, db.EntryImport{Description: "Auth", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC), Operator: "opencode", SourceRef: "sess-time", Cwd: "/Users/akoskm/Projects/hrs", Metadata: map[string]any{}})
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	entry, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "p",
+		Description:  "Auth",
+		StartedAt:    time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
+	})
 	if err != nil {
-		t.Fatalf("CreateImportedEntry() error = %v", err)
+		t.Fatalf("CreateManualEntry() error = %v", err)
 	}
 	model, err := NewAppModel(ctx, store)
 	if err != nil {
@@ -694,37 +733,8 @@ func TestTimelineDayViewShowsAxisAndBlocks(t *testing.T) {
 	if !strings.Contains(view, "time") || !strings.Contains(view, "10:00") || !strings.Contains(view, "15:00") {
 		t.Fatalf("view missing day axis: %q", view)
 	}
-	if !strings.Contains(view, "Friday 2026-04-03") || !strings.Contains(view, "human") || !strings.Contains(view, "gaps") || !strings.Contains(view, "Friday | focus 15:00-16:00") {
+	if !strings.Contains(view, "Friday 2026-04-03") || !strings.Contains(view, "activity") || !strings.Contains(view, "Friday | focus") {
 		t.Fatalf("view missing day blocks: %q", view)
-	}
-}
-
-func TestTimelineDayViewSplitsOverlapsIntoLanes(t *testing.T) {
-	ctx := context.Background()
-	store := openTestStore(t)
-	defer store.Close()
-
-	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
-		t.Fatalf("CreateProject() error = %v", err)
-	}
-	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Agent A", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 11, 0, 0, 0, time.UTC)}); err != nil {
-		t.Fatalf("CreateManualEntry() error = %v", err)
-	}
-	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Agent B", StartedAt: time.Date(2026, 4, 3, 9, 30, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 30, 0, 0, time.UTC)}); err != nil {
-		t.Fatalf("CreateManualEntry() error = %v", err)
-	}
-
-	model, err := NewAppModel(ctx, store)
-	if err != nil {
-		t.Fatalf("NewAppModel() error = %v", err)
-	}
-	model.SetDefaultTimelineView("day")
-	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
-	app := updated.(AppModel)
-
-	view := stripANSI(app.View())
-	if !strings.Contains(view, "human 2") {
-		t.Fatalf("view missing overlap lane: %q", view)
 	}
 }
 
@@ -1031,79 +1041,24 @@ func TestTimelineDayViewCreateManualEntryFromGap(t *testing.T) {
 	}
 }
 
-func TestRecentAgentSessionRendersAsActiveUntilNow(t *testing.T) {
-	ctx := context.Background()
-	store := openTestStore(t)
-	defer store.Close()
-
-	now := time.Now().UTC().Truncate(time.Minute)
-	start := now.Add(-30 * time.Minute)
-	end := now.Add(-5 * time.Minute)
-	if _, err := store.CreateImportedEntry(ctx, db.EntryImport{
-		Description: "Active opencode session",
-		StartedAt:   start,
-		EndedAt:     end,
-		Operator:    "opencode",
-		SourceRef:   "live-session",
-		Cwd:         "/Users/akoskm/Projects/hrs",
-		Metadata:    map[string]any{},
-	}); err != nil {
-		t.Fatalf("CreateImportedEntry() error = %v", err)
-	}
-
-	model, err := NewAppModel(ctx, store)
-	if err != nil {
-		t.Fatalf("NewAppModel() error = %v", err)
-	}
-	model.SetDefaultTimelineView("day")
-	entry := model.entries[model.cursor]
-	blockEnd := timelineBlockEnd(entry)
-	if blockEnd.Before(now.Add(-2 * time.Minute)) {
-		t.Fatalf("timelineBlockEnd() = %s, want near now %s", blockEnd.Format(time.RFC3339), now.Format(time.RFC3339))
-	}
-	view := stripANSI(model.View())
-	if !strings.Contains(view, "opencode") {
-		t.Fatalf("view missing opencode lane: %q", view)
-	}
-}
-
-func TestSessionInspectorLoadsSourceDetail(t *testing.T) {
-	ctx := context.Background()
-	store := openTestStore(t)
-	defer store.Close()
-	if err := sync.ImportClaudeFixtures(ctx, store, filepath.Join("..", "..", "testdata", "claude-sessions")); err != nil {
-		t.Fatalf("ImportClaudeFixtures() error = %v", err)
-	}
-	model, err := NewAppModel(ctx, store)
-	if err != nil {
-		t.Fatalf("NewAppModel() error = %v", err)
-	}
-	model.SetDefaultTimelineView("day")
-	model.inspectorTab = inspectorSession
-	view := stripANSI(model.View())
-	if !strings.Contains(view, "Source: claude-code") || !strings.Contains(view, "Messages:") || !strings.Contains(view, "Path:") {
-		t.Fatalf("session inspector missing source detail: %q", view)
-	}
-}
-
 func TestTodayGapsDoNotExtendIntoFuture(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
 	defer store.Close()
 
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
 	now := time.Now().UTC().Truncate(time.Minute)
 	start := now.Add(-2 * time.Hour)
 	end := now.Add(-30 * time.Minute)
-	if _, err := store.CreateImportedEntry(ctx, db.EntryImport{
-		Description: "Ended agent session",
-		StartedAt:   start,
-		EndedAt:     end,
-		Operator:    "opencode",
-		SourceRef:   "ended-session",
-		Cwd:         "/Users/akoskm/Projects/hrs",
-		Metadata:    map[string]any{},
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "p",
+		Description:  "Ended session",
+		StartedAt:    start,
+		EndedAt:      end,
 	}); err != nil {
-		t.Fatalf("CreateImportedEntry() error = %v", err)
+		t.Fatalf("CreateManualEntry() error = %v", err)
 	}
 
 	model, err := NewAppModel(ctx, store)
@@ -1134,8 +1089,11 @@ func TestBulkAssignSelectedEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
-	if err := sync.ImportClaudeFixtures(ctx, store, filepath.Join("..", "..", "testdata", "claude-sessions")); err != nil {
-		t.Fatalf("ImportClaudeFixtures() error = %v", err)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Entry A", StartedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 11, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Entry B", StartedAt: time.Date(2026, 4, 3, 11, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
 	}
 
 	model, err := NewAppModel(ctx, store)
@@ -1189,21 +1147,12 @@ func TestSingleUnassignEntry(t *testing.T) {
 	store := openTestStore(t)
 	defer store.Close()
 
-	project, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"})
+	_, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"})
 	if err != nil {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
-	if err := sync.ImportClaudeFixtures(ctx, store, filepath.Join("..", "..", "testdata", "claude-sessions")); err != nil {
-		t.Fatalf("ImportClaudeFixtures() error = %v", err)
-	}
-	entries, err := store.ListEntries(ctx)
-	if err != nil {
-		t.Fatalf("ListEntries() error = %v", err)
-	}
-	for _, entry := range entries {
-		if err := store.AssignEntryToProject(ctx, entry.ID, project.ID); err != nil {
-			t.Fatalf("AssignEntryToProject() error = %v", err)
-		}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Work A", StartedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 11, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
 	}
 
 	model, err := NewAppModel(ctx, store)
@@ -1241,21 +1190,15 @@ func TestBulkUnassignSelectedEntries(t *testing.T) {
 	store := openTestStore(t)
 	defer store.Close()
 
-	project, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"})
+	_, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"})
 	if err != nil {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
-	if err := sync.ImportClaudeFixtures(ctx, store, filepath.Join("..", "..", "testdata", "claude-sessions")); err != nil {
-		t.Fatalf("ImportClaudeFixtures() error = %v", err)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Work A", StartedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 11, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
 	}
-	entries, err := store.ListEntries(ctx)
-	if err != nil {
-		t.Fatalf("ListEntries() error = %v", err)
-	}
-	for i := 0; i < 2; i++ {
-		if err := store.AssignEntryToProject(ctx, entries[i].ID, project.ID); err != nil {
-			t.Fatalf("AssignEntryToProject() error = %v", err)
-		}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Work B", StartedAt: time.Date(2026, 4, 3, 11, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
 	}
 
 	model, err := NewAppModel(ctx, store)
@@ -1395,68 +1338,6 @@ func TestTimelineSlashSearchAndNextPrev(t *testing.T) {
 	app = updated.(AppModel)
 	if !strings.Contains(stripANSI(app.View()), "Beta task") {
 		t.Fatalf("view missing previous beta match: %q", stripANSI(app.View()))
-	}
-}
-
-func TestTimelineSourceFilterCycles(t *testing.T) {
-	ctx := context.Background()
-	store := openTestStore(t)
-	defer store.Close()
-
-	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
-		t.Fatalf("CreateProject() error = %v", err)
-	}
-	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Human entry", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)}); err != nil {
-		t.Fatalf("CreateManualEntry() error = %v", err)
-	}
-	if err := sync.ImportClaudeFixtures(ctx, store, filepath.Join("..", "..", "testdata", "claude-sessions")); err != nil {
-		t.Fatalf("ImportClaudeFixtures() error = %v", err)
-	}
-
-	model, err := NewAppModel(ctx, store)
-	if err != nil {
-		t.Fatalf("NewAppModel() error = %v", err)
-	}
-	updated, _ := model.Update(tea.WindowSizeMsg{Width: 160, Height: 20})
-	app := updated.(AppModel)
-	if app.sourceFilter != "all" {
-		t.Fatalf("sourceFilter = %q, want all", app.sourceFilter)
-	}
-	if !strings.Contains(stripANSI(app.View()), "P projects") {
-		t.Fatalf("status bar missing project manage hint: %q", stripANSI(app.View()))
-	}
-	if !strings.Contains(stripANSI(app.View()), "Human entry") || !strings.Contains(stripANSI(app.View()), "Refactor the auth module") {
-		t.Fatalf("all filter missing mixed entries: %q", stripANSI(app.View()))
-	}
-
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
-	app = updated.(AppModel)
-	if app.sourceFilter != "opencode" || len(app.entries) != 0 {
-		t.Fatalf("first filter step = %q len=%d", app.sourceFilter, len(app.entries))
-	}
-
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
-	app = updated.(AppModel)
-	if app.sourceFilter != "codex" || len(app.entries) != 0 {
-		t.Fatalf("second filter step = %q len=%d", app.sourceFilter, len(app.entries))
-	}
-
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
-	app = updated.(AppModel)
-	if app.sourceFilter != "claude-code" || len(app.entries) != 2 {
-		t.Fatalf("third filter step = %q len=%d", app.sourceFilter, len(app.entries))
-	}
-	if strings.Contains(stripANSI(app.View()), "Human entry") || !strings.Contains(stripANSI(app.View()), "Refactor the auth module") {
-		t.Fatalf("claude filter view wrong: %q", stripANSI(app.View()))
-	}
-
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
-	app = updated.(AppModel)
-	if app.sourceFilter != "human" || len(app.entries) != 1 {
-		t.Fatalf("fourth filter step = %q len=%d", app.sourceFilter, len(app.entries))
-	}
-	if !strings.Contains(stripANSI(app.View()), "Human entry") || strings.Contains(stripANSI(app.View()), "Refactor the auth module") {
-		t.Fatalf("human filter view wrong: %q", stripANSI(app.View()))
 	}
 }
 
@@ -1835,7 +1716,6 @@ func TestRestoreStateAfterReload(t *testing.T) {
 	}
 	// Move cursor to second entry
 	app.cursor = 1
-	app.sourceFilter = "all"
 
 	// Simulate sync completing
 	updated, _ := app.Update(syncDoneMsg{err: nil})
@@ -2241,11 +2121,11 @@ func TestDayViewJKRenderedOutputChangesEachPress(t *testing.T) {
 	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", HourlyRate: 100, Currency: "USD"}); err != nil {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
-	// Human entry and overlapping agent entry (different lanes)
+	// Two entries with a gap, and one in the afternoon
 	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "manual work", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 30, 0, 0, time.UTC)}); err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := store.CreateImportedEntry(ctx, db.EntryImport{Description: "agent session", StartedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 11, 0, 0, 0, time.UTC), Operator: "opencode", SourceRef: "s1", Cwd: "/tmp", Metadata: map[string]any{}}); err != nil {
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "follow up", StartedAt: time.Date(2026, 4, 3, 10, 30, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 11, 0, 0, 0, time.UTC)}); err != nil {
 		t.Fatalf("err = %v", err)
 	}
 	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "afternoon", StartedAt: time.Date(2026, 4, 3, 14, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 15, 0, 0, 0, time.UTC)}); err != nil {
@@ -2345,9 +2225,17 @@ func TestDeleteEntryConfirmDialog(t *testing.T) {
 	store := openTestStore(t)
 	defer store.Close()
 
-	entry, err := store.CreateImportedEntry(ctx, db.EntryImport{Description: "To delete", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC), Operator: "opencode", SourceRef: "sess-del2", Cwd: "/tmp", Metadata: map[string]any{}})
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	entry, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "p",
+		Description:  "To delete",
+		StartedAt:    time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
+	})
 	if err != nil {
-		t.Fatalf("CreateImportedEntry() error = %v", err)
+		t.Fatalf("CreateManualEntry() error = %v", err)
 	}
 
 	app, err := NewAppModel(ctx, store)
@@ -2395,4 +2283,46 @@ func descriptionOrID(entry model.TimeEntryDetail) string {
 		return *entry.Description
 	}
 	return entry.ID
+}
+
+func TestTimelineBlockLabelIncludesBranchForAgentEntries(t *testing.T) {
+	desc := "Fix auth"
+	branch := "feat/auth"
+	agent := model.TimeEntryDetail{TimeEntry: model.TimeEntry{Description: &desc, GitBranch: &branch, Operator: "claude-code"}}
+	got := timelineBlockLabel(agent)
+	if got != "Fix auth [feat/auth]" {
+		t.Fatalf("agent label = %q, want %q", got, "Fix auth [feat/auth]")
+	}
+
+	human := model.TimeEntryDetail{TimeEntry: model.TimeEntry{Description: &desc, GitBranch: &branch, Operator: "human"}}
+	got = timelineBlockLabel(human)
+	if got != "Fix auth" {
+		t.Fatalf("human label = %q, want %q", got, "Fix auth")
+	}
+}
+
+func TestAutoSyncOnInit(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	m, err := NewAppModelWithSync(ctx, store, func() error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("NewAppModelWithSync() error = %v", err)
+	}
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("Init() returned nil cmd, expected sync batch")
+	}
+
+	// without syncFn, Init should return nil
+	m2, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	if m2.Init() != nil {
+		t.Fatal("Init() without syncFn should return nil")
+	}
 }

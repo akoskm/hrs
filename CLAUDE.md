@@ -11,11 +11,23 @@ manual time blocks. The output is accurate billable hours reports.
 
 1. You work all day — coding agents come and go, you do meetings and reviews
 2. End of day (or whenever), you run `hrs`
-3. You see a timeline of every agent session auto-detected from JSONL logs
-4. Unassigned blocks are highlighted — you pick a project, optionally a task
-5. You see gaps between entries and can add manual entries for meetings, reviews, etc.
-6. You mark things billable/non-billable
-7. Reports and invoicing data flow from there
+3. The timeline shows **activity markers** from agent logs — ticks/dots showing when agents were active, not pre-created time entries. Agents don't create entries; they provide context.
+4. You see where work happened and **manually create time entries** informed by the activity markers
+5. You assign entries to projects, optionally tasks
+6. You add manual entries for meetings, reviews, etc.
+7. You mark things billable/non-billable
+8. Reports and invoicing data flow from there
+
+## Agent Activity vs Time Entries (Key Distinction)
+
+Agent logs are **raw activity data**, not time entries. Like traditional time trackers
+show app usage as background context, hrs shows agent message timestamps as visual
+indicators on the timeline. The user decides what becomes a billable time entry.
+
+- **Sync reads agent logs** → extracts individual message timestamps
+- **Timeline shows activity markers** → background ticks/dots, not entries
+- **User creates entries** → informed by seeing when agents were active and what they did
+- **Sessions ≠ entries** — a session can span days; what matters is when messages happened
 
 ## The Tool is Fully Usable Without Agents
 
