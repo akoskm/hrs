@@ -518,18 +518,9 @@ func (m AppModel) View() string {
 	}
 	body := b.String()
 	if m.mode == modeTimeline && m.timelineView == timelineViewDay {
-		inspector := renderInspectorPane(m, styles, timelineWidth(m.width), inspectorHeight(m.height))
-		if m.height > 0 {
-			used := lineCount(renderHeader(m.entries, m.width)) + lineCount(body) + lineCount(inspector) + 1
-			if m.err != nil {
-				used++
-			}
-			remaining := m.height - used
-			if remaining > 0 {
-				body += strings.Repeat("\n", remaining)
-			}
-		}
-		body += inspector
+		inspectorWidth := min(40, max(24, m.width/3))
+		inspector := renderInspectorPane(m, styles, inspectorWidth, max(10, m.height-4))
+		body = lipgloss.JoinHorizontal(lipgloss.Top, body, " ", inspector)
 	}
 	sections = append(sections, body)
 	if m.mode == modeSearch {
@@ -2130,10 +2121,33 @@ func (m AppModel) effectiveEntryIndex() int {
 
 func overviewInspectorLines(m AppModel) []string {
 	if m.dayFocusKind == "slot" && !m.daySlotStart.IsZero() && m.overlappingEntryIndexForSlot() < 0 {
+		rounded := m.daySlotStart.UTC().Truncate(15 * time.Minute)
+		var slotActivity []model.ActivitySlot
+		for _, slot := range m.activitySlots {
+			if slot.SlotTime.Equal(rounded) {
+				slotActivity = append(slotActivity, slot)
+			}
+		}
+		if len(slotActivity) > 0 {
+			lines := []string{
+				fmt.Sprintf("Activity: %s-%s", clock(m.daySlotStart), clock(m.daySlotStart.Add(m.daySlotSpan))),
+				"",
+			}
+			for _, slot := range slotActivity {
+				lines = append(lines, fmt.Sprintf("%s (%d msgs)", slot.Operator, slot.MsgCount))
+				if slot.Cwd != "" {
+					lines = append(lines, fmt.Sprintf("  cwd: %s", slot.Cwd))
+				}
+				if slot.FirstText != "" {
+					lines = append(lines, fmt.Sprintf("  %s", truncateForWidth(slot.FirstText, 36)))
+				}
+			}
+			return lines
+		}
 		return []string{
 			"Time slot",
 			fmt.Sprintf("Range: %s-%s", clock(m.daySlotStart), clock(m.daySlotStart.Add(m.daySlotSpan))),
-			fmt.Sprintf("Size: %s", formatGapDuration(dayGap{start: m.daySlotStart, end: m.daySlotStart.Add(m.daySlotSpan)})),
+			fmt.Sprintf("Size: %dm", int(m.daySlotSpan.Minutes())),
 			"Action: Enter creates entry or edits overlap",
 		}
 	}
