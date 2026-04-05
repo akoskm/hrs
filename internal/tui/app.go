@@ -433,6 +433,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.styles = newStyles(msg.Width)
 		m.stylesWidth = msg.Width
 		m.ensureVisible()
+	case tea.MouseMsg:
+		if m.mode == modeTimeline && m.timelineView == timelineViewDay {
+			switch msg.Button {
+			case tea.MouseButtonWheelUp:
+				m.moveSlot(-15*time.Minute, m.daySlotSpan)
+			case tea.MouseButtonWheelDown:
+				m.moveSlot(15*time.Minute, m.daySlotSpan)
+			}
+		}
 	case syncPulseMsg:
 		if !m.syncing {
 			return m, nil
@@ -521,7 +530,8 @@ func (m AppModel) View() string {
 	if m.mode == modeTimeline && m.timelineView == timelineViewDay {
 		inspectorWidth := max(20, m.width/6)
 		inspector := renderInspectorPane(m, styles, inspectorWidth, max(10, m.height-4))
-		body = lipgloss.JoinHorizontal(lipgloss.Top, body, " ", inspector)
+		scrollbar := renderDayScrollbar(m, styles)
+		body = lipgloss.JoinHorizontal(lipgloss.Top, body, scrollbar, inspector)
 	}
 	sections = append(sections, body)
 	if m.mode == modeSearch {
@@ -2300,6 +2310,52 @@ func dayTimelineRows(window dayWindow, height int) []dayTimelineRow {
 		hourStart = hourStart.Add(time.Hour)
 	}
 	return rows
+}
+
+func dayScrollbar(totalRows int, windowStart time.Time, day time.Time) (thumbStart, thumbEnd int) {
+	if totalRows == 0 {
+		return 0, 0
+	}
+	dayFloor := dayStart(day)
+	offset := windowStart.Sub(dayFloor)
+	if offset < 0 {
+		offset = 0
+	}
+	ratio := float64(offset) / float64(24*time.Hour)
+	windowRatio := float64(10*time.Hour) / float64(24*time.Hour)
+	thumbStart = int(ratio * float64(totalRows))
+	thumbEnd = thumbStart + max(1, int(windowRatio*float64(totalRows)))
+	if thumbEnd > totalRows {
+		thumbEnd = totalRows
+	}
+	if thumbStart >= totalRows {
+		thumbStart = totalRows - 1
+	}
+	return thumbStart, thumbEnd
+}
+
+func renderDayScrollbar(m AppModel, styles tuiStyles) string {
+	dayEntries := dayEntriesForDate(m.entries, m.displayedDay().Format("2006-01-02"))
+	window := dayTimelineWindow(dayEntries, m.displayedDay(), m.dayWindowStart)
+	rows := dayTimelineRows(window, m.height)
+	thumbStart, thumbEnd := dayScrollbar(len(rows), window.start, m.displayedDay())
+
+	// 4 header lines (date, subheader, column header, separator) + row lines + 1 footer
+	totalLines := 4 + len(rows) + 1
+	thumbStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("99"))
+	var sb strings.Builder
+	for i := 0; i < totalLines; i++ {
+		rowIdx := i - 4 // offset for header lines
+		if rowIdx >= 0 && rowIdx < len(rows) && rowIdx >= thumbStart && rowIdx < thumbEnd {
+			sb.WriteString(thumbStyle.Render("▐"))
+		} else {
+			sb.WriteString(styles.muted.Render("│"))
+		}
+		if i < totalLines-1 {
+			sb.WriteString("\n")
+		}
+	}
+	return sb.String()
 }
 
 func renderVerticalTimeCell(m AppModel, row dayTimelineRow, styles tuiStyles) string {

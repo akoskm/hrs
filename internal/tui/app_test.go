@@ -2541,3 +2541,43 @@ func TestDayViewFullUIElements(t *testing.T) {
 		}
 	}
 }
+
+func TestDayViewScrollbarRendersTrackAndThumb(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.InitializeTodayTimelineView()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	app := updated.(AppModel)
+	view := stripANSI(app.View())
+
+	if !strings.Contains(view, "▐") {
+		t.Fatalf("scrollbar thumb (▐) not found in view:\n%s", view)
+	}
+	if !strings.Contains(view, "│") {
+		t.Fatalf("scrollbar track (│) not found in view:\n%s", view)
+	}
+}
+
+func TestDayScrollbarPosition(t *testing.T) {
+	day := time.Date(2026, 4, 3, 0, 0, 0, 0, time.Local)
+	// window at start of day
+	thumbStart, thumbEnd := dayScrollbar(24, dayStart(day), day)
+	if thumbStart != 0 {
+		t.Fatalf("thumbStart = %d, want 0 for window at day start", thumbStart)
+	}
+	if thumbEnd <= thumbStart {
+		t.Fatalf("thumbEnd = %d should be > thumbStart = %d", thumbEnd, thumbStart)
+	}
+
+	// window at end of day (14:00 start, 10h window)
+	thumbStart2, _ := dayScrollbar(24, dayStart(day).Add(14*time.Hour), day)
+	if thumbStart2 <= thumbStart {
+		t.Fatalf("later window thumbStart = %d should be > early window thumbStart = %d", thumbStart2, thumbStart)
+	}
+}
