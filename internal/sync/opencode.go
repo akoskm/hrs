@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/akoskm/hrs/internal/db"
+	"github.com/akoskm/hrs/internal/model"
 
 	_ "modernc.org/sqlite"
 )
@@ -23,9 +24,80 @@ type OpenCodeSession struct {
 	SourcePath  string
 }
 
-// TODO(task5): rewrite to use activity slots
 func ImportOpenCodeLogs(ctx context.Context, store *db.Store, dbPath string) error {
-	return fmt.Errorf("opencode import not yet migrated to activity slots")
+	dbConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return err
+	}
+	defer dbConn.Close()
+
+	// Query all message timestamps grouped by session, so we can bucket them
+	rows, err := dbConn.Query(`
+		SELECT s.directory, m.time_created, s.title, s.id
+		FROM message m
+		JOIN session s ON s.id = m.session_id
+		WHERE s.time_archived IS NULL
+		ORDER BY m.time_created
+	`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type slotKey struct {
+		slotTime time.Time
+		operator string
+	}
+
+	slots := make(map[slotKey]*model.ActivitySlot)
+	sessionFirstText := make(map[string]bool) // track if we got first text per session
+
+	for rows.Next() {
+		var cwd, title, sessionID string
+		var createdMS int64
+		if err := rows.Scan(&cwd, &createdMS, &title, &sessionID); err != nil {
+			return err
+		}
+		ts := time.UnixMilli(createdMS).UTC()
+		bucket := ts.Truncate(15 * time.Minute)
+		key := slotKey{slotTime: bucket, operator: opencodeSource}
+
+		slot, ok := slots[key]
+		if !ok {
+			slot = &model.ActivitySlot{
+				SlotTime: bucket,
+				Operator: opencodeSource,
+			}
+			slots[key] = slot
+		}
+		slot.MsgCount++
+		if slot.Cwd == "" {
+			slot.Cwd = cwd
+		}
+		if slot.FirstText == "" && !sessionFirstText[sessionID] {
+			desc := strings.TrimSpace(title)
+			if desc == "" || strings.HasPrefix(desc, "New session -") {
+				desc, _ = firstOpenCodeUserText(dbConn, sessionID)
+			}
+			if desc != "" {
+				slot.FirstText = normalizeDescription(desc, 80)
+				sessionFirstText[sessionID] = true
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if len(slots) == 0 {
+		return nil
+	}
+
+	result := make([]model.ActivitySlot, 0, len(slots))
+	for _, slot := range slots {
+		result = append(result, *slot)
+	}
+	return store.UpsertActivitySlots(ctx, result)
 }
 
 func ParseOpenCodeDB(path string) ([]OpenCodeSession, error) {

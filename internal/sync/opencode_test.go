@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/akoskm/hrs/internal/db"
-	"github.com/akoskm/hrs/internal/model"
 
 	_ "modernc.org/sqlite"
 )
@@ -41,45 +40,39 @@ func TestImportOpenCodeLogs(t *testing.T) {
 	}
 	defer store.Close()
 
-	project, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: model.CurrencyEUR})
-	if err != nil {
-		t.Fatalf("CreateProject() error = %v", err)
-	}
-	if _, err := store.AddProjectPath(ctx, "hrs", "/Users/akoskm/Projects/hrs"); err != nil {
-		t.Fatalf("AddProjectPath() error = %v", err)
-	}
 	dbPath := createOpenCodeFixtureDB(t)
 	if err := ImportOpenCodeLogs(ctx, store, dbPath); err != nil {
 		t.Fatalf("ImportOpenCodeLogs() error = %v", err)
 	}
+	// Idempotent: second run should not error
 	if err := ImportOpenCodeLogs(ctx, store, dbPath); err != nil {
 		t.Fatalf("ImportOpenCodeLogs() second run error = %v", err)
 	}
-	entries, err := store.ListEntries(ctx)
+
+	// The fixture has one message at time_created=1775190001000
+	// which is 2026-03-31T10:00:01Z -> bucket 2026-03-31T10:00:00Z
+	day := time.UnixMilli(1775190001000).UTC().Truncate(24 * time.Hour)
+	slots, err := store.ListActivitySlotsForDay(ctx, day)
 	if err != nil {
-		t.Fatalf("ListEntries() error = %v", err)
+		t.Fatalf("ListActivitySlotsForDay() error = %v", err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("len(entries) = %d, want 2", len(entries))
+	if len(slots) == 0 {
+		t.Fatal("expected activity slots")
 	}
-	matched := 0
-	for _, entry := range entries {
-		if entry.Operator != opencodeSource {
-			t.Fatalf("operator = %q, want %q", entry.Operator, opencodeSource)
+	for _, slot := range slots {
+		if slot.Operator != opencodeSource {
+			t.Fatalf("operator = %q, want %q", slot.Operator, opencodeSource)
 		}
-		if entry.Status != model.StatusDraft {
-			t.Fatalf("status = %q, want %q", entry.Status, model.StatusDraft)
+		if slot.MsgCount == 0 {
+			t.Fatal("msg_count = 0, want > 0")
 		}
-		if entry.ProjectID != nil && *entry.ProjectID == project.ID {
-			matched++
+		if slot.SlotTime != slot.SlotTime.Truncate(15*time.Minute) {
+			t.Fatalf("slot_time %s not rounded to 15 min", slot.SlotTime)
 		}
-	}
-	if matched != 1 {
-		t.Fatalf("matched = %d, want 1", matched)
 	}
 }
 
-func TestImportOpenCodeLogsUpdatesExistingSession(t *testing.T) {
+func TestImportOpenCodeLogsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	store, err := db.Open(":memory:")
 	if err != nil {
@@ -91,33 +84,26 @@ func TestImportOpenCodeLogsUpdatesExistingSession(t *testing.T) {
 	if err := ImportOpenCodeLogs(ctx, store, dbPath); err != nil {
 		t.Fatalf("ImportOpenCodeLogs() error = %v", err)
 	}
-	if err := bumpOpenCodeSessionUpdatedAt(dbPath, "ses_1", 1775214583592); err != nil {
-		t.Fatalf("bumpOpenCodeSessionUpdatedAt() error = %v", err)
+
+	// Get slot count after first import
+	day := time.UnixMilli(1775190001000).UTC().Truncate(24 * time.Hour)
+	slots1, err := store.ListActivitySlotsForDay(ctx, day)
+	if err != nil {
+		t.Fatalf("ListActivitySlotsForDay() error = %v", err)
 	}
+
+	// Run again
 	if err := ImportOpenCodeLogs(ctx, store, dbPath); err != nil {
 		t.Fatalf("ImportOpenCodeLogs() second run error = %v", err)
 	}
-
-	entries, err := store.ListEntries(ctx)
+	slots2, err := store.ListActivitySlotsForDay(ctx, day)
 	if err != nil {
-		t.Fatalf("ListEntries() error = %v", err)
+		t.Fatalf("ListActivitySlotsForDay() error = %v", err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("len(entries) = %d, want 2", len(entries))
+
+	if len(slots1) != len(slots2) {
+		t.Fatalf("slot count changed: %d -> %d", len(slots1), len(slots2))
 	}
-	for _, entry := range entries {
-		if entry.SourceRef != nil && *entry.SourceRef == "ses_1" {
-			if entry.EndedAt == nil {
-				t.Fatal("ended_at = nil, want value")
-			}
-			want := time.UnixMilli(1775214583592).UTC().Format(time.RFC3339)
-			if entry.EndedAt.UTC().Format(time.RFC3339) != want {
-				t.Fatalf("ended_at = %s, want %s", entry.EndedAt.UTC().Format(time.RFC3339), want)
-			}
-			return
-		}
-	}
-	t.Fatal("updated session not found")
 }
 
 func createOpenCodeFixtureDB(t *testing.T) string {
@@ -143,14 +129,4 @@ func createOpenCodeFixtureDB(t *testing.T) string {
 		}
 	}
 	return path
-}
-
-func bumpOpenCodeSessionUpdatedAt(path, sessionID string, updatedAtMS int64) error {
-	conn, err := sql.Open("sqlite", path)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	_, err = conn.Exec(`UPDATE session SET time_updated = ? WHERE id = ?`, updatedAtMS, sessionID)
-	return err
 }
