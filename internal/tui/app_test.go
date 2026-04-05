@@ -2581,3 +2581,84 @@ func TestDayScrollbarPosition(t *testing.T) {
 		t.Fatalf("later window thumbStart = %d should be > early window thumbStart = %d", thumbStart2, thumbStart)
 	}
 }
+
+func TestJumpToNowScrollsViewportToShowNow(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.InitializeTodayTimelineView()
+	m.height = 30
+
+	// scroll window to early morning (03:00-13:00) so "now" might be near the edge or outside
+	now := time.Now().In(time.Local)
+	m.dayWindowStart = dayStart(now).Add(3 * time.Hour)
+	m.daySlotStart = dayStart(now).Add(3 * time.Hour)
+	m.dayFocusKind = "slot"
+
+	// press n to jump to now
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	app := updated.(AppModel)
+
+	// the window must contain "now" — and "now" should be in the middle third, not at the edge
+	windowEnd := app.dayWindowStart.Add(10 * time.Hour)
+	if now.Before(app.dayWindowStart) || !now.Before(windowEnd) {
+		t.Fatalf("after n: now %s is outside window %s-%s",
+			clock(now), clock(app.dayWindowStart), clock(windowEnd))
+	}
+	// now should be centered: ~5h from both edges (within 1h tolerance)
+	marginFromStart := now.Sub(app.dayWindowStart)
+	marginFromEnd := windowEnd.Sub(now)
+	if marginFromStart < 4*time.Hour || marginFromEnd < 4*time.Hour {
+		t.Fatalf("after n: now not centered — %s from start, %s from end (window %s-%s)",
+			marginFromStart, marginFromEnd, clock(app.dayWindowStart), clock(windowEnd))
+	}
+}
+
+func TestJumpToTodayScrollsViewportToShowNow(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.InitializeTodayTimelineView()
+	m.height = 30
+
+	// move to a different day first, then scroll to early morning
+	yesterday := dayStart(time.Now()).AddDate(0, 0, -1)
+	m.dayDate = yesterday
+	m.dayWindowStart = yesterday
+	m.daySlotStart = yesterday
+	m.dayFocusKind = "slot"
+
+	// press t to jump to today
+	now := time.Now().In(time.Local)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	app := updated.(AppModel)
+
+	// must be on today
+	if !app.displayedDay().Equal(dayStart(time.Now())) {
+		t.Fatalf("after t: displayed day = %s, want today", app.displayedDay().Format("2006-01-02"))
+	}
+
+	// the window must contain "now" — and "now" should be roughly centered
+	windowEnd := app.dayWindowStart.Add(10 * time.Hour)
+	if now.Before(app.dayWindowStart) || !now.Before(windowEnd) {
+		t.Fatalf("after t: now %s is outside window %s-%s",
+			clock(now), clock(app.dayWindowStart), clock(windowEnd))
+	}
+	// now should be centered: ~5h from both edges (within 1h tolerance)
+	marginFromStart := now.Sub(app.dayWindowStart)
+	marginFromEnd := windowEnd.Sub(now)
+	if marginFromStart < 4*time.Hour || marginFromEnd < 4*time.Hour {
+		t.Fatalf("after t: now not centered — %s from start, %s from end (window %s-%s)",
+			marginFromStart, marginFromEnd, clock(app.dayWindowStart), clock(windowEnd))
+	}
+}

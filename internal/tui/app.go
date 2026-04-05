@@ -763,12 +763,10 @@ func (m *AppModel) shiftDisplayedDay(direction int) {
 
 func (m *AppModel) jumpToToday() {
 	today := dayStart(time.Now())
-	if m.displayedDay().Equal(today) {
-		return
-	}
+	now := time.Now().In(time.Local)
 	m.dayDate = today
-	m.dayWindowStart = defaultDayWindowStart(today)
-	m.setSlotFocus(time.Now(), 15*time.Minute)
+	m.setSlotFocus(now, 15*time.Minute)
+	m.centerWindowOn(now)
 }
 
 func (m *AppModel) moveSlot(delta, span time.Duration) {
@@ -902,6 +900,12 @@ func (m *AppModel) scrollWindow(delta time.Duration) {
 	}
 }
 
+func (m *AppModel) centerWindowOn(ts time.Time) {
+	local := ts.In(time.Local)
+	centered := alignWindowStart(local.Add(-5 * time.Hour))
+	m.dayWindowStart = clampDayWindowStart(centered, m.displayedDay())
+}
+
 func (m *AppModel) ensureSlotVisible() {
 	if m.dayWindowStart.IsZero() {
 		m.dayWindowStart = defaultDayWindowStart(m.displayedDay())
@@ -1000,10 +1004,10 @@ func (m *AppModel) jumpToNow() {
 	}
 	if bestIdx >= 0 {
 		m.focusDayItem(items[bestIdx])
-		m.ensureSlotVisible()
 	} else {
 		m.setSlotFocus(now, 15*time.Minute)
 	}
+	m.centerWindowOn(now)
 }
 
 func (m AppModel) currentDayItemPosition(items []dayTimelineItem) int {
