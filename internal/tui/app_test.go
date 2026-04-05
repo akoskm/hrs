@@ -1499,6 +1499,340 @@ func TestSyncStatusBarAnimatesWhileSyncing(t *testing.T) {
 	}
 }
 
+func TestCycleInspectorTab(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	if app.inspectorTab != inspectorOverview {
+		t.Fatalf("initial tab = %q, want overview", app.inspectorTab)
+	}
+	// tab forward: overview -> session -> actions -> overview
+	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	if app.inspectorTab != inspectorSession {
+		t.Fatalf("after tab = %q, want session", app.inspectorTab)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	if app.inspectorTab != inspectorActions {
+		t.Fatalf("after 2nd tab = %q, want actions", app.inspectorTab)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	if app.inspectorTab != inspectorOverview {
+		t.Fatalf("after 3rd tab = %q, want overview (wrap)", app.inspectorTab)
+	}
+	// shift+tab backward: overview -> actions
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	app = updated.(AppModel)
+	if app.inspectorTab != inspectorActions {
+		t.Fatalf("after shift+tab = %q, want actions", app.inspectorTab)
+	}
+}
+
+func TestBackspaceInEntryEditDialog(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", HourlyRate: 100, Currency: "USD"}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "Hello", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	// Open edit dialog
+	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.mode != modeEntryEdit {
+		t.Fatalf("mode = %q, want entry-edit", app.mode)
+	}
+	if app.entryInput != "Hello" {
+		t.Fatalf("entryInput = %q, want Hello", app.entryInput)
+	}
+	// Backspace removes last char
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	app = updated.(AppModel)
+	if app.entryInput != "Hell" {
+		t.Fatalf("after backspace entryInput = %q, want Hell", app.entryInput)
+	}
+	// Tab to start field, type, backspace
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	// Should be on "project" now, tab again to "start"
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	if app.entryInputField != "start" {
+		t.Fatalf("field = %q, want start", app.entryInputField)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	app = updated.(AppModel)
+	// After backspace, last char removed
+	expectedStart := app.entryStartInput
+	if len(expectedStart) == 0 {
+		t.Fatal("start input empty before backspace")
+	}
+	// backspace already applied above, verify it shortened
+	origStart := clock(time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC))
+	if app.entryStartInput != origStart[:len(origStart)-1] {
+		t.Fatalf("start after backspace = %q, want %q", app.entryStartInput, origStart[:len(origStart)-1])
+	}
+	// Tab to end field
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	if app.entryInputField != "end" {
+		t.Fatalf("field = %q, want end", app.entryInputField)
+	}
+	origEnd := app.entryEndInput
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	app = updated.(AppModel)
+	if app.entryEndInput != origEnd[:len(origEnd)-1] {
+		t.Fatalf("end after backspace = %q, want %q", app.entryEndInput, origEnd[:len(origEnd)-1])
+	}
+}
+
+func TestBackspaceAndClearInGapDialog(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	today := dayStart(time.Now())
+	app.timelineView = timelineViewDay
+	app.dayDate = today
+	app.daySlotSpan = 15 * time.Minute
+	app.daySlotStart = time.Date(today.Year(), today.Month(), today.Day(), 9, 0, 0, 0, time.Local)
+	app.dayFocusKind = "slot"
+
+	// Open gap dialog
+	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.mode != modeGapEntry {
+		t.Fatalf("mode = %q, want gap-entry", app.mode)
+	}
+	// Type then backspace
+	for _, r := range "abc" {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = updated.(AppModel)
+	}
+	if app.gapInput != "abc" {
+		t.Fatalf("gapInput = %q, want abc", app.gapInput)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	app = updated.(AppModel)
+	if app.gapInput != "ab" {
+		t.Fatalf("after backspace gapInput = %q, want ab", app.gapInput)
+	}
+	// Delete clears field
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDelete})
+	app = updated.(AppModel)
+	if app.gapInput != "" {
+		t.Fatalf("after delete gapInput = %q, want empty", app.gapInput)
+	}
+	// Tab to start, backspace
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	// Tab cycles: description -> project -> start
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	if app.gapInputField != "start" {
+		t.Fatalf("field = %q, want start", app.gapInputField)
+	}
+	orig := app.gapStartInput
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	app = updated.(AppModel)
+	if len(app.gapStartInput) != len(orig)-1 {
+		t.Fatalf("start after backspace = %q, want len %d", app.gapStartInput, len(orig)-1)
+	}
+	// Delete clears start
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDelete})
+	app = updated.(AppModel)
+	if app.gapStartInput != "" {
+		t.Fatalf("start after delete = %q, want empty", app.gapStartInput)
+	}
+	// Tab to end, backspace
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	if app.gapInputField != "end" {
+		t.Fatalf("field = %q, want end", app.gapInputField)
+	}
+	origEnd := app.gapEndInput
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	app = updated.(AppModel)
+	if len(app.gapEndInput) != len(origEnd)-1 {
+		t.Fatalf("end after backspace = %q, want len %d", app.gapEndInput, len(origEnd)-1)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDelete})
+	app = updated.(AppModel)
+	if app.gapEndInput != "" {
+		t.Fatalf("end after delete = %q, want empty", app.gapEndInput)
+	}
+}
+
+func TestActionInspectorLines(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+
+	// Slot mode
+	app.dayFocusKind = "slot"
+	lines := actionInspectorLines(app)
+	if len(lines) == 0 || !strings.Contains(lines[0], "create entry") {
+		t.Fatalf("slot action lines = %v, want create entry hint", lines)
+	}
+
+	// Gap mode
+	app.dayFocusKind = "gap"
+	lines = actionInspectorLines(app)
+	if len(lines) == 0 || !strings.Contains(lines[0], "manual entry") {
+		t.Fatalf("gap action lines = %v, want manual entry hint", lines)
+	}
+
+	// Entry mode
+	app.dayFocusKind = "entry"
+	lines = actionInspectorLines(app)
+	if len(lines) == 0 || !strings.Contains(lines[0], "edit") {
+		t.Fatalf("entry action lines = %v, want edit hint", lines)
+	}
+
+	// With selections
+	app.selected["some-id"] = true
+	lines = actionInspectorLines(app)
+	hasAssign := false
+	for _, l := range lines {
+		if strings.Contains(l, "assign selected") {
+			hasAssign = true
+		}
+	}
+	if !hasAssign {
+		t.Fatalf("entry action lines with selection = %v, want assign hint", lines)
+	}
+}
+
+func TestDeleteConfirmDialogRenders(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", HourlyRate: 100, Currency: "USD"}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "To remove", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	updated, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	app = updated.(AppModel)
+
+	// Press d to open delete dialog
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	app = updated.(AppModel)
+	if app.mode != modeDeleteConfirm {
+		t.Fatalf("mode = %q, want delete-confirm", app.mode)
+	}
+
+	view := stripANSI(app.View())
+	if !strings.Contains(view, "Delete Entry") {
+		t.Fatalf("view missing 'Delete Entry' title")
+	}
+	if !strings.Contains(view, "To remove") {
+		t.Fatalf("view missing entry description")
+	}
+	if !strings.Contains(view, "y/n") {
+		t.Fatalf("view missing y/n prompt")
+	}
+}
+
+func TestJumpToClosestSlot(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", HourlyRate: 100, Currency: "USD"}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "Work", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	app.SetDefaultTimelineView("day")
+	updated, _ := app.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
+	app = updated.(AppModel)
+
+	// Should start focused on entry
+	if app.dayFocusKind != "entry" {
+		t.Fatalf("initial focus = %q, want entry", app.dayFocusKind)
+	}
+	// Press n to jump to closest slot
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	app = updated.(AppModel)
+	if app.dayFocusKind != "slot" {
+		t.Fatalf("after n focus = %q, want slot", app.dayFocusKind)
+	}
+}
+
+func TestRestoreStateAfterReload(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", HourlyRate: 100, Currency: "USD"}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "First", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "Second", StartedAt: time.Date(2026, 4, 3, 11, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+
+	app, err := NewAppModelWithSync(ctx, store, func() error { return nil })
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	// Move cursor to second entry
+	app.cursor = 1
+	app.sourceFilter = "all"
+
+	// Simulate sync completing
+	updated, _ := app.Update(syncDoneMsg{err: nil})
+	app = updated.(AppModel)
+
+	// After reload, should still have entries and cursor should be valid
+	if len(app.entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(app.entries))
+	}
+	if app.cursor < 0 || app.cursor >= len(app.entries) {
+		t.Fatalf("cursor = %d out of range", app.cursor)
+	}
+}
+
 func openTestStore(t *testing.T) *db.Store {
 	t.Helper()
 	store, err := db.Open(":memory:")

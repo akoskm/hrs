@@ -282,7 +282,13 @@ func (s *Store) UpsertAgentEntry(ctx context.Context, input AgentEntryUpsertInpu
 			billable = 0
 		}
 	}
-	row := s.db.QueryRowContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.TimeEntry{}, err
+	}
+	defer tx.Rollback()
+
+	row := tx.QueryRowContext(ctx, `
 		SELECT id FROM time_entries WHERE operator = ? AND source_ref = ? AND deleted_at IS NULL
 	`, input.Operator, input.SourceRef)
 	var existingID string
@@ -291,7 +297,7 @@ func (s *Store) UpsertAgentEntry(ctx context.Context, input AgentEntryUpsertInpu
 			return model.TimeEntry{}, err
 		}
 		id := ulid.Make().String()
-		_, err = s.db.ExecContext(ctx, `
+		_, err = tx.ExecContext(ctx, `
 			INSERT INTO time_entries (
 				id, project_id, description, started_at, ended_at, duration_secs, billable, status, operator,
 				source_ref, git_branch, cwd, metadata, created_at, updated_at
@@ -300,9 +306,12 @@ func (s *Store) UpsertAgentEntry(ctx context.Context, input AgentEntryUpsertInpu
 		if err != nil {
 			return model.TimeEntry{}, err
 		}
+		if err := tx.Commit(); err != nil {
+			return model.TimeEntry{}, err
+		}
 		return s.EntryByID(ctx, id)
 	}
-	_, err = s.db.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		UPDATE time_entries
 		SET project_id = ?, description = ?, started_at = ?, ended_at = ?, duration_secs = ?, billable = ?, status = ?, git_branch = ?, cwd = ?, metadata = ?, updated_at = ?
 		WHERE id = ?
@@ -310,13 +319,17 @@ func (s *Store) UpsertAgentEntry(ctx context.Context, input AgentEntryUpsertInpu
 	if err != nil {
 		return model.TimeEntry{}, err
 	}
+	if err := tx.Commit(); err != nil {
+		return model.TimeEntry{}, err
+	}
 	return s.EntryByID(ctx, existingID)
 }
 
 func (s *Store) SoftDeleteEntry(ctx context.Context, entryID string) error {
+	now := nowUTC().Format(timeFormat)
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE time_entries SET deleted_at = ?, updated_at = ? WHERE id = ?
-	`, nowUTC().Format(timeFormat), nowUTC().Format(timeFormat), entryID)
+	`, now, now, entryID)
 	return err
 }
 
