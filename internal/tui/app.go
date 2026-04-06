@@ -1996,33 +1996,33 @@ type tuiStyles struct {
 func newStyles(width int) tuiStyles {
 	barWidth := timelineWidth(width)
 	return tuiStyles{
-		header:        lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).Width(barWidth),
-		title:         lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")),
-		error:         lipgloss.NewStyle().Foreground(lipgloss.Color("204")).Bold(true),
-		rule:          lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
-		dateHeader:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252")),
-		muted:         lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
-		statusBar:     lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Background(lipgloss.Color("63")),
-		tableHeader:   lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252")),
+		header:        lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5")).Width(barWidth),
+		title:         lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")),
+		error:         lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true),
+		rule:          lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+		dateHeader:    lipgloss.NewStyle().Bold(true),
+		muted:         lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+		statusBar:     lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("4")),
+		tableHeader:   lipgloss.NewStyle().Bold(true),
 		baseRow:       lipgloss.NewStyle(),
 		activeRow:     lipgloss.NewStyle().Background(lipgloss.Color("236")),
 		selectedRow:   lipgloss.NewStyle().Background(lipgloss.Color("60")),
-		activeSelRow:  lipgloss.NewStyle().Background(lipgloss.Color("99")).Bold(true),
-		draft:         lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true),
-		confirmed:     lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true),
+		activeSelRow:  lipgloss.NewStyle().Background(lipgloss.Color("4")).Bold(true),
+		draft:         lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true),
+		confirmed:     lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true),
 		projectPicker: lipgloss.NewStyle(),
-		activePicker:  lipgloss.NewStyle().Background(lipgloss.Color("99")).Foreground(lipgloss.Color("230")).Bold(true),
-		dialogBox:     lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("99")).Background(lipgloss.Color("235")).Padding(1, 2),
-		inspectorBox:  lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1),
-		inspectorTab:  lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Padding(0, 1),
-		activeTab:     lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Background(lipgloss.Color("99")).Bold(true).Padding(0, 1),
+		activePicker:  lipgloss.NewStyle().Background(lipgloss.Color("4")).Foreground(lipgloss.Color("0")).Bold(true),
+		dialogBox:     lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("4")).Padding(1, 2),
+		inspectorBox:  lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1),
+		inspectorTab:  lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Padding(0, 1),
+		activeTab:     lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("4")).Bold(true).Padding(0, 1),
 	}
 }
 
 func renderHeader(entries []model.TimeEntryDetail, width int) string {
 	rangeText := currentRange(entries)
-	left := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).Render("hrs")
-	right := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(rangeText)
+	left := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5")).Render("hrs")
+	right := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(rangeText)
 	spacer := max(1, timelineWidth(width)-lipgloss.Width(left)-lipgloss.Width(right))
 	return left + strings.Repeat(" ", spacer) + right
 }
@@ -2412,7 +2412,7 @@ func renderDayScrollbar(m AppModel, styles tuiStyles) string {
 
 	// 4 header lines (date, subheader, column header, separator) + row lines + 1 footer
 	totalLines := 4 + len(rows) + 1
-	thumbStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("99"))
+	thumbStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
 	var sb strings.Builder
 	for i := 0; i < totalLines; i++ {
 		rowIdx := i - 4 // offset for header lines
