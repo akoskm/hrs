@@ -2183,7 +2183,17 @@ func renderDayTimeline(m AppModel, styles tuiStyles) string {
 			activityCount++
 		}
 	}
-	subheader := fmt.Sprintf("%d entries | %d active slots | %s-%s", len(dayEntries), activityCount, clock(window.start), clock(window.end))
+	totalWorked, breakdown := dayWorkBreakdown(dayEntries)
+	subheaderParts := []string{
+		fmt.Sprintf("%d entries", len(dayEntries)),
+		fmt.Sprintf("%d active slots", activityCount),
+		"total " + formatWorkDuration(totalWorked),
+	}
+	if breakdown != "" {
+		subheaderParts = append(subheaderParts, breakdown)
+	}
+	subheaderParts = append(subheaderParts, fmt.Sprintf("%s-%s", clock(window.start), clock(window.end)))
+	subheader := strings.Join(subheaderParts, " | ")
 	b.WriteString(styles.muted.Render(subheader) + "\n")
 
 	// header
@@ -2750,6 +2760,45 @@ func dayEntriesForDate(entries []model.TimeEntryDetail, date string) []model.Tim
 	return filtered
 }
 
+func dayWorkBreakdown(entries []model.TimeEntryDetail) (time.Duration, string) {
+	perProject := map[string]time.Duration{}
+	total := time.Duration(0)
+	for _, entry := range entries {
+		duration := timelineBlockEnd(entry).Sub(entry.StartedAt)
+		if duration <= 0 {
+			continue
+		}
+		total += duration
+		project := "unassigned"
+		if entry.ProjectName != "" {
+			project = entry.ProjectName
+		}
+		perProject[project] += duration
+	}
+	if len(perProject) == 0 {
+		return total, ""
+	}
+	type projectTotal struct {
+		name     string
+		duration time.Duration
+	}
+	projects := make([]projectTotal, 0, len(perProject))
+	for name, duration := range perProject {
+		projects = append(projects, projectTotal{name: name, duration: duration})
+	}
+	sort.Slice(projects, func(i, j int) bool {
+		if projects[i].duration == projects[j].duration {
+			return projects[i].name < projects[j].name
+		}
+		return projects[i].duration > projects[j].duration
+	})
+	parts := make([]string, 0, len(projects))
+	for _, project := range projects {
+		parts = append(parts, fmt.Sprintf("%s %s", project.name, formatWorkDuration(project.duration)))
+	}
+	return total, strings.Join(parts, ", ")
+}
+
 func dayTimelineWindow(entries []model.TimeEntryDetail, day time.Time, startOverride time.Time) dayWindow {
 	day = dayStart(day)
 	if !startOverride.IsZero() {
@@ -2898,7 +2947,13 @@ func activeAgentEntry(entry model.TimeEntryDetail, now time.Time) bool {
 }
 
 func formatGapDuration(gap dayGap) string {
-	d := gap.end.Sub(gap.start)
+	return formatWorkDuration(gap.end.Sub(gap.start))
+}
+
+func formatWorkDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
 	h := int(d.Hours())
 	m := int(d.Minutes()) % 60
 	if h > 0 && m > 0 {

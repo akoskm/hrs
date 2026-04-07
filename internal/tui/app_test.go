@@ -2852,6 +2852,46 @@ func TestDayViewFullUIElements(t *testing.T) {
 	}
 }
 
+func TestDayViewHeaderShowsTotalAndProjectBreakdown(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Code review", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 30, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "hrs", Description: "TUI polish", StartedAt: time.Date(2026, 4, 3, 11, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 11, 45, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 3, 0, 0, 0, 0, time.Local))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 35})
+	app := updated.(AppModel)
+	view := stripANSI(app.View())
+
+	checks := []string{
+		"total 2h15m",
+		"Elaiia 1h30m",
+		"hrs 45m",
+	}
+	for _, want := range checks {
+		if !strings.Contains(view, want) {
+			t.Fatalf("day header missing %q, got:\n%s", want, view)
+		}
+	}
+}
+
 func TestDayViewScrollbarRendersTrackAndThumb(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
