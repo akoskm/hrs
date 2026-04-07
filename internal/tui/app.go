@@ -3031,7 +3031,7 @@ func renderGapEntryDialog(m AppModel, styles tuiStyles, background string) strin
 	}
 	inputStyle := styles.muted
 	if m.gapInputField == "description" {
-		inputStyle = styles.activePicker
+		inputStyle = lipgloss.NewStyle().Bold(true)
 	}
 	content.WriteString(styles.muted.Render("Description") + "\n")
 	content.WriteString(inputStyle.Render(truncateForWidth("> "+textWithCaret(m.gapInput, m.caretVisible, m.gapInputField == "description"), innerWidth)))
@@ -3047,11 +3047,11 @@ func renderGapEntryDialog(m AppModel, styles tuiStyles, background string) strin
 	}
 	startStyle := styles.muted
 	if m.gapInputField == "start" {
-		startStyle = styles.activePicker
+		startStyle = lipgloss.NewStyle().Bold(true)
 	}
 	endStyle := styles.muted
 	if m.gapInputField == "end" {
-		endStyle = styles.activePicker
+		endStyle = lipgloss.NewStyle().Bold(true)
 	}
 	content.WriteString("\n" + styles.muted.Render("Start") + "\n")
 	content.WriteString(startStyle.Render(truncateForWidth("> "+textWithCaret(m.gapStartInput, m.caretVisible, m.gapInputField == "start"), innerWidth)))
@@ -3074,7 +3074,7 @@ func renderEntryEditDialog(m AppModel, styles tuiStyles, background string) stri
 	if !m.entryProjectOnly {
 		inputStyle := styles.muted
 		if m.entryInputField == "description" {
-			inputStyle = styles.activePicker
+			inputStyle = lipgloss.NewStyle().Bold(true)
 		}
 		content.WriteString(styles.muted.Render("Description") + "\n")
 		content.WriteString(inputStyle.Render(truncateForWidth("> "+textWithCaret(m.entryInput, m.caretVisible, m.entryInputField == "description"), innerWidth)))
@@ -3087,11 +3087,11 @@ func renderEntryEditDialog(m AppModel, styles tuiStyles, background string) stri
 	}
 	startStyle := styles.muted
 	if m.entryInputField == "start" {
-		startStyle = styles.activePicker
+		startStyle = lipgloss.NewStyle().Bold(true)
 	}
 	endStyle := styles.muted
 	if m.entryInputField == "end" {
-		endStyle = styles.activePicker
+		endStyle = lipgloss.NewStyle().Bold(true)
 	}
 	content.WriteString("\n" + styles.muted.Render("Start") + "\n")
 	content.WriteString(startStyle.Render(truncateForWidth("> "+textWithCaret(m.entryStartInput, m.caretVisible, m.entryInputField == "start"), innerWidth)))
@@ -3225,7 +3225,7 @@ func textWithCaret(text string, visible, active bool) string {
 		return text
 	}
 	if visible {
-		return text + "█"
+		return text + "▏"
 	}
 	return text + " "
 }

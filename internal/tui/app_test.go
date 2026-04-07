@@ -516,8 +516,15 @@ func TestPickerHighlightsFullRow(t *testing.T) {
 }
 
 func TestTextWithCaret(t *testing.T) {
-	if got := textWithCaret("Auth", true, true); got != "Auth█" {
-		t.Fatalf("textWithCaret() = %q, want Auth█", got)
+	got := textWithCaret("Auth", true, true)
+	if got != "Auth▏" {
+		t.Fatalf("textWithCaret() = %q, want Auth▏", got)
+	}
+	if got := textWithCaret("Auth", false, true); got != "Auth " {
+		t.Fatalf("textWithCaret(hidden) = %q, want 'Auth '", got)
+	}
+	if got := textWithCaret("Auth", true, false); got != "Auth" {
+		t.Fatalf("textWithCaret(inactive) = %q, want 'Auth'", got)
 	}
 }
 
