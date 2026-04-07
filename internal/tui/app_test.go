@@ -1994,7 +1994,7 @@ func TestSpaceMarkSlotRangeAndCreateEntry(t *testing.T) {
 	}
 }
 
-func TestShiftUpDownSelectsSingleHourSlot(t *testing.T) {
+func TestShiftUpDownMovesSlotOneHourLegacy(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
 	defer store.Close()
@@ -2009,53 +2009,29 @@ func TestShiftUpDownSelectsSingleHourSlot(t *testing.T) {
 	app.daySlotSpan = 15 * time.Minute
 	app.daySlotStart = time.Date(today.Year(), today.Month(), today.Day(), 9, 0, 0, 0, time.Local)
 	app.dayFocusKind = "slot"
-	app.slotMarkStart = time.Time{}
-	app.slotMarkSpan = 0
 
-	// shift+down: should select a single 1-hour slot at 10:00-11:00
+	// shift+down: cursor moves from 09:00 to 10:00
 	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyShiftDown})
 	app = updated.(AppModel)
-
-	rng := app.selectedCreateRange()
-	if rng == nil {
-		t.Fatal("selectedCreateRange() is nil after shift+down")
-	}
-	if clock(rng.start) != "10:00" {
-		t.Fatalf("range start = %s, want 10:00", clock(rng.start))
-	}
-	if clock(rng.end) != "11:00" {
-		t.Fatalf("range end = %s, want 11:00", clock(rng.end))
+	if clock(app.daySlotStart) != "10:00" {
+		t.Fatalf("after shift+down: slot = %s, want 10:00", clock(app.daySlotStart))
 	}
 
-	// Another shift+down: should move to 11:00-12:00, NOT accumulate
+	// Another shift+down: 10:00 to 11:00
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyShiftDown})
 	app = updated.(AppModel)
-	rng = app.selectedCreateRange()
-	if rng == nil {
-		t.Fatal("selectedCreateRange() is nil after 2nd shift+down")
-	}
-	if clock(rng.start) != "11:00" {
-		t.Fatalf("range start after 2nd shift+down = %s, want 11:00", clock(rng.start))
-	}
-	if clock(rng.end) != "12:00" {
-		t.Fatalf("range end after 2nd shift+down = %s, want 12:00", clock(rng.end))
+	if clock(app.daySlotStart) != "11:00" {
+		t.Fatalf("after 2nd shift+down: slot = %s, want 11:00", clock(app.daySlotStart))
 	}
 
-	// shift+up: should move to 10:00-11:00
+	// shift+up: 11:00 to 10:00
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyShiftUp})
 	app = updated.(AppModel)
-	rng = app.selectedCreateRange()
-	if rng == nil {
-		t.Fatal("selectedCreateRange() is nil after shift+up")
-	}
-	if clock(rng.start) != "10:00" {
-		t.Fatalf("range start after shift+up = %s, want 10:00", clock(rng.start))
-	}
-	if clock(rng.end) != "11:00" {
-		t.Fatalf("range end after shift+up = %s, want 11:00", clock(rng.end))
+	if clock(app.daySlotStart) != "10:00" {
+		t.Fatalf("after shift+up: slot = %s, want 10:00", clock(app.daySlotStart))
 	}
 
-	// esc should clear the selection — no mark, back to 15min slot
+	// esc should clear any marks
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEscape})
 	app = updated.(AppModel)
 	if !app.slotMarkStart.IsZero() {
@@ -2064,18 +2040,13 @@ func TestShiftUpDownSelectsSingleHourSlot(t *testing.T) {
 	if app.slotMarkSpan != 0 {
 		t.Fatalf("slotMarkSpan = %v, want 0", app.slotMarkSpan)
 	}
-	rng = app.selectedCreateRange()
+	rng := app.selectedCreateRange()
 	if rng == nil {
 		t.Fatal("selectedCreateRange() nil after esc")
 	}
-	// After esc the slot should be back to 15min
 	dur := rng.end.Sub(rng.start)
 	if dur != 15*time.Minute {
 		t.Fatalf("range duration after esc = %v, want 15m", dur)
-	}
-	// The range should just be the current daySlotStart, not the marked one
-	if rng.start != app.daySlotStart {
-		t.Fatalf("range start after esc = %s, want current slot %s", clock(rng.start), clock(app.daySlotStart))
 	}
 }
 
@@ -2851,5 +2822,52 @@ func TestSlotMarkerAlwaysVisibleInTimeCell(t *testing.T) {
 	}
 	if !highlighted {
 		t.Fatal("timeCellIsSlotHighlighted returned false for slot overlapping entry — marker won't render")
+	}
+}
+
+func TestShiftUpDownSnapsToHourThenJumps(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.InitializeTodayTimelineView()
+	m.height = 30
+	m.width = 120
+	// position slot at 10:23 (not on a full hour)
+	today := dayStart(time.Now())
+	m.dayWindowStart = today.Add(6 * time.Hour)
+	m.daySlotStart = today.Add(10*time.Hour + 23*time.Minute)
+	m.daySlotSpan = 15 * time.Minute
+	m.dayFocusKind = "slot"
+
+	// shift+down from 10:23 should snap to 11:00 first, then +1h = 12:00
+	// actually: snap to next full hour (11:00), then add delta (1h) = 12:00
+	// wait — the logic snaps to 11:00 (next hour since going down), then adds 1h = 12:00
+	// hmm that's 2h jump. Let me re-read: snap to nearest full hour, then jump.
+	// going down from 10:23: snap to 11:00 (next hour), add +1h = 12:00? No.
+	// The intent is: first press goes to closest full hour, then subsequent presses go 1h.
+	// So first shift+down from 10:23 → 11:00
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftDown})
+	app := updated.(AppModel)
+	if clock(app.daySlotStart) != "11:00" {
+		t.Fatalf("shift+down from 10:23: slot = %s, want 11:00", clock(app.daySlotStart))
+	}
+
+	// second shift+down: 11:00 → 12:00
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyShiftDown})
+	app = updated.(AppModel)
+	if clock(app.daySlotStart) != "12:00" {
+		t.Fatalf("2nd shift+down: slot = %s, want 12:00", clock(app.daySlotStart))
+	}
+
+	// shift+up: 12:00 → 11:00
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyShiftUp})
+	app = updated.(AppModel)
+	if clock(app.daySlotStart) != "11:00" {
+		t.Fatalf("shift+up: slot = %s, want 11:00", clock(app.daySlotStart))
 	}
 }

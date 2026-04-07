@@ -299,15 +299,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "shift+up":
 			if m.timelineView == timelineViewDay {
-				m.moveSlot(-time.Hour, time.Hour)
-				m.slotMarkStart = m.daySlotStart
-				m.slotMarkSpan = time.Hour
+				m.jumpSlotByDuration(-time.Hour)
 			}
 		case "shift+down":
 			if m.timelineView == timelineViewDay {
-				m.moveSlot(time.Hour, time.Hour)
-				m.slotMarkStart = m.daySlotStart
-				m.slotMarkSpan = time.Hour
+				m.jumpSlotByDuration(time.Hour)
 			}
 		case "pgdown", "ctrl+f":
 			if len(m.entries) > 0 {
@@ -923,6 +919,38 @@ func (m *AppModel) slotBeforeEntry(entry model.TimeEntryDetail) {
 			return
 		}
 	}
+}
+
+func (m *AppModel) jumpSlotByDuration(delta time.Duration) {
+	start := m.daySlotStart
+	if start.IsZero() {
+		start = roundDownToStep(time.Now().In(time.Local), 15*time.Minute)
+	}
+	// if not on a full hour, first snap to the closest hour in the direction of travel
+	local := start.In(time.Local)
+	onHour := local.Minute() == 0 && local.Second() == 0
+	var candidate time.Time
+	if !onHour {
+		snapped := time.Date(local.Year(), local.Month(), local.Day(), local.Hour(), 0, 0, 0, time.Local)
+		if delta > 0 {
+			snapped = snapped.Add(time.Hour)
+		}
+		candidate = snapped
+	} else {
+		candidate = start.Add(delta)
+	}
+	day := m.displayedDay()
+	dayFloor := dayStart(day)
+	dayEnd := dayFloor.Add(24 * time.Hour)
+	if candidate.Before(dayFloor) {
+		candidate = dayFloor
+	}
+	if !candidate.Before(dayEnd) {
+		candidate = dayEnd.Add(-m.daySlotSpan)
+	}
+	m.daySlotStart = candidate
+	m.dayFocusKind = "slot"
+	m.ensureSlotVisible()
 }
 
 func (m *AppModel) scrollWindow(delta time.Duration) {
@@ -2002,20 +2030,20 @@ func newStyles(width int) tuiStyles {
 		rule:          lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
 		dateHeader:    lipgloss.NewStyle().Bold(true),
 		muted:         lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
-		statusBar:     lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("4")),
+		statusBar:     lipgloss.NewStyle().Reverse(true),
 		tableHeader:   lipgloss.NewStyle().Bold(true),
 		baseRow:       lipgloss.NewStyle(),
 		activeRow:     lipgloss.NewStyle().Background(lipgloss.Color("236")),
 		selectedRow:   lipgloss.NewStyle().Background(lipgloss.Color("60")),
-		activeSelRow:  lipgloss.NewStyle().Background(lipgloss.Color("4")).Bold(true),
+		activeSelRow:  lipgloss.NewStyle().Reverse(true).Bold(true),
 		draft:         lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true),
 		confirmed:     lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true),
 		projectPicker: lipgloss.NewStyle(),
-		activePicker:  lipgloss.NewStyle().Background(lipgloss.Color("4")).Foreground(lipgloss.Color("0")).Bold(true),
+		activePicker:  lipgloss.NewStyle().Reverse(true).Bold(true),
 		dialogBox:     lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("4")).Padding(1, 2),
 		inspectorBox:  lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1),
 		inspectorTab:  lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Padding(0, 1),
-		activeTab:     lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("4")).Bold(true).Padding(0, 1),
+		activeTab:     lipgloss.NewStyle().Reverse(true).Bold(true).Padding(0, 1),
 	}
 }
 
