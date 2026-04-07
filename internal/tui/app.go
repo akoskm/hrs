@@ -2205,7 +2205,7 @@ func renderDayTimeline(m AppModel, styles tuiStyles) string {
 	// rows
 	for _, row := range rows {
 		timePart := renderVerticalTimeCell(m, row, styles)
-		activityPart := renderActivityCell(m, row.start, row.end, dayEntries, activityColWidth, styles)
+		activityPart := renderActivityCell(m, window.start, row.start, row.end, dayEntries, activityColWidth, styles)
 		b.WriteString(timePart + " " + activityPart + "\n")
 	}
 	if m.dayFocusKind == "slot" && !m.daySlotStart.IsZero() {
@@ -2641,7 +2641,7 @@ func (m AppModel) slotHasActivity(slotStart time.Time) bool {
 	return false
 }
 
-func renderActivityCell(m AppModel, slotStart, slotEnd time.Time, entries []model.TimeEntryDetail, width int, styles tuiStyles) string {
+func renderActivityCell(m AppModel, viewportStart, slotStart, slotEnd time.Time, entries []model.TimeEntryDetail, width int, styles tuiStyles) string {
 	// entries take visual precedence over activity markers
 	for _, entry := range entries {
 		entryEnd := timelineBlockEnd(entry)
@@ -2664,7 +2664,7 @@ func renderActivityCell(m AppModel, slotStart, slotEnd time.Time, entries []mode
 			cellStyle = cellStyle.Foreground(lipgloss.Color(*entry.ProjectColor))
 		}
 		label := timelineBlockLabel(entry)
-		return renderVerticalEntryCell(slotStart, slotEnd, entry.StartedAt, entryEnd, focused, width, label, cellStyle, styles)
+		return renderVerticalEntryCell(viewportStart, slotStart, slotEnd, entry.StartedAt, entryEnd, focused, width, label, cellStyle, styles)
 	}
 	// activity marker (faint text)
 	text := m.activityTextForSlot(slotStart)
@@ -2674,26 +2674,30 @@ func renderActivityCell(m AppModel, slotStart, slotEnd time.Time, entries []mode
 	return padRight("", width)
 }
 
-func renderVerticalEntryCell(slotStart, slotEnd, itemStart, itemEnd time.Time, focused bool, width int, label string, baseStyle lipgloss.Style, styles tuiStyles) string {
+func renderVerticalEntryCell(viewportStart, slotStart, slotEnd, itemStart, itemEnd time.Time, focused bool, width int, label string, baseStyle lipgloss.Style, styles tuiStyles) string {
 	if focused {
-		return renderVerticalRangeCell(slotStart, slotEnd, itemStart, itemEnd, true, width, label, baseStyle, styles)
+		return renderVerticalRangeCell(viewportStart, slotStart, slotEnd, itemStart, itemEnd, true, width, label, baseStyle, styles)
 	}
-	text := outlinedBlockCell(slotStart, slotEnd, itemStart, itemEnd, width, label)
+	text := outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart, itemEnd, width, label)
 	if strings.TrimSpace(text) == "" {
 		return padRight("", width)
 	}
 	return baseStyle.Render(text)
 }
 
-func renderVerticalRangeCell(slotStart, slotEnd, itemStart, itemEnd time.Time, focused bool, width int, label string, baseStyle lipgloss.Style, styles tuiStyles) string {
+func renderVerticalRangeCell(viewportStart, slotStart, slotEnd, itemStart, itemEnd time.Time, focused bool, width int, label string, baseStyle lipgloss.Style, styles tuiStyles) string {
 	text := " "
 	starts := !itemStart.Before(slotStart) && itemStart.Before(slotEnd)
 	ends := itemEnd.After(slotStart) && !itemEnd.After(slotEnd)
 	midpoint := itemStart.Add(itemEnd.Sub(itemStart) / 2)
 	containsMid := !midpoint.Before(slotStart) && midpoint.Before(slotEnd)
+	anchoredTop := entryAnchoredAtViewportTop(viewportStart, itemStart)
+	topAnchorRow := anchoredTop && slotStart.Equal(viewportStart)
 	if starts && ends {
 		text = centeredBlockLabel(label, width)
-	} else if containsMid {
+	} else if topAnchorRow {
+		text = centeredBlockLabel(label, width)
+	} else if containsMid && !anchoredTop {
 		text = centeredBlockLabel(label, width)
 	} else {
 		text = strings.Repeat(" ", width)
@@ -2706,6 +2710,10 @@ func renderVerticalRangeCell(slotStart, slotEnd, itemStart, itemEnd time.Time, f
 }
 
 func outlinedBlockCell(slotStart, slotEnd, itemStart, itemEnd time.Time, width int, label string) string {
+	return outlinedBlockCellWithViewport(slotStart, slotEnd, time.Time{}, itemStart, itemEnd, width, label)
+}
+
+func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart, itemEnd time.Time, width int, label string) string {
 	if width <= 1 {
 		return "│"
 	}
@@ -2713,11 +2721,23 @@ func outlinedBlockCell(slotStart, slotEnd, itemStart, itemEnd time.Time, width i
 	ends := itemEnd.After(slotStart) && !itemEnd.After(slotEnd)
 	midpoint := itemStart.Add(itemEnd.Sub(itemStart) / 2)
 	containsMid := !midpoint.Before(slotStart) && midpoint.Before(slotEnd)
+	anchoredTop := entryAnchoredAtViewportTop(viewportStart, itemStart)
+	topClipped := entryClippedAtViewportTop(viewportStart, slotStart, itemStart)
+	topAnchorRow := anchoredTop && slotStart.Equal(viewportStart)
 	innerWidth := max(0, width-2)
 	fill := strings.Repeat("─", innerWidth)
 	space := strings.Repeat(" ", innerWidth)
 	if starts && ends {
 		return "┌" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "┐"
+	}
+	if topAnchorRow && starts {
+		return "┌" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "┐"
+	}
+	if topClipped && ends {
+		return "└" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "┘"
+	}
+	if topClipped {
+		return "│" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "│"
 	}
 	if starts {
 		return "┌" + fill + "┐"
@@ -2725,10 +2745,24 @@ func outlinedBlockCell(slotStart, slotEnd, itemStart, itemEnd time.Time, width i
 	if ends {
 		return "└" + fill + "┘"
 	}
-	if containsMid {
+	if containsMid && !anchoredTop {
 		return "│" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "│"
 	}
 	return "│" + space + "│"
+}
+
+func entryAnchoredAtViewportTop(viewportStart, itemStart time.Time) bool {
+	if viewportStart.IsZero() {
+		return false
+	}
+	return !itemStart.After(viewportStart)
+}
+
+func entryClippedAtViewportTop(viewportStart, slotStart, itemStart time.Time) bool {
+	if viewportStart.IsZero() {
+		return false
+	}
+	return slotStart.Equal(viewportStart) && itemStart.Before(viewportStart)
 }
 
 func centeredBlockLabel(label string, width int) string {

@@ -635,6 +635,23 @@ func TestOutlinedBlockCell(t *testing.T) {
 	}
 }
 
+func TestOutlinedBlockCellAnchorsViewportTopLabel(t *testing.T) {
+	viewportStart := time.Date(2026, 4, 7, 7, 0, 0, 0, time.Local)
+	itemStart := viewportStart
+	itemEnd := viewportStart.Add(90 * time.Minute)
+	firstSlotStart := viewportStart
+	firstSlotEnd := firstSlotStart.Add(20 * time.Minute)
+	midSlotStart := viewportStart.Add(40 * time.Minute)
+	midSlotEnd := midSlotStart.Add(20 * time.Minute)
+
+	if got := outlinedBlockCellWithViewport(firstSlotStart, firstSlotEnd, viewportStart, itemStart, itemEnd, 24, "improve TUI experience"); !strings.Contains(got, "improve TUI experience") {
+		t.Fatalf("first visible cell = %q, want anchored label", got)
+	}
+	if got := outlinedBlockCellWithViewport(midSlotStart, midSlotEnd, viewportStart, itemStart, itemEnd, 24, "improve TUI experience"); strings.Contains(got, "improve TUI experience") {
+		t.Fatalf("mid cell = %q, want no duplicate label", got)
+	}
+}
+
 func TestTimelineTruncatesLongDescriptionToWidth(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -2889,6 +2906,123 @@ func TestDayViewHeaderShowsTotalAndProjectBreakdown(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("day header missing %q, got:\n%s", want, view)
 		}
+	}
+}
+
+func TestDayViewShowsLabelForEntryClippedAtTop(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "hrs",
+		Description:  "improve TUI experience",
+		StartedAt:    time.Date(2026, 4, 7, 7, 0, 0, 0, time.Local),
+		EndedAt:      time.Date(2026, 4, 7, 8, 30, 0, 0, time.Local),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if err := store.UpsertActivitySlots(ctx, []model.ActivitySlot{
+		{SlotTime: time.Date(2026, 4, 7, 8, 30, 0, 0, time.Local).UTC(), Operator: "claude-code", MsgCount: 10, FirstText: "please create a README.md file with setup instructions"},
+	}); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local))
+	m.dayWindowStart = time.Date(2026, 4, 7, 8, 0, 0, 0, time.Local)
+	m.loadActivitySlots()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 35})
+	app := updated.(AppModel)
+	view := stripANSI(renderDayTimeline(app, newStyles(app.width)))
+
+	entryIdx := strings.Index(view, "improve TUI experience")
+	activityIdx := strings.Index(view, "please create a README.md file with setup instructions")
+	if entryIdx == -1 {
+		t.Fatalf("clipped top entry label missing from day timeline, got:\n%s", view)
+	}
+	if activityIdx == -1 {
+		t.Fatalf("activity marker missing from day timeline, got:\n%s", view)
+	}
+	if entryIdx > activityIdx {
+		t.Fatalf("clipped top entry label rendered after later activity marker, got:\n%s", view)
+	}
+}
+
+func TestDayViewShowsClippedTopEntryLabelOnlyOnce(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "hrs",
+		Description:  "improve TUI experience",
+		StartedAt:    time.Date(2026, 4, 7, 7, 0, 0, 0, time.Local),
+		EndedAt:      time.Date(2026, 4, 7, 8, 30, 0, 0, time.Local),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local))
+	m.dayWindowStart = time.Date(2026, 4, 7, 7, 0, 0, 0, time.Local).Add(time.Hour)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 35})
+	app := updated.(AppModel)
+	view := stripANSI(renderDayTimeline(app, newStyles(app.width)))
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	rowsView := strings.Join(lines[4:len(lines)-1], "\n")
+
+	if got := strings.Count(rowsView, "improve TUI experience"); got != 1 {
+		t.Fatalf("clipped top entry label count = %d, want 1, got:\n%s", got, view)
+	}
+}
+
+func TestDayViewShowsViewportTopEntryLabelOnlyOnce(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "hrs",
+		Description:  "improve TUI experience",
+		StartedAt:    time.Date(2026, 4, 7, 7, 0, 0, 0, time.Local),
+		EndedAt:      time.Date(2026, 4, 7, 8, 30, 0, 0, time.Local),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local))
+	m.dayWindowStart = time.Date(2026, 4, 7, 7, 0, 0, 0, time.Local)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 35})
+	app := updated.(AppModel)
+	view := stripANSI(renderDayTimeline(app, newStyles(app.width)))
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	rowsView := strings.Join(lines[4:len(lines)-1], "\n")
+
+	if got := strings.Count(rowsView, "improve TUI experience"); got != 1 {
+		t.Fatalf("viewport-top entry label count = %d, want 1, got:\n%s", got, view)
 	}
 }
 
