@@ -770,6 +770,7 @@ func (m *AppModel) jumpToToday() {
 	now := time.Now().In(time.Local)
 	m.dayDate = today
 	m.setSlotFocus(now, 15*time.Minute)
+	m.loadActivitySlots()
 	m.centerWindowOn(now)
 }
 
@@ -1071,6 +1072,7 @@ func (m *AppModel) jumpToNow() {
 	} else {
 		m.setSlotFocus(now, 15*time.Minute)
 	}
+	m.loadActivitySlots()
 	m.centerWindowOn(now)
 }
 
