@@ -13,7 +13,6 @@ import (
 
 	"github.com/akoskm/hrs/internal/db"
 	"github.com/akoskm/hrs/internal/model"
-
 )
 
 type mode string
@@ -40,7 +39,7 @@ const (
 	timelineViewDay  timelineViewMode = "day"
 
 	inspectorOverview inspectorTab = "overview"
-	inspectorActions inspectorTab = "actions"
+	inspectorActions  inspectorTab = "actions"
 )
 
 type AppModel struct {
@@ -84,6 +83,8 @@ type AppModel struct {
 	syncStatusErr      error
 	timelineView       timelineViewMode
 	inspectorTab       inspectorTab
+	inspectorOffset    int
+	inspectorViewKey   string
 	slotMarkStart      time.Time
 	slotMarkSpan       time.Duration
 	confirmDeleteID    string
@@ -240,10 +241,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "tab":
 			if m.mode == modeTimeline {
 				m.cycleInspectorTab(1)
+				m.inspectorOffset = 0
 			}
 		case "shift+tab":
 			if m.mode == modeTimeline {
 				m.cycleInspectorTab(-1)
+				m.inspectorOffset = 0
 			}
 		case "up":
 			if m.timelineView == timelineViewDay {
@@ -305,15 +308,19 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.timelineView == timelineViewDay {
 				m.jumpSlotByDuration(time.Hour)
 			}
-		case "pgdown", "ctrl+f":
-			if len(m.entries) > 0 {
+		case "pgdown", "ctrl+f", "ctrl+d":
+			if m.timelineView == timelineViewDay {
+				m.scrollInspectorPage(1)
+			} else if len(m.entries) > 0 {
 				step := max(1, m.timelineRows())
 				m.cursor = min(len(m.entries)-1, m.cursor+step)
 				m.focusCurrentEntryInDayView()
 				m.ensureVisible()
 			}
-		case "pgup", "ctrl+b":
-			if len(m.entries) > 0 {
+		case "pgup", "ctrl+b", "ctrl+u":
+			if m.timelineView == timelineViewDay {
+				m.scrollInspectorPage(-1)
+			} else if len(m.entries) > 0 {
 				step := max(1, m.timelineRows())
 				m.cursor = max(0, m.cursor-step)
 				m.focusCurrentEntryInDayView()
@@ -441,9 +448,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeTimeline && m.timelineView == timelineViewDay {
 			switch msg.Button {
 			case tea.MouseButtonWheelUp:
-				m.scrollWindow(-time.Hour)
+				if m.mouseInInspector(msg.X) {
+					m.scrollInspectorLines(-3)
+				} else {
+					m.scrollWindow(-time.Hour)
+				}
 			case tea.MouseButtonWheelDown:
-				m.scrollWindow(time.Hour)
+				if m.mouseInInspector(msg.X) {
+					m.scrollInspectorLines(3)
+				} else {
+					m.scrollWindow(time.Hour)
+				}
 			}
 		}
 	case syncPulseMsg:
@@ -470,6 +485,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.caretVisible = !m.caretVisible
 		return m, cursorBlinkCmd()
 	}
+	m.syncInspectorViewport()
 	return m, nil
 }
 
@@ -532,7 +548,7 @@ func (m AppModel) View() string {
 	}
 	body := b.String()
 	if m.mode == modeTimeline && m.timelineView == timelineViewDay {
-		inspectorWidth := max(20, m.width/2)
+		inspectorWidth := dayInspectorWidth(m.width)
 		inspector := renderInspectorPane(m, styles, inspectorWidth, max(10, m.height-4))
 		scrollbar := renderDayScrollbar(m, styles)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, body, scrollbar, inspector)
@@ -568,8 +584,6 @@ type timelineColWidths struct {
 	Project     int
 }
 
-
-
 type dayWindow struct {
 	start time.Time
 	end   time.Time
@@ -594,8 +608,6 @@ type dayTimelineItem struct {
 	start      time.Time
 	end        time.Time
 }
-
-
 
 type dayTimelineRow struct {
 	start time.Time
@@ -1303,9 +1315,9 @@ func (m *AppModel) appendEntryFieldInput(text string) {
 	case "description":
 		m.entryInput += text
 	case "start":
-		m.entryStartInput += text
+		m.entryStartInput = appendClockInput(m.entryStartInput, text)
 	case "end":
-		m.entryEndInput += text
+		m.entryEndInput = appendClockInput(m.entryEndInput, text)
 	}
 }
 
@@ -1342,10 +1354,31 @@ func (m *AppModel) appendGapFieldInput(text string) {
 	case "description":
 		m.gapInput += text
 	case "start":
-		m.gapStartInput += text
+		m.gapStartInput = appendClockInput(m.gapStartInput, text)
 	case "end":
-		m.gapEndInput += text
+		m.gapEndInput = appendClockInput(m.gapEndInput, text)
 	}
+}
+
+func appendClockInput(current, text string) string {
+	for _, r := range text {
+		if len(current) >= 5 {
+			break
+		}
+		pos := len(current)
+		switch pos {
+		case 0, 1, 3, 4:
+			if r < '0' || r > '9' {
+				continue
+			}
+		case 2:
+			if r != ':' {
+				continue
+			}
+		}
+		current += string(r)
+	}
+	return current
 }
 
 func (m *AppModel) backspaceGapFieldInput() {
@@ -2045,7 +2078,7 @@ func newStyles(width int) tuiStyles {
 		draft:         lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true),
 		confirmed:     lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true),
 		projectPicker: lipgloss.NewStyle(),
-		activePicker:  lipgloss.NewStyle().Reverse(true).Bold(true),
+		activePicker:  lipgloss.NewStyle().Background(lipgloss.Color("153")).Foreground(lipgloss.Color("235")).Bold(true),
 		dialogBox:     lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("4")).Padding(1, 2),
 		inspectorBox:  lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1),
 		inspectorTab:  lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Padding(0, 1),
@@ -2202,9 +2235,17 @@ func inspectorHeight(height int) int {
 func renderInspectorPane(m AppModel, styles tuiStyles, width int, height int) string {
 	innerWidth := max(20, width-4)
 	tabs := renderInspectorTabs(m, styles)
-	body := renderInspectorBody(m, innerWidth, max(1, height-3))
+	body := renderInspectorBody(m, innerWidth, inspectorBodyHeight(height))
 	content := tabs + "\n" + body
 	return styles.inspectorBox.Width(max(20, width-2)).Render(content)
+}
+
+func inspectorBodyHeight(height int) int {
+	return max(1, height-3)
+}
+
+func dayInspectorWidth(width int) int {
+	return max(20, width/2)
 }
 
 func renderInspectorTabs(m AppModel, styles tuiStyles) string {
@@ -2231,10 +2272,16 @@ func renderInspectorBody(m AppModel, width int, height int) string {
 	for i, line := range lines {
 		lines[i] = truncateForWidth(line, width)
 	}
-	for len(lines) < height {
-		lines = append(lines, "")
+	offset := max(0, min(m.inspectorOffset, max(0, len(lines)-height)))
+	end := min(len(lines), offset+height)
+	if end < offset {
+		end = offset
 	}
-	return strings.Join(lines, "\n")
+	visible := append([]string(nil), lines[offset:end]...)
+	for len(visible) < height {
+		visible = append(visible, "")
+	}
+	return strings.Join(visible, "\n")
 }
 
 func inspectorLines(m AppModel) []string {
@@ -2255,43 +2302,16 @@ func (m AppModel) effectiveEntryIndex() int {
 
 func overviewInspectorLines(m AppModel) []string {
 	if m.dayFocusKind == "slot" && !m.daySlotStart.IsZero() && m.overlappingEntryIndexForSlot() < 0 {
-		rounded := m.daySlotStart.UTC().Truncate(15 * time.Minute)
-		var slotActivity []model.ActivitySlot
-		for _, slot := range m.activitySlots {
-			if slot.SlotTime.Equal(rounded) {
-				slotActivity = append(slotActivity, slot)
+		if rng := m.selectedCreateRange(); rng != nil {
+			if lines := m.activitySummaryLines(rng.start, rng.end, true); len(lines) > 0 {
+				return lines
 			}
-		}
-		if len(slotActivity) > 0 {
-			lines := []string{
-				fmt.Sprintf("Activity: %s-%s", clock(m.daySlotStart), clock(m.daySlotStart.Add(m.daySlotSpan))),
-				"",
+			return []string{
+				"Time slot",
+				fmt.Sprintf("Range: %s-%s", clock(rng.start), clock(rng.end)),
+				fmt.Sprintf("Size: %dm", int(rng.end.Sub(rng.start).Minutes())),
+				"Action: Enter creates entry or edits overlap",
 			}
-			for _, slot := range slotActivity {
-				lines = append(lines, fmt.Sprintf("%s (%d msgs)", slot.Operator, slot.MsgCount))
-				if slot.GitBranch != "" {
-					lines = append(lines, fmt.Sprintf("Branch: %s", slot.GitBranch))
-				}
-				if slot.Cwd != "" {
-					lines = append(lines, fmt.Sprintf("Folder: %s", slot.Cwd))
-				}
-				if slot.TokenInput > 0 || slot.TokenOutput > 0 {
-					lines = append(lines, fmt.Sprintf("Tokens: %s in / %s out", formatTokenCount(slot.TokenInput), formatTokenCount(slot.TokenOutput)))
-				}
-				if len(slot.UserTexts) > 0 {
-					lines = append(lines, "", "Prompts:")
-					for i, text := range slot.UserTexts {
-						lines = append(lines, fmt.Sprintf("  %d. %s", i+1, text))
-					}
-				}
-			}
-			return lines
-		}
-		return []string{
-			"Time slot",
-			fmt.Sprintf("Range: %s-%s", clock(m.daySlotStart), clock(m.daySlotStart.Add(m.daySlotSpan))),
-			fmt.Sprintf("Size: %dm", int(m.daySlotSpan.Minutes())),
-			"Action: Enter creates entry or edits overlap",
 		}
 	}
 	if gap := m.focusedGap(); gap != nil {
@@ -2329,7 +2349,112 @@ func overviewInspectorLines(m AppModel) []string {
 	if entry.GitBranch != nil && *entry.GitBranch != "" {
 		lines = append(lines, "Branch: "+*entry.GitBranch)
 	}
+	if activity := m.activitySummaryLines(entry.StartedAt, timelineBlockEnd(entry), false); len(activity) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, activity...)
+	}
 	return lines
+}
+
+func (m AppModel) activitySummaryLines(start, end time.Time, includeRange bool) []string {
+	slots := m.activitySlotsForRange(start, end)
+	if len(slots) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(slots)*6)
+	if includeRange {
+		lines = append(lines, fmt.Sprintf("Activity: %s-%s", clock(start), clock(end)), "")
+	}
+	lines = append(lines, fmt.Sprintf("Agent activity: %d %s", len(slots), pluralize(len(slots), "slot", "slots")))
+	for _, slot := range slots {
+		lines = append(lines, fmt.Sprintf("%s (%d msgs)", slot.Operator, slot.MsgCount))
+		if slot.GitBranch != "" {
+			lines = append(lines, fmt.Sprintf("Branch: %s", slot.GitBranch))
+		}
+		if slot.Cwd != "" {
+			lines = append(lines, fmt.Sprintf("Folder: %s", slot.Cwd))
+		}
+		if slot.TokenInput > 0 || slot.TokenOutput > 0 {
+			lines = append(lines, fmt.Sprintf("Tokens: %s in / %s out", formatTokenCount(slot.TokenInput), formatTokenCount(slot.TokenOutput)))
+		}
+		if len(slot.UserTexts) > 0 {
+			lines = append(lines, "", "Prompts:")
+			for i, text := range slot.UserTexts {
+				lines = append(lines, fmt.Sprintf("  %d. %s", i+1, text))
+			}
+		}
+	}
+	return lines
+}
+
+func (m *AppModel) scrollInspectorPage(direction int) {
+	if direction == 0 {
+		return
+	}
+	page := max(1, inspectorBodyHeight(max(10, m.height-4))-1)
+	m.scrollInspectorLines(direction * page)
+}
+
+func (m *AppModel) scrollInspectorLines(delta int) {
+	if delta == 0 {
+		return
+	}
+	m.inspectorOffset += delta
+	m.syncInspectorViewport()
+}
+
+func (m AppModel) mouseInInspector(x int) bool {
+	if m.timelineView != timelineViewDay || m.width <= 0 {
+		return false
+	}
+	return x >= max(0, m.width-dayInspectorWidth(m.width))
+}
+
+func (m *AppModel) syncInspectorViewport() {
+	key := m.inspectorContentKey()
+	if key != m.inspectorViewKey {
+		m.inspectorViewKey = key
+		m.inspectorOffset = 0
+	}
+	maxOffset := max(0, len(inspectorLines(*m))-inspectorBodyHeight(max(10, m.height-4)))
+	m.inspectorOffset = max(0, min(m.inspectorOffset, maxOffset))
+}
+
+func (m AppModel) inspectorContentKey() string {
+	parts := []string{string(m.timelineView), string(m.inspectorTab), m.displayedDay().Format("2006-01-02"), m.dayFocusKind}
+	if rng := m.selectedCreateRange(); rng != nil {
+		parts = append(parts, rng.start.UTC().Format(time.RFC3339), rng.end.UTC().Format(time.RFC3339))
+	}
+	if gap := m.focusedGap(); gap != nil {
+		parts = append(parts, gap.start.UTC().Format(time.RFC3339), gap.end.UTC().Format(time.RFC3339))
+	}
+	idx := m.effectiveEntryIndex()
+	if idx >= 0 && idx < len(m.entries) {
+		parts = append(parts, m.entries[idx].ID)
+	}
+	return strings.Join(parts, "|")
+}
+
+func (m AppModel) activitySlotsForRange(start, end time.Time) []model.ActivitySlot {
+	if !end.After(start) {
+		return nil
+	}
+	slots := make([]model.ActivitySlot, 0, len(m.activitySlots))
+	for _, slot := range m.activitySlots {
+		slotStart := slot.SlotTime.In(time.Local)
+		slotEnd := slotStart.Add(15 * time.Minute)
+		if rangesOverlap(start, end, slotStart, slotEnd) {
+			slots = append(slots, slot)
+		}
+	}
+	return slots
+}
+
+func pluralize(count int, singular, plural string) string {
+	if count == 1 {
+		return singular
+	}
+	return plural
 }
 
 func actionInspectorLines(m AppModel) []string {
@@ -2699,8 +2824,6 @@ func clampDayWindowStart(start, day time.Time) time.Time {
 	return time.Date(day.Year(), day.Month(), day.Day(), start.Hour(), start.Minute(), 0, 0, day.Location())
 }
 
-
-
 func dayGapsForIndices(entries []model.TimeEntryDetail, indices []int, day time.Time) []dayGap {
 	day = dayStart(day)
 	dayEnd := gapDayEnd(day)
@@ -2865,7 +2988,7 @@ func renderBaseStatusBar(m AppModel, width int) string {
 		return truncateForWidth("/"+m.searchQuery+" | enter search | esc cancel", width)
 	}
 	if m.timelineView == timelineViewDay {
-		text := fmt.Sprintf("entries %d | day %s | up/down 15m | shift+up/down 1h | j/k items | left/right day | enter create/edit | tab inspector", len(m.entries), m.displayedDay().Format("2006-01-02"))
+		text := fmt.Sprintf("entries %d | day %s | up/down 15m | shift+up/down 1h | j/k items | left/right day | wheel/pgup/pgdn inspector | enter create/edit | tab inspector", len(m.entries), m.displayedDay().Format("2006-01-02"))
 		return truncateForWidth(text, width)
 	}
 	drafts := 0
@@ -2954,10 +3077,6 @@ func entryMatchesSearch(entry model.TimeEntryDetail, query string) bool {
 	return strings.Contains(haystack, query)
 }
 
-
-
-
-
 func (m *AppModel) pruneSelection() {
 	if len(m.selected) == 0 {
 		return
@@ -2999,7 +3118,13 @@ func renderProjectDialog(m AppModel, styles tuiStyles, background string) string
 
 	var content strings.Builder
 	content.WriteString(styles.title.Render(projectDialogTitle(m)) + "\n")
-	content.WriteString(styles.muted.Render(projectDialogSummary(m)) + "\n\n")
+	content.WriteString(styles.muted.Render(projectDialogSummary(m)) + "\n")
+	if m.dialogMode == projectDialogManage {
+		if project := m.selectedProject(); project != nil {
+			content.WriteString(styles.muted.Render("Color: ") + projectColorIndicator(*project) + "\n")
+		}
+	}
+	content.WriteString("\n")
 	if m.dialogMode == projectDialogAssign {
 		content.WriteString(renderPickerLine("Unassign", 0, m.projectCursor, styles, innerWidth) + "\n")
 	}
@@ -3007,7 +3132,7 @@ func renderProjectDialog(m AppModel, styles tuiStyles, background string) string
 		content.WriteString(styles.muted.Render(projectDialogEmpty(m)) + "\n")
 	} else {
 		for i, project := range m.projects {
-			content.WriteString(renderPickerLine(projectDialogLabel(m, project), i+1, m.projectCursor, styles, innerWidth) + "\n")
+			content.WriteString(renderProjectPickerLine(m, project, i+1, styles, innerWidth) + "\n")
 		}
 	}
 	if m.dialogMode == projectDialogCreate {
@@ -3136,7 +3261,7 @@ func projectDialogSummary(m AppModel) string {
 		if project.BillableDefault {
 			state = "billable"
 		}
-		return truncateForWidth(project.Name+" | default "+state+" | "+projectColorLabel(*project), 48)
+		return truncateForWidth(project.Name+" | default "+state, 48)
 	}
 	if m.dialogMode == projectDialogCreate {
 		return "new project name"
@@ -3220,6 +3345,14 @@ func projectColorLabel(project model.Project) string {
 	return strings.ToLower(*project.Color)
 }
 
+func projectColorIndicator(project model.Project) string {
+	label := projectColorLabel(project)
+	if project.Color == nil || *project.Color == "" {
+		return label
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(*project.Color)).Render(label)
+}
+
 func textWithCaret(text string, visible, active bool) string {
 	if !active {
 		return text
@@ -3250,12 +3383,20 @@ func renderPickerLine(label string, index, current int, styles tuiStyles, width 
 	if index == current {
 		cursor = ">"
 	}
-	line := lipgloss.NewStyle().MaxWidth(width).Render(fmt.Sprintf("%s %s", cursor, label))
+	line := lipgloss.NewStyle().MaxWidth(width).Render(cursor + " " + label)
 	style := styles.projectPicker
 	if index == current {
 		style = styles.activePicker
 	}
 	return style.Width(width).MaxWidth(width).Render(line)
+}
+
+func renderProjectPickerLine(m AppModel, project model.Project, index int, styles tuiStyles, width int) string {
+	label := projectDialogLabel(m, project)
+	if m.dialogMode == projectDialogManage {
+		return renderPickerLine(label, index, m.projectCursor, styles, width)
+	}
+	return renderPickerLine(label, index, m.projectCursor, styles, width)
 }
 
 func formatRange(start time.Time, end *time.Time) string {

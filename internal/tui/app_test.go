@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/exp/teatest"
+	"github.com/muesli/termenv"
 
 	"github.com/akoskm/hrs/internal/db"
 	"github.com/akoskm/hrs/internal/model"
@@ -350,6 +352,52 @@ func TestManageProjectsRandomizesColor(t *testing.T) {
 	}
 }
 
+func TestManageProjectsShowsProjectColorCue(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	color := "#20c997"
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Color: color, Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
+	app := updated.(AppModel)
+	view := stripANSI(app.View())
+
+	if !strings.Contains(view, "[billable] Elaiia (elaiia)") {
+		t.Fatalf("manage dialog missing project color cue: %q", view)
+	}
+	if !strings.Contains(view, "Elaiia | default billable") {
+		t.Fatalf("manage dialog missing project summary: %q", view)
+	}
+	if !strings.Contains(view, "Color: #20c997") {
+		t.Fatalf("manage dialog missing separate color line: %q", view)
+	}
+}
+
+func TestProjectColorIndicatorUsesForegroundColor(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(prev)
+	})
+
+	color := "#20c997"
+	indicator := projectColorIndicator(model.Project{Color: &color})
+	if stripANSI(indicator) != "#20c997" {
+		t.Fatalf("indicator text = %q, want %q", stripANSI(indicator), "#20c997")
+	}
+	if !regexp.MustCompile(`\x1b\[[0-9;]*38;`).MatchString(indicator) {
+		t.Fatalf("indicator missing foreground color escape: %q", indicator)
+	}
+}
+
 func TestEnterOpensEntryEditDialogAndSavesDescriptionAndProject(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -502,6 +550,50 @@ func TestEditDialogUpdatesTimes(t *testing.T) {
 	}
 	if formatRange(updatedEntry.StartedAt, updatedEntry.EndedAt) != "09:30-10:45" {
 		t.Fatalf("updated range = %s, want 09:30-10:45", formatRange(updatedEntry.StartedAt, updatedEntry.EndedAt))
+	}
+}
+
+func TestEditDialogRejectsInvalidTimeSuffix(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "p",
+		Description:  "Auth",
+		StartedAt:    time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 3, 11, 30, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	if app.entryInputField != "end" {
+		t.Fatalf("field = %q, want end", app.entryInputField)
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("-33404")})
+	app = updated.(AppModel)
+	wantEnd := clock(time.Date(2026, 4, 3, 11, 30, 0, 0, time.UTC))
+	if app.entryEndInput != wantEnd {
+		t.Fatalf("entryEndInput = %q, want %s", app.entryEndInput, wantEnd)
+	}
+	if app.err != nil {
+		t.Fatalf("err = %v, want nil", app.err)
 	}
 }
 
@@ -2412,6 +2504,260 @@ func TestDayViewInspectorShowsActivityDetail(t *testing.T) {
 	}
 	if !strings.Contains(view, "12 msgs") {
 		t.Fatalf("inspector missing message count, got:\n%s", view)
+	}
+}
+
+func TestDayViewInspectorShowsOverlappingActivityForEntry(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	entryStart := time.Date(2026, 4, 7, 8, 45, 0, 0, time.Local)
+	entryEnd := time.Date(2026, 4, 7, 9, 30, 0, 0, time.Local)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "hrs",
+		Description:  "improve TUI experience",
+		StartedAt:    entryStart,
+		EndedAt:      entryEnd,
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	if err := store.UpsertActivitySlots(ctx, []model.ActivitySlot{
+		{SlotTime: time.Date(2026, 4, 7, 8, 45, 0, 0, time.Local).UTC(), Operator: "claude-code", MsgCount: 21, Cwd: "/Users/akoskm/Projects/hrs", GitBranch: "main", UserTexts: []string{"please create a README.md file with setup instructions"}},
+		{SlotTime: time.Date(2026, 4, 7, 9, 0, 0, 0, time.Local).UTC(), Operator: "claude-code", MsgCount: 18, Cwd: "/Users/akoskm/Projects/hrs", GitBranch: "main", UserTexts: []string{"review recent code changes and improvement areas"}},
+	}); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(entryStart)
+	m.dayFocusKind = "entry"
+	m.cursor = 0
+	m.loadActivitySlots()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 30})
+	app := updated.(AppModel)
+	view := stripANSI(app.View())
+
+	checks := []string{
+		"improve TUI experience",
+		"Agent activity: 2 slots",
+		"claude-code (21 msgs)",
+		"please create a README.md file with setup instructions",
+		"review recent code changes and improvement areas",
+	}
+	for _, want := range checks {
+		if !strings.Contains(view, want) {
+			t.Fatalf("inspector missing %q, got:\n%s", want, view)
+		}
+	}
+}
+
+func TestDayViewInspectorShowsMarkedRangeActivity(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	day := time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local)
+	if err := store.UpsertActivitySlots(ctx, []model.ActivitySlot{
+		{SlotTime: time.Date(2026, 4, 7, 8, 0, 0, 0, time.Local).UTC(), Operator: "claude-code", MsgCount: 10, UserTexts: []string{"first prompt"}},
+		{SlotTime: time.Date(2026, 4, 7, 8, 15, 0, 0, time.Local).UTC(), Operator: "claude-code", MsgCount: 12, UserTexts: []string{"second prompt"}},
+	}); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(day)
+	m.dayFocusKind = "slot"
+	m.daySlotStart = time.Date(2026, 4, 7, 8, 15, 0, 0, time.Local)
+	m.daySlotSpan = 15 * time.Minute
+	m.slotMarkStart = time.Date(2026, 4, 7, 8, 0, 0, 0, time.Local)
+	m.slotMarkSpan = 15 * time.Minute
+	m.loadActivitySlots()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 30})
+	app := updated.(AppModel)
+	view := stripANSI(app.View())
+
+	checks := []string{
+		"Activity: 08:00-08:30",
+		"Agent activity: 2 slots",
+		"first prompt",
+		"second prompt",
+	}
+	for _, want := range checks {
+		if !strings.Contains(view, want) {
+			t.Fatalf("inspector missing %q, got:\n%s", want, view)
+		}
+	}
+}
+
+func TestRenderInspectorBodyClipsToViewportHeight(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	day := time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local)
+	if err := store.UpsertActivitySlots(ctx, []model.ActivitySlot{
+		{SlotTime: time.Date(2026, 4, 7, 8, 0, 0, 0, time.Local).UTC(), Operator: "claude-code", MsgCount: 10, UserTexts: []string{"prompt 1"}},
+		{SlotTime: time.Date(2026, 4, 7, 8, 15, 0, 0, time.Local).UTC(), Operator: "claude-code", MsgCount: 12, UserTexts: []string{"prompt 2"}},
+		{SlotTime: time.Date(2026, 4, 7, 8, 30, 0, 0, time.Local).UTC(), Operator: "claude-code", MsgCount: 14, UserTexts: []string{"prompt 3"}},
+	}); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(day)
+	m.dayFocusKind = "slot"
+	m.daySlotStart = time.Date(2026, 4, 7, 8, 30, 0, 0, time.Local)
+	m.daySlotSpan = 15 * time.Minute
+	m.slotMarkStart = time.Date(2026, 4, 7, 8, 0, 0, 0, time.Local)
+	m.slotMarkSpan = 15 * time.Minute
+	m.loadActivitySlots()
+
+	body := renderInspectorBody(m, 80, 8)
+	lines := strings.Split(body, "\n")
+	if len(lines) != 8 {
+		t.Fatalf("inspector body line count = %d, want 8", len(lines))
+	}
+	if !strings.Contains(body, "prompt 1") {
+		t.Fatalf("inspector body missing first prompt, got:\n%s", body)
+	}
+	if strings.Contains(body, "prompt 3") {
+		t.Fatalf("inspector body should be clipped, got:\n%s", body)
+	}
+}
+
+func TestDayViewInspectorScrollsWithoutStretchingLayout(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	day := time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local)
+	slots := make([]model.ActivitySlot, 0, 6)
+	for i := 0; i < 6; i++ {
+		slots = append(slots, model.ActivitySlot{
+			SlotTime:  time.Date(2026, 4, 7, 8, i*15, 0, 0, time.Local).UTC(),
+			Operator:  "claude-code",
+			MsgCount:  10 + i,
+			UserTexts: []string{"prompt " + strconv.Itoa(i+1)},
+		})
+	}
+	if err := store.UpsertActivitySlots(ctx, slots); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(day)
+	m.dayFocusKind = "slot"
+	m.daySlotStart = time.Date(2026, 4, 7, 9, 15, 0, 0, time.Local)
+	m.daySlotSpan = 15 * time.Minute
+	m.slotMarkStart = time.Date(2026, 4, 7, 8, 0, 0, 0, time.Local)
+	m.slotMarkSpan = 15 * time.Minute
+	m.loadActivitySlots()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 18})
+	app := updated.(AppModel)
+
+	view := stripANSI(app.View())
+	if !strings.Contains(view, "prompt 1") {
+		t.Fatalf("initial inspector missing early prompt, got:\n%s", view)
+	}
+	if strings.Contains(view, "prompt 6") {
+		t.Fatalf("initial inspector should be clipped before prompt 6, got:\n%s", view)
+	}
+	pane := renderInspectorPane(app, app.styles, max(20, app.width/2), max(10, app.height-4))
+	if lipgloss.Height(pane) > max(10, app.height-4) {
+		t.Fatalf("inspector pane height = %d, want <= %d", lipgloss.Height(pane), max(10, app.height-4))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	app = updated.(AppModel)
+	if app.inspectorOffset == 0 {
+		t.Fatal("inspectorOffset = 0 after pgdown, want > 0")
+	}
+	view = stripANSI(app.View())
+	if !strings.Contains(view, "prompt 4") {
+		t.Fatalf("scrolled inspector missing later prompt, got:\n%s", view)
+	}
+	if strings.Contains(view, "prompt 1") {
+		t.Fatalf("scrolled inspector still shows first prompt, got:\n%s", view)
+	}
+	pane = renderInspectorPane(app, app.styles, max(20, app.width/2), max(10, app.height-4))
+	if lipgloss.Height(pane) > max(10, app.height-4) {
+		t.Fatalf("scrolled inspector pane height = %d, want <= %d", lipgloss.Height(pane), max(10, app.height-4))
+	}
+}
+
+func TestDayViewMouseWheelScrollsInspectorWhenHovered(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	day := time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local)
+	slots := make([]model.ActivitySlot, 0, 6)
+	for i := 0; i < 6; i++ {
+		slots = append(slots, model.ActivitySlot{
+			SlotTime:  time.Date(2026, 4, 7, 8, i*15, 0, 0, time.Local).UTC(),
+			Operator:  "claude-code",
+			MsgCount:  10 + i,
+			UserTexts: []string{"prompt " + strconv.Itoa(i+1)},
+		})
+	}
+	if err := store.UpsertActivitySlots(ctx, slots); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(day)
+	m.dayFocusKind = "slot"
+	m.daySlotStart = time.Date(2026, 4, 7, 9, 15, 0, 0, time.Local)
+	m.daySlotSpan = 15 * time.Minute
+	m.slotMarkStart = time.Date(2026, 4, 7, 8, 0, 0, 0, time.Local)
+	m.slotMarkSpan = 15 * time.Minute
+	m.loadActivitySlots()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 18})
+	app := updated.(AppModel)
+
+	startWindow := app.dayWindowStart
+	inspectorX := app.width - dayInspectorWidth(app.width) + 1
+	updated, _ = app.Update(tea.MouseMsg{X: inspectorX, Button: tea.MouseButtonWheelDown})
+	app = updated.(AppModel)
+	if app.inspectorOffset == 0 {
+		t.Fatal("inspectorOffset = 0 after wheel down over inspector, want > 0")
+	}
+	if !app.dayWindowStart.Equal(startWindow) {
+		t.Fatalf("dayWindowStart changed from %s to %s while scrolling inspector", clock(startWindow), clock(app.dayWindowStart))
+	}
+
+	view := stripANSI(app.View())
+	if !strings.Contains(view, "prompt 2") {
+		t.Fatalf("wheel-scrolled inspector missing later prompt, got:\n%s", view)
+	}
+	if !strings.Contains(view, "prompt 1") {
+		t.Fatalf("wheel-scrolled inspector unexpectedly skipped first prompt, got:\n%s", view)
 	}
 }
 
