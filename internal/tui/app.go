@@ -976,6 +976,15 @@ func (m *AppModel) centerWindowOn(ts time.Time) {
 	m.dayWindowStart = clampDayWindowStart(centered, m.displayedDay())
 }
 
+func (m *AppModel) ensureEntryVisible() {
+	if m.cursor < 0 || m.cursor >= len(m.entries) {
+		return
+	}
+	entry := m.entries[m.cursor]
+	entryMid := entry.StartedAt.Add(timelineBlockEnd(entry).Sub(entry.StartedAt) / 2)
+	m.centerWindowOn(entryMid)
+}
+
 func (m *AppModel) ensureSlotVisible() {
 	if m.dayWindowStart.IsZero() {
 		m.dayWindowStart = defaultDayWindowStart(m.displayedDay())
@@ -1000,13 +1009,12 @@ func (m *AppModel) jumpDayItem(direction int) {
 		return
 	}
 	if m.dayFocusKind == "slot" || m.dayFocusKind == "gap" {
-		// find the closest entry in the given direction from the current slot position
 		if direction > 0 {
 			for _, idx := range indices {
 				if !m.entries[idx].StartedAt.Before(m.daySlotStart) {
 					m.cursor = idx
 					m.dayFocusKind = "entry"
-					m.ensureSlotVisible()
+					m.ensureEntryVisible()
 					return
 				}
 			}
@@ -1015,18 +1023,16 @@ func (m *AppModel) jumpDayItem(direction int) {
 				if !timelineBlockEnd(m.entries[indices[i]]).After(m.daySlotStart) {
 					m.cursor = indices[i]
 					m.dayFocusKind = "entry"
-					m.ensureSlotVisible()
+					m.ensureEntryVisible()
 					return
 				}
 			}
 		}
-		// no entry in that direction — focus the closest one
 		m.cursor = indices[0]
 		m.dayFocusKind = "entry"
-		m.ensureSlotVisible()
+		m.ensureEntryVisible()
 		return
 	}
-	// currently on an entry — find current position and move
 	current := -1
 	for i, idx := range indices {
 		if idx == m.cursor {
@@ -1038,7 +1044,7 @@ func (m *AppModel) jumpDayItem(direction int) {
 	if next >= 0 && next < len(indices) {
 		m.cursor = indices[next]
 		m.dayFocusKind = "entry"
-		m.ensureSlotVisible()
+		m.ensureEntryVisible()
 	}
 }
 
@@ -1920,7 +1926,10 @@ func (m *AppModel) reloadEntries() error {
 func (m *AppModel) restoreStateAfterReload() {
 	prevDay := m.displayedDay()
 	prevKind := m.dayFocusKind
-	prevGap := m.dayGapFocus
+	prevSlotStart := m.daySlotStart
+	prevSlotSpan := m.daySlotSpan
+	prevMarkStart := m.slotMarkStart
+	prevMarkSpan := m.slotMarkSpan
 	prevEntryID := ""
 	if len(m.entries) > 0 && m.cursor >= 0 && m.cursor < len(m.entries) {
 		prevEntryID = m.entries[m.cursor].ID
@@ -1931,12 +1940,13 @@ func (m *AppModel) restoreStateAfterReload() {
 	}
 	m.dayDate = prevDay
 	m.loadActivitySlots()
-	if prevKind == "gap" {
-		m.dayFocusKind = "gap"
-		m.dayGapFocus = prevGap
-		if m.focusedGap() == nil {
-			m.syncFocusForDisplayedDay()
-		}
+	if prevKind == "slot" {
+		m.dayFocusKind = "slot"
+		m.daySlotStart = prevSlotStart
+		m.daySlotSpan = prevSlotSpan
+		m.slotMarkStart = prevMarkStart
+		m.slotMarkSpan = prevMarkSpan
+		m.ensureSlotVisible()
 		return
 	}
 	if prevEntryID != "" {
@@ -1944,7 +1954,6 @@ func (m *AppModel) restoreStateAfterReload() {
 			if entry.ID == prevEntryID {
 				m.cursor = i
 				m.dayFocusKind = "entry"
-				m.dayGapFocus = 0
 				m.ensureVisible()
 				return
 			}

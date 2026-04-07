@@ -2917,3 +2917,69 @@ func TestJKOnlyNavigatesEntries(t *testing.T) {
 		t.Fatalf("after k: still on %q, should have moved back", nextDesc)
 	}
 }
+
+func TestJKScrollsViewportToShowFocusedEntry(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	// entry A at 02:00 — will be outside the default window
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "Early work", StartedAt: time.Date(2026, 4, 3, 2, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 3, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	// entry B at 14:00 — will be outside if window starts at 02:00
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "Late work", StartedAt: time.Date(2026, 4, 3, 14, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 15, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 3, 0, 0, 0, 0, time.Local))
+	m.height = 30
+	m.width = 120
+
+	// focus on "Early work" (02:00 UTC = 04:00 local in CEST)
+	// set window to show this entry
+	earlyLocal := time.Date(2026, 4, 3, 2, 0, 0, 0, time.UTC).In(time.Local)
+	m.dayWindowStart = clampDayWindowStart(alignWindowStart(earlyLocal), m.displayedDay())
+	indices := m.dayEntryIndices(m.displayedDay().Format("2006-01-02"))
+	// find the early entry
+	for _, idx := range indices {
+		if m.entries[idx].Description != nil && *m.entries[idx].Description == "Early work" {
+			m.cursor = idx
+			break
+		}
+	}
+	m.dayFocusKind = "entry"
+
+	lateLocal := time.Date(2026, 4, 3, 14, 0, 0, 0, time.UTC).In(time.Local)
+
+	// press j to jump to "Late work"
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	app := updated.(AppModel)
+
+	if app.entries[app.cursor].Description == nil || *app.entries[app.cursor].Description != "Late work" {
+		t.Fatalf("after j: cursor on %q, want Late work", descriptionOrID(app.entries[app.cursor]))
+	}
+
+	// the window must now contain the Late work entry
+	windowEnd := app.dayWindowStart.Add(10 * time.Hour)
+	if lateLocal.Before(app.dayWindowStart) || !lateLocal.Before(windowEnd) {
+		t.Fatalf("after j: Late work at %s outside window %s-%s — viewport didn't scroll",
+			clock(lateLocal), clock(app.dayWindowStart), clock(windowEnd))
+	}
+
+	// entry should be roughly centered (at least 2h from edges)
+	marginFromStart := lateLocal.Sub(app.dayWindowStart)
+	marginFromEnd := windowEnd.Sub(lateLocal)
+	if marginFromStart < 2*time.Hour || marginFromEnd < 2*time.Hour {
+		t.Fatalf("entry not centered: %s from start, %s from end (window %s-%s)",
+			marginFromStart, marginFromEnd, clock(app.dayWindowStart), clock(windowEnd))
+	}
+}
