@@ -999,17 +999,12 @@ func TestTimelineDayViewCreateManualEntryFromGap(t *testing.T) {
 	model.SetDefaultTimelineView("day")
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
 	app := updated.(AppModel)
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-	app = updated.(AppModel)
-	if app.dayFocusKind != "slot" {
-		t.Fatalf("focus kind = %q, want slot", app.dayFocusKind)
-	}
-	rng := app.selectedCreateRange()
-	if rng == nil || formatRange(rng.start, &rng.end) != "12:00-14:00" {
-		t.Fatalf("selected range = %#v, want 12:00-14:00", rng)
-	}
+	// position slot in the gap between entries (12:00-14:00 local = after first entry, before second)
+	app.daySlotStart = time.Date(2026, 4, 3, 12, 0, 0, 0, time.Local)
+	app.daySlotSpan = 2 * time.Hour
+	app.dayFocusKind = "slot"
 
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	app = updated.(AppModel)
 	if app.mode != modeGapEntry {
 		t.Fatalf("mode = %q, want gap-entry", app.mode)
@@ -1778,47 +1773,37 @@ func TestDayViewJKNeverStaysOnSameEntry(t *testing.T) {
 		t.Fatalf("initial entry = %q, want C", startDesc)
 	}
 
-	// Navigate backward with k — should never stay on same entry
-	seen := []string{"C"}
-	for i := 0; i < 6; i++ {
-		prevIdx := app.effectiveEntryIndex()
-		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
-		app = updated.(AppModel)
-		currIdx := app.effectiveEntryIndex()
-		if currIdx >= 0 && currIdx == prevIdx {
-			t.Fatalf("k press %d stayed on same entry index %d", i+1, currIdx)
-		}
-		if currIdx >= 0 {
-			seen = append(seen, descriptionOrID(app.entries[currIdx]))
-		} else {
-			seen = append(seen, "slot")
-		}
+	// Navigate backward with k: C -> B -> A, then stays on A
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	app = updated.(AppModel)
+	if app.dayFocusKind != "entry" {
+		t.Fatalf("after k: focus = %q, want entry", app.dayFocusKind)
+	}
+	if descriptionOrID(app.entries[app.cursor]) != "B" {
+		t.Fatalf("after 1st k: entry = %q, want B", descriptionOrID(app.entries[app.cursor]))
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	app = updated.(AppModel)
+	if descriptionOrID(app.entries[app.cursor]) != "A" {
+		t.Fatalf("after 2nd k: entry = %q, want A", descriptionOrID(app.entries[app.cursor]))
+	}
+	// k at first entry stays on A
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	app = updated.(AppModel)
+	if descriptionOrID(app.entries[app.cursor]) != "A" {
+		t.Fatalf("after 3rd k: entry = %q, want A (should stay)", descriptionOrID(app.entries[app.cursor]))
 	}
 
-	// Verify we visited gap and entry alternately (C -> gap -> B -> gap -> A -> slot)
-	hasB := false
-	hasA := false
-	for _, s := range seen {
-		if s == "B" {
-			hasB = true
-		}
-		if s == "A" {
-			hasA = true
-		}
+	// Navigate forward with j: A -> B -> C, then stays on C
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	app = updated.(AppModel)
+	if descriptionOrID(app.entries[app.cursor]) != "B" {
+		t.Fatalf("after 1st j: entry = %q, want B", descriptionOrID(app.entries[app.cursor]))
 	}
-	if !hasA || !hasB {
-		t.Fatalf("didn't visit all entries, seen = %v", seen)
-	}
-
-	// Navigate forward with j — should never stay on same entry
-	for i := 0; i < 6; i++ {
-		prevIdx := app.effectiveEntryIndex()
-		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
-		app = updated.(AppModel)
-		currIdx := app.effectiveEntryIndex()
-		if currIdx >= 0 && currIdx == prevIdx {
-			t.Fatalf("j press %d stayed on same entry index %d", i+1, currIdx)
-		}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	app = updated.(AppModel)
+	if descriptionOrID(app.entries[app.cursor]) != "C" {
+		t.Fatalf("after 2nd j: entry = %q, want C", descriptionOrID(app.entries[app.cursor]))
 	}
 }
 
@@ -2114,22 +2099,31 @@ func TestDayViewJKRenderedOutputChangesEachPress(t *testing.T) {
 		t.Fatalf("NewAppModel() error = %v", err)
 	}
 	app.SetDefaultTimelineView("day")
+	app.dayDate = dayStart(time.Date(2026, 4, 3, 0, 0, 0, 0, time.Local))
 	updated, _ := app.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
 	app = updated.(AppModel)
 
-	// Navigate forward with j, verify effective entry changes each press
-	// (until we pass the last entry and hit a boundary slot)
-	for i := 0; i < 8; i++ {
-		prevIdx := app.effectiveEntryIndex()
-		prevFocus := app.dayFocusKind
+	// Focus on earliest entry ("agent session") to navigate forward through all
+	indices := app.dayEntryIndices(app.displayedDay().Format("2006-01-02"))
+	if len(indices) > 0 {
+		app.cursor = indices[0]
+		app.dayFocusKind = "entry"
+	}
+
+	// Navigate forward with j — should visit each entry, always staying on "entry" focus
+	seen := map[string]bool{descriptionOrID(app.entries[app.cursor]): true}
+	for i := 0; i < 5; i++ {
 		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 		app = updated.(AppModel)
-		currIdx := app.effectiveEntryIndex()
-		// If we were on an entry, we must move to a different one or to a slot
-		if prevFocus == "entry" || (prevFocus == "slot" && prevIdx >= 0) {
-			if currIdx >= 0 && currIdx == prevIdx {
-				t.Fatalf("j press %d stayed on same entry index %d (focus=%s)", i+1, currIdx, app.dayFocusKind)
-			}
+		if app.dayFocusKind != "entry" {
+			t.Fatalf("j press %d: focus = %q, want entry", i+1, app.dayFocusKind)
+		}
+		seen[descriptionOrID(app.entries[app.cursor])] = true
+	}
+	// should have visited all 3 entries
+	for _, name := range []string{"manual work", "follow up", "afternoon"} {
+		if !seen[name] {
+			t.Errorf("never visited entry %q, seen = %v", name, seen)
 		}
 	}
 }
@@ -2183,19 +2177,11 @@ func TestDayViewJKNavigatesAndEnterEdits(t *testing.T) {
 		t.Fatalf("after save mode = %q, want timeline", app.mode)
 	}
 
-	// j past last entry should go to slot
+	// j at last entry should stay on entry (no gap navigation)
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	app = updated.(AppModel)
-	// could be entry (re-focused) or gap or slot depending on items
-	// press j again to go past
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
-	app = updated.(AppModel)
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
-	app = updated.(AppModel)
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
-	app = updated.(AppModel)
-	if app.dayFocusKind != "slot" {
-		t.Fatalf("after navigating past entries focus = %q, want slot", app.dayFocusKind)
+	if app.dayFocusKind != "entry" {
+		t.Fatalf("after j at last entry: focus = %q, want entry (should stay)", app.dayFocusKind)
 	}
 }
 
@@ -2869,5 +2855,65 @@ func TestShiftUpDownSnapsToHourThenJumps(t *testing.T) {
 	app = updated.(AppModel)
 	if clock(app.daySlotStart) != "11:00" {
 		t.Fatalf("shift+up: slot = %s, want 11:00", clock(app.daySlotStart))
+	}
+}
+
+func TestJKOnlyNavigatesEntries(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	// two entries with a gap between them
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "Entry A", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "Entry B", StartedAt: time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 13, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 3, 0, 0, 0, 0, time.Local))
+	m.height = 30
+	m.width = 120
+
+	// focus on first entry
+	m.dayFocusKind = "entry"
+	m.cursor = 0
+	if m.entries[0].Description == nil || *m.entries[0].Description != "Entry A" {
+		// entries are sorted desc, so Entry B might be first
+		if *m.entries[0].Description == "Entry B" {
+			m.cursor = 1
+		}
+	}
+	startDesc := *m.entries[m.cursor].Description
+
+	// j should jump directly to the next entry, skipping the gap
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	app := updated.(AppModel)
+
+	if app.dayFocusKind != "entry" {
+		t.Fatalf("after j: focus = %q, want entry (should never focus gap/slot)", app.dayFocusKind)
+	}
+	if app.entries[app.cursor].Description == nil || *app.entries[app.cursor].Description == startDesc {
+		t.Fatalf("after j: still on same entry %q, should have moved to the other", startDesc)
+	}
+
+	// k should jump back to the first entry
+	nextDesc := *app.entries[app.cursor].Description
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	app = updated.(AppModel)
+
+	if app.dayFocusKind != "entry" {
+		t.Fatalf("after k: focus = %q, want entry", app.dayFocusKind)
+	}
+	if *app.entries[app.cursor].Description == nextDesc {
+		t.Fatalf("after k: still on %q, should have moved back", nextDesc)
 	}
 }

@@ -993,56 +993,51 @@ func (m *AppModel) jumpDayItem(direction int) {
 	if direction == 0 {
 		return
 	}
-	items := m.dayTimelineItems()
-	if len(items) == 0 {
+	day := m.displayedDay().Format("2006-01-02")
+	indices := m.dayEntryIndices(day)
+	if len(indices) == 0 {
 		return
 	}
-	prevEntry := m.effectiveEntryIndex()
-	if m.dayFocusKind == "slot" {
-		slotEnd := m.daySlotStart.Add(m.daySlotSpan)
+	if m.dayFocusKind == "slot" || m.dayFocusKind == "gap" {
+		// find the closest entry in the given direction from the current slot position
 		if direction > 0 {
-			for _, item := range items {
-				if !item.start.Before(slotEnd) {
-					m.focusDayItem(item)
-					if m.effectiveEntryIndex() == prevEntry && prevEntry >= 0 {
-						continue
-					}
+			for _, idx := range indices {
+				if !m.entries[idx].StartedAt.Before(m.daySlotStart) {
+					m.cursor = idx
+					m.dayFocusKind = "entry"
+					m.ensureSlotVisible()
 					return
 				}
 			}
-			return
-		}
-		for i := len(items) - 1; i >= 0; i-- {
-			if !items[i].end.After(m.daySlotStart) {
-				m.focusDayItem(items[i])
-				if m.effectiveEntryIndex() == prevEntry && prevEntry >= 0 {
-					continue
+		} else {
+			for i := len(indices) - 1; i >= 0; i-- {
+				if !timelineBlockEnd(m.entries[indices[i]]).After(m.daySlotStart) {
+					m.cursor = indices[i]
+					m.dayFocusKind = "entry"
+					m.ensureSlotVisible()
+					return
 				}
-				return
 			}
 		}
+		// no entry in that direction — focus the closest one
+		m.cursor = indices[0]
+		m.dayFocusKind = "entry"
+		m.ensureSlotVisible()
 		return
 	}
-	current := m.currentDayItemPosition(items)
-	if current == -1 {
-		return
+	// currently on an entry — find current position and move
+	current := -1
+	for i, idx := range indices {
+		if idx == m.cursor {
+			current = i
+			break
+		}
 	}
 	next := current + direction
-	for next >= 0 && next < len(items) {
-		m.focusDayItem(items[next])
-		if m.effectiveEntryIndex() != prevEntry {
-			m.ensureVisible()
-			return
-		}
-		next += direction
-	}
-	if direction < 0 {
-		item := items[current]
-		slotStart := item.start.Add(-15 * time.Minute)
-		m.setSlotFocus(slotStart, 15*time.Minute)
-	} else {
-		item := items[current]
-		m.setSlotFocus(item.end, 15*time.Minute)
+	if next >= 0 && next < len(indices) {
+		m.cursor = indices[next]
+		m.dayFocusKind = "entry"
+		m.ensureSlotVisible()
 	}
 }
 
