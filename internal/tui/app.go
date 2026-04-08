@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -1338,6 +1339,15 @@ func (m *AppModel) backspaceEntryFieldInput() {
 	}
 }
 
+func (m *AppModel) deleteWordEntryFieldInput() {
+	switch m.entryInputField {
+	case "description":
+		m.entryInput = deleteWordBackward(m.entryInput)
+	default:
+		m.backspaceEntryFieldInput()
+	}
+}
+
 func (m *AppModel) clearEntryFieldInput() {
 	switch m.entryInputField {
 	case "description":
@@ -1396,6 +1406,30 @@ func (m *AppModel) backspaceGapFieldInput() {
 			m.gapEndInput = m.gapEndInput[:len(m.gapEndInput)-1]
 		}
 	}
+}
+
+func (m *AppModel) deleteWordGapFieldInput() {
+	switch m.gapInputField {
+	case "description":
+		m.gapInput = deleteWordBackward(m.gapInput)
+	default:
+		m.backspaceGapFieldInput()
+	}
+}
+
+func deleteWordBackward(text string) string {
+	value := []rune(text)
+	if len(value) == 0 {
+		return ""
+	}
+	idx := len(value) - 1
+	for idx >= 0 && unicode.IsSpace(value[idx]) {
+		idx--
+	}
+	for idx >= 0 && !unicode.IsSpace(value[idx]) {
+		idx--
+	}
+	return string(value[:idx+1])
 }
 
 func (m *AppModel) clearGapFieldInput() {
@@ -1537,6 +1571,10 @@ func (m *AppModel) handleEntryEditKey(msg tea.KeyMsg) tea.Cmd {
 		if !m.entryProjectOnly {
 			m.backspaceEntryFieldInput()
 		}
+	case "alt+backspace", "ctrl+w":
+		if !m.entryProjectOnly {
+			m.deleteWordEntryFieldInput()
+		}
 	case " ", "space":
 		if !m.entryProjectOnly && m.entryInputField == "description" {
 			m.entryInput += " "
@@ -1615,6 +1653,8 @@ func (m *AppModel) handleGapEntryKey(msg tea.KeyMsg) tea.Cmd {
 		}
 	case "backspace":
 		m.backspaceGapFieldInput()
+	case "alt+backspace", "ctrl+w":
+		m.deleteWordGapFieldInput()
 	case " ", "space":
 		if m.gapInputField == "description" {
 			m.gapInput += " "

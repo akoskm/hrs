@@ -1610,6 +1610,38 @@ func TestBackspaceInEntryEditDialog(t *testing.T) {
 	}
 }
 
+func TestDeleteWordInEntryEditDialog(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", HourlyRate: 100, Currency: "USD"}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "Hello there", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+
+	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyBackspace, Alt: true})
+	app = updated.(AppModel)
+	if app.entryInput != "Hello " {
+		t.Fatalf("after alt+backspace entryInput = %q, want %q", app.entryInput, "Hello ")
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+	app = updated.(AppModel)
+	if app.entryInput != "" {
+		t.Fatalf("after ctrl+w entryInput = %q, want empty", app.entryInput)
+	}
+}
+
 func TestBackspaceAndClearInGapDialog(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -1688,6 +1720,42 @@ func TestBackspaceAndClearInGapDialog(t *testing.T) {
 	app = updated.(AppModel)
 	if app.gapEndInput != "" {
 		t.Fatalf("end after delete = %q, want empty", app.gapEndInput)
+	}
+}
+
+func TestDeleteWordInGapDialog(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	today := dayStart(time.Now())
+	app.timelineView = timelineViewDay
+	app.dayDate = today
+	app.daySlotSpan = 15 * time.Minute
+	app.daySlotStart = time.Date(today.Year(), today.Month(), today.Day(), 9, 0, 0, 0, time.Local)
+	app.dayFocusKind = "slot"
+
+	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	for _, r := range "abc def" {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = updated.(AppModel)
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyBackspace, Alt: true})
+	app = updated.(AppModel)
+	if app.gapInput != "abc " {
+		t.Fatalf("after alt+backspace gapInput = %q, want %q", app.gapInput, "abc ")
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+	app = updated.(AppModel)
+	if app.gapInput != "" {
+		t.Fatalf("after ctrl+w gapInput = %q, want empty", app.gapInput)
 	}
 }
 
