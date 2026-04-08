@@ -644,11 +644,28 @@ func TestOutlinedBlockCellAnchorsViewportTopLabel(t *testing.T) {
 	midSlotStart := viewportStart.Add(40 * time.Minute)
 	midSlotEnd := midSlotStart.Add(20 * time.Minute)
 
-	if got := outlinedBlockCellWithViewport(firstSlotStart, firstSlotEnd, viewportStart, itemStart, itemEnd, 24, "improve TUI experience"); !strings.Contains(got, "improve TUI experience") {
+	if got := outlinedBlockCellWithViewport(firstSlotStart, firstSlotEnd, viewportStart, itemStart, itemEnd, false, false, 24, "improve TUI experience"); !strings.Contains(got, "improve TUI experience") {
 		t.Fatalf("first visible cell = %q, want anchored label", got)
 	}
-	if got := outlinedBlockCellWithViewport(midSlotStart, midSlotEnd, viewportStart, itemStart, itemEnd, 24, "improve TUI experience"); strings.Contains(got, "improve TUI experience") {
+	if got := outlinedBlockCellWithViewport(midSlotStart, midSlotEnd, viewportStart, itemStart, itemEnd, false, false, 24, "improve TUI experience"); strings.Contains(got, "improve TUI experience") {
 		t.Fatalf("mid cell = %q, want no duplicate label", got)
+	}
+}
+
+func TestOutlinedBlockCellSharedBoundaryForTouchingEntries(t *testing.T) {
+	upperStart := time.Date(2026, 4, 3, 13, 0, 0, 0, time.UTC)
+	boundary := upperStart.Add(75 * time.Minute)
+	upperSlotStart := boundary.Add(-15 * time.Minute)
+	upperSlotEnd := boundary
+	lowerSlotStart := boundary
+	lowerSlotEnd := boundary.Add(15 * time.Minute)
+	lowerEnd := boundary.Add(75 * time.Minute)
+
+	if got := outlinedBlockCellWithViewport(upperSlotStart, upperSlotEnd, time.Time{}, upperStart, boundary, false, true, 12, "upper"); !strings.Contains(got, "├") || !strings.Contains(got, "┤") {
+		t.Fatalf("upper touching cell = %q, want shared boundary", got)
+	}
+	if got := outlinedBlockCellWithViewport(lowerSlotStart, lowerSlotEnd, time.Time{}, boundary, lowerEnd, true, false, 12, "lower"); strings.Contains(got, "┌") || strings.Contains(got, "┐") {
+		t.Fatalf("lower touching cell = %q, want no duplicate top border", got)
 	}
 }
 

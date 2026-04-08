@@ -2648,6 +2648,23 @@ func renderActivityCell(m AppModel, viewportStart, slotStart, slotEnd time.Time,
 		if !rangesOverlap(slotStart, slotEnd, entry.StartedAt, entryEnd) {
 			continue
 		}
+		touchesAbove := false
+		touchesBelow := false
+		for _, other := range entries {
+			if other.ID == entry.ID {
+				continue
+			}
+			otherEnd := timelineBlockEnd(other)
+			if otherEnd.Equal(entry.StartedAt) {
+				touchesAbove = true
+			}
+			if other.StartedAt.Equal(entryEnd) {
+				touchesBelow = true
+			}
+			if touchesAbove && touchesBelow {
+				break
+			}
+		}
 		globalIdx := -1
 		for gi, e := range m.entries {
 			if e.ID == entry.ID {
@@ -2664,7 +2681,7 @@ func renderActivityCell(m AppModel, viewportStart, slotStart, slotEnd time.Time,
 			cellStyle = cellStyle.Foreground(lipgloss.Color(*entry.ProjectColor))
 		}
 		label := timelineBlockLabel(entry)
-		return renderVerticalEntryCell(viewportStart, slotStart, slotEnd, entry.StartedAt, entryEnd, focused, width, label, cellStyle, styles)
+		return renderVerticalEntryCell(viewportStart, slotStart, slotEnd, entry.StartedAt, entryEnd, touchesAbove, touchesBelow, focused, width, label, cellStyle, styles)
 	}
 	// activity marker (faint text)
 	text := m.activityTextForSlot(slotStart)
@@ -2674,11 +2691,11 @@ func renderActivityCell(m AppModel, viewportStart, slotStart, slotEnd time.Time,
 	return padRight("", width)
 }
 
-func renderVerticalEntryCell(viewportStart, slotStart, slotEnd, itemStart, itemEnd time.Time, focused bool, width int, label string, baseStyle lipgloss.Style, styles tuiStyles) string {
+func renderVerticalEntryCell(viewportStart, slotStart, slotEnd, itemStart, itemEnd time.Time, touchesAbove, touchesBelow, focused bool, width int, label string, baseStyle lipgloss.Style, styles tuiStyles) string {
 	if focused {
 		return renderVerticalRangeCell(viewportStart, slotStart, slotEnd, itemStart, itemEnd, true, width, label, baseStyle, styles)
 	}
-	text := outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart, itemEnd, width, label)
+	text := outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart, itemEnd, touchesAbove, touchesBelow, width, label)
 	if strings.TrimSpace(text) == "" {
 		return padRight("", width)
 	}
@@ -2710,10 +2727,10 @@ func renderVerticalRangeCell(viewportStart, slotStart, slotEnd, itemStart, itemE
 }
 
 func outlinedBlockCell(slotStart, slotEnd, itemStart, itemEnd time.Time, width int, label string) string {
-	return outlinedBlockCellWithViewport(slotStart, slotEnd, time.Time{}, itemStart, itemEnd, width, label)
+	return outlinedBlockCellWithViewport(slotStart, slotEnd, time.Time{}, itemStart, itemEnd, false, false, width, label)
 }
 
-func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart, itemEnd time.Time, width int, label string) string {
+func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart, itemEnd time.Time, touchesAbove, touchesBelow bool, width int, label string) string {
 	if width <= 1 {
 		return "│"
 	}
@@ -2739,10 +2756,19 @@ func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart,
 	if topClipped {
 		return "│" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "│"
 	}
+	if starts && touchesAbove {
+		if containsMid && !anchoredTop {
+			return "│" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "│"
+		}
+		return "│" + space + "│"
+	}
 	if starts {
 		return "┌" + fill + "┐"
 	}
 	if ends {
+		if touchesBelow {
+			return "├" + fill + "┤"
+		}
 		return "└" + fill + "┘"
 	}
 	if containsMid && !anchoredTop {
