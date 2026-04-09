@@ -2219,7 +2219,7 @@ func renderDayTimeline(m AppModel, styles tuiStyles) string {
 	activityCount := 0
 	for _, slot := range m.activitySlots {
 		slotLocal := slot.SlotTime.In(time.Local)
-		if dayKey(slotLocal) == selectedDay {
+		if dayKey(slotLocal) == selectedDay && slot.HasSignal() {
 			activityCount++
 		}
 	}
@@ -2491,6 +2491,9 @@ func (m AppModel) activitySlotsForRange(start, end time.Time) []model.ActivitySl
 	}
 	slots := make([]model.ActivitySlot, 0, len(m.activitySlots))
 	for _, slot := range m.activitySlots {
+		if !slot.HasSignal() {
+			continue
+		}
 		slotStart := slot.SlotTime.In(time.Local)
 		slotEnd := slotStart.Add(15 * time.Minute)
 		if rangesOverlap(start, end, slotStart, slotEnd) {
@@ -2661,7 +2664,7 @@ func renderVerticalTimeCell(m AppModel, row dayTimelineRow, styles tuiStyles) st
 func (m AppModel) activityTextForSlot(slotStart time.Time) string {
 	rounded := slotStart.UTC().Truncate(15 * time.Minute)
 	for _, slot := range m.activitySlots {
-		if slot.SlotTime.Equal(rounded) {
+		if slot.SlotTime.Equal(rounded) && slot.HasSignal() {
 			if slot.FirstText != "" {
 				return slot.FirstText
 			}
@@ -2674,7 +2677,7 @@ func (m AppModel) activityTextForSlot(slotStart time.Time) string {
 func (m AppModel) slotHasActivity(slotStart time.Time) bool {
 	rounded := slotStart.UTC().Truncate(15 * time.Minute)
 	for _, slot := range m.activitySlots {
-		if slot.SlotTime.Equal(rounded) {
+		if slot.SlotTime.Equal(rounded) && slot.HasSignal() {
 			return true
 		}
 	}

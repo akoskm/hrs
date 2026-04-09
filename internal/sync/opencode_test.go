@@ -70,6 +70,12 @@ func TestImportOpenCodeLogs(t *testing.T) {
 			t.Fatalf("slot_time %s not rounded to 15 min", slot.SlotTime)
 		}
 	}
+	if slots[0].FirstText == "" {
+		t.Fatal("first_text is empty, want imported user prompt")
+	}
+	if len(slots[0].UserTexts) == 0 {
+		t.Fatal("user_texts empty, want imported prompt list")
+	}
 }
 
 func TestImportOpenCodeLogsIdempotent(t *testing.T) {
@@ -120,8 +126,12 @@ func createOpenCodeFixtureDB(t *testing.T) string {
 		`CREATE TABLE part (id text PRIMARY KEY, message_id text NOT NULL, session_id text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL);`,
 		`INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES ('ses_1', 'proj_1', 'one', '/Users/akoskm/Projects/hrs', 'Go TUI for importing and assigning time entries', '1', 1775194519167, 1775210983592);`,
 		`INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES ('ses_2', 'proj_2', 'two', '/Users/akoskm/Projects/other', 'New session - 2026-04-03T00:00:00Z', '1', 1775190000000, 1775193600000);`,
+		`INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('msg_0', 'ses_1', 1775194519168, 1775194519168, '{"role":"assistant"}');`,
+		`INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES ('part_0', 'msg_0', 'ses_1', 1775194519169, 1775194519169, '{"type":"text","text":"assistant only should not create slot"}');`,
 		`INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('msg_1', 'ses_2', 1775190001000, 1775190001000, '{"role":"user"}');`,
 		`INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES ('part_1', 'msg_1', 'ses_2', 1775190001001, 1775190001001, '{"type":"text","text":"Fallback first user prompt"}');`,
+		`INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('msg_2', 'ses_1', 1775194520000, 1775194520000, '{"role":"user"}');`,
+		`INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES ('part_2', 'msg_2', 'ses_1', 1775194520001, 1775194520001, '{"type":"text","text":"Option+Backspace deleting last word in time entry"}');`,
 	}
 	for _, stmt := range stmts {
 		if _, err := conn.Exec(stmt); err != nil {

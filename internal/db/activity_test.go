@@ -28,6 +28,8 @@ func TestUpsertActivitySlots(t *testing.T) {
 
 	// upsert again with higher count — should update
 	slots[0].MsgCount = 10
+	slots[0].FirstText = "fix auth better"
+	slots[0].UserTexts = []string{"fix auth better", "add tests next"}
 	if err := store.UpsertActivitySlots(ctx, slots); err != nil {
 		t.Fatalf("UpsertActivitySlots() second call error = %v", err)
 	}
@@ -41,6 +43,12 @@ func TestUpsertActivitySlots(t *testing.T) {
 	}
 	if got[0].MsgCount != 10 {
 		t.Fatalf("msg_count = %d, want 10 after upsert", got[0].MsgCount)
+	}
+	if got[0].FirstText != "fix auth better" {
+		t.Fatalf("first_text = %q, want updated value", got[0].FirstText)
+	}
+	if len(got[0].UserTexts) != 2 {
+		t.Fatalf("len(user_texts) = %d, want 2", len(got[0].UserTexts))
 	}
 }
 

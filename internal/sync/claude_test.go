@@ -102,7 +102,7 @@ func TestParseClaudeFileStringContent(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "string-content.jsonl")
 	content := `{"sessionId":"sess_string","timestamp":"2026-01-29T14:02:59.712Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"user","content":"Find routes"}}` + "\n" +
-		`{"sessionId":"sess_string","timestamp":"2026-01-29T14:12:59.712Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}` + "\n"
+		`{"sessionId":"sess_string","timestamp":"2026-01-29T14:12:59.712Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":10,"output_tokens":20}}}` + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -141,8 +141,8 @@ func TestParseClaudeFileSlotTimesRoundedTo15Min(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "rounding.jsonl")
-	content := `{"sessionId":"sess_round","timestamp":"2026-01-29T14:07:30.000Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"user","content":"work"}}` + "\n" +
-		`{"sessionId":"sess_round","timestamp":"2026-01-29T14:22:00.000Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}` + "\n"
+	content := `{"sessionId":"sess_round","timestamp":"2026-01-29T14:07:30.000Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"user","content":"fix auth module"}}` + "\n" +
+		`{"sessionId":"sess_round","timestamp":"2026-01-29T14:22:00.000Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":10,"output_tokens":20}}}` + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -163,6 +163,28 @@ func TestParseClaudeFileSlotTimesRoundedTo15Min(t *testing.T) {
 	// 14:22:00 truncates to 14:15
 	if !slots[1].SlotTime.Equal(time.Date(2026, 1, 29, 14, 15, 0, 0, time.UTC)) {
 		t.Fatalf("slots[1].SlotTime = %s, want 2026-01-29T14:15:00Z", slots[1].SlotTime)
+	}
+}
+
+func TestParseClaudeFileSkipsSystemOnlyNoiseSlots(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "noise.jsonl")
+	content := `{"sessionId":"sess_noise","timestamp":"2026-04-08T12:21:03.416Z","cwd":"/tmp/demo","gitBranch":"dev","type":"system","subtype":"api_error"}` + "\n" +
+		`{"sessionId":"sess_noise","timestamp":"2026-04-08T12:30:00.000Z","cwd":"/tmp/demo","gitBranch":"dev","message":{"role":"user","content":"fix auth flow"}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	slots, err := ParseClaudeFile(path)
+	if err != nil {
+		t.Fatalf("ParseClaudeFile() error = %v", err)
+	}
+	if len(slots) != 1 {
+		t.Fatalf("len(slots) = %d, want 1", len(slots))
+	}
+	if slots[0].FirstText != "fix auth flow" {
+		t.Fatalf("FirstText = %q, want %q", slots[0].FirstText, "fix auth flow")
 	}
 }
 
@@ -263,4 +285,3 @@ func TestParseClaudeSessionStillWorks(t *testing.T) {
 		t.Fatalf("MessageCount = %d, want 7", session.MessageCount)
 	}
 }
-

@@ -194,6 +194,7 @@ func ParseCodexSlots(path string) ([]model.ActivitySlot, error) {
 
 	slots := make(map[slotKey]*model.ActivitySlot)
 	var hasData bool
+	currentCwd := ""
 
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
@@ -211,46 +212,49 @@ func ParseCodexSlots(path string) ([]model.ActivitySlot, error) {
 		}
 		hasData = true
 
-		bucket := ts.Truncate(15 * time.Minute)
-		key := slotKey{slotTime: bucket, operator: codexSource}
-
-		slot, ok := slots[key]
-		if !ok {
-			slot = &model.ActivitySlot{
-				SlotTime: bucket,
-				Operator: codexSource,
-			}
-			slots[key] = slot
-		}
-		slot.MsgCount++
-
 		// Extract cwd from session_meta or turn_context
 		switch line.Type {
 		case "session_meta":
 			var meta codexSessionMeta
-			if err := json.Unmarshal(line.Payload, &meta); err == nil && slot.Cwd == "" {
-				slot.Cwd = strings.TrimSpace(meta.Cwd)
+			if err := json.Unmarshal(line.Payload, &meta); err == nil && currentCwd == "" {
+				currentCwd = strings.TrimSpace(meta.Cwd)
 			}
 		case "turn_context":
 			var tc codexTurnContext
-			if err := json.Unmarshal(line.Payload, &tc); err == nil && slot.Cwd == "" {
-				slot.Cwd = strings.TrimSpace(tc.Cwd)
+			if err := json.Unmarshal(line.Payload, &tc); err == nil && currentCwd == "" {
+				currentCwd = strings.TrimSpace(tc.Cwd)
 			}
 		case "event_msg":
 			var ev codexEventMessage
 			if err := json.Unmarshal(line.Payload, &ev); err == nil {
-				if ev.Type == "user_message" && slot.FirstText == "" && strings.TrimSpace(ev.Message) != "" {
-					slot.FirstText = normalizeDescription(ev.Message, 80)
+				if ev.Type != "user_message" || strings.TrimSpace(ev.Message) == "" {
+					continue
 				}
+				bucket := ts.Truncate(15 * time.Minute)
+				key := slotKey{slotTime: bucket, operator: codexSource}
+				slot, ok := slots[key]
+				if !ok {
+					slot = &model.ActivitySlot{SlotTime: bucket, Operator: codexSource}
+					slots[key] = slot
+				}
+				normalized := normalizeDescription(ev.Message, 80)
+				slot.MsgCount++
+				if slot.Cwd == "" {
+					slot.Cwd = currentCwd
+				}
+				if slot.FirstText == "" {
+					slot.FirstText = normalized
+				}
+				slot.UserTexts = appendUniqueText(slot.UserTexts, normalized, 5)
 			}
 		case "response_item":
 			var msg codexResponseMessage
 			if err := json.Unmarshal(line.Payload, &msg); err == nil {
-				if msg.Type == "message" && msg.Role == "user" && slot.Cwd == "" {
+				if msg.Type == "message" && msg.Role == "user" && currentCwd == "" {
 					for _, item := range msg.Content {
 						if item.Type == "input_text" {
 							if cwd := extractCodexCWD(item.Text); cwd != "" {
-								slot.Cwd = cwd
+								currentCwd = cwd
 							}
 						}
 					}

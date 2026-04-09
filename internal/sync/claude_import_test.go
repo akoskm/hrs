@@ -60,7 +60,7 @@ func TestImportClaudeLogsUpsertsSlots(t *testing.T) {
 	root := t.TempDir()
 	writeClaudeJSONL(t, filepath.Join(root, "work.jsonl"), []string{
 		`{"sessionId":"work","timestamp":"2026-04-03T12:00:00Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"user","content":"Fix report page"}}`,
-		`{"sessionId":"work","timestamp":"2026-04-03T13:00:00Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`,
+		`{"sessionId":"work","timestamp":"2026-04-03T13:00:00Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":10,"output_tokens":20}}}`,
 	})
 
 	if err := ImportClaudeLogs(ctx, store, root); err != nil {
@@ -98,8 +98,8 @@ func TestImportClaudeLogsSkipsMalformedFiles(t *testing.T) {
 	writeClaudeJSONL(t, filepath.Join(root, "empty.jsonl"), []string{})
 	// good file
 	writeClaudeJSONL(t, filepath.Join(root, "good.jsonl"), []string{
-		`{"sessionId":"good","timestamp":"2026-04-03T09:00:00Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"user","content":"work"}}`,
-		`{"sessionId":"good","timestamp":"2026-04-03T09:20:00Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`,
+		`{"sessionId":"good","timestamp":"2026-04-03T09:00:00Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"user","content":"fix auth module"}}`,
+		`{"sessionId":"good","timestamp":"2026-04-03T09:20:00Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":10,"output_tokens":20}}}`,
 	})
 
 	if err := ImportClaudeLogs(ctx, store, root); err != nil {
@@ -127,8 +127,8 @@ func TestImportClaudeLogsIsIdempotent(t *testing.T) {
 
 	root := t.TempDir()
 	writeClaudeJSONL(t, filepath.Join(root, "sess.jsonl"), []string{
-		`{"sessionId":"idem","timestamp":"2026-04-03T14:00:00Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"user","content":"work"}}`,
-		`{"sessionId":"idem","timestamp":"2026-04-03T14:20:00Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`,
+		`{"sessionId":"idem","timestamp":"2026-04-03T14:00:00Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"user","content":"fix auth module"}}`,
+		`{"sessionId":"idem","timestamp":"2026-04-03T14:20:00Z","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":10,"output_tokens":20}}}`,
 	})
 
 	if err := ImportClaudeLogs(ctx, store, root); err != nil {

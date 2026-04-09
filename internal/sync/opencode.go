@@ -33,7 +33,7 @@ func ImportOpenCodeLogs(ctx context.Context, store *db.Store, dbPath string) err
 
 	// Query all message timestamps grouped by session, so we can bucket them
 	rows, err := dbConn.Query(`
-		SELECT s.directory, m.time_created, s.title, s.id
+		SELECT s.directory, m.time_created, s.title, s.id, m.id, json_extract(m.data, '$.role')
 		FROM message m
 		JOIN session s ON s.id = m.session_id
 		WHERE s.time_archived IS NULL
@@ -50,13 +50,27 @@ func ImportOpenCodeLogs(ctx context.Context, store *db.Store, dbPath string) err
 	}
 
 	slots := make(map[slotKey]*model.ActivitySlot)
-	sessionFirstText := make(map[string]bool) // track if we got first text per session
 
 	for rows.Next() {
-		var cwd, title, sessionID string
+		var cwd, title, sessionID, messageID string
+		var role sql.NullString
 		var createdMS int64
-		if err := rows.Scan(&cwd, &createdMS, &title, &sessionID); err != nil {
+		if err := rows.Scan(&cwd, &createdMS, &title, &sessionID, &messageID, &role); err != nil {
 			return err
+		}
+		if strings.TrimSpace(role.String) != "user" {
+			continue
+		}
+		text, err := openCodeMessageText(dbConn, messageID)
+		if err != nil {
+			return err
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			text = openCodeSessionTitle(title)
+		}
+		if text == "" {
+			continue
 		}
 		ts := time.UnixMilli(createdMS).UTC()
 		bucket := ts.Truncate(15 * time.Minute)
@@ -74,16 +88,11 @@ func ImportOpenCodeLogs(ctx context.Context, store *db.Store, dbPath string) err
 		if slot.Cwd == "" {
 			slot.Cwd = cwd
 		}
-		if slot.FirstText == "" && !sessionFirstText[sessionID] {
-			desc := strings.TrimSpace(title)
-			if desc == "" || strings.HasPrefix(desc, "New session -") {
-				desc, _ = firstOpenCodeUserText(dbConn, sessionID)
-			}
-			if desc != "" {
-				slot.FirstText = normalizeDescription(desc, 80)
-				sessionFirstText[sessionID] = true
-			}
+		normalized := normalizeDescription(text, 80)
+		if slot.FirstText == "" {
+			slot.FirstText = normalized
 		}
+		slot.UserTexts = appendUniqueText(slot.UserTexts, normalized, 5)
 	}
 	if err := rows.Err(); err != nil {
 		return err
@@ -150,6 +159,42 @@ func ParseOpenCodeDB(path string) ([]OpenCodeSession, error) {
 		})
 	}
 	return sessions, rows.Err()
+}
+
+func openCodeSessionTitle(title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" || strings.HasPrefix(title, "New session -") {
+		return ""
+	}
+	return title
+}
+
+func openCodeMessageText(dbConn *sql.DB, messageID string) (string, error) {
+	rows, err := dbConn.Query(`
+		SELECT json_extract(data, '$.text')
+		FROM part
+		WHERE message_id = ?
+		  AND json_extract(data, '$.type') = 'text'
+		ORDER BY time_created ASC
+	`, messageID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	parts := make([]string, 0, 2)
+	for rows.Next() {
+		var text sql.NullString
+		if err := rows.Scan(&text); err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(text.String) != "" {
+			parts = append(parts, strings.TrimSpace(text.String))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return strings.Join(parts, "\n"), nil
 }
 
 func firstOpenCodeUserText(dbConn *sql.DB, sessionID string) (string, error) {

@@ -10,12 +10,17 @@ import (
 
 func (s *Store) UpsertActivitySlots(ctx context.Context, slots []model.ActivitySlot) error {
 	for _, slot := range slots {
-		userTextsJSON, _ := json.Marshal(slot.UserTexts)
+		userTexts := slot.UserTexts
+		if len(userTexts) == 0 {
+			userTexts = []string{}
+		}
+		userTextsJSON, _ := json.Marshal(userTexts)
 		_, err := s.db.ExecContext(ctx, `
 			INSERT INTO activity_slots (slot_time, operator, cwd, msg_count, first_text, git_branch, user_texts, token_input, token_output, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(slot_time, operator) DO UPDATE SET
 				msg_count = excluded.msg_count,
+				first_text = excluded.first_text,
 				cwd = COALESCE(activity_slots.cwd, excluded.cwd),
 				git_branch = COALESCE(excluded.git_branch, activity_slots.git_branch),
 				user_texts = excluded.user_texts,

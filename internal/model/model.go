@@ -3,6 +3,7 @@ package model
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -76,6 +77,18 @@ type ActivitySlot struct {
 	UserTexts   []string
 	TokenInput  int
 	TokenOutput int
+}
+
+func (s ActivitySlot) HasSignal() bool {
+	if strings.TrimSpace(s.FirstText) != "" {
+		return true
+	}
+	for _, text := range s.UserTexts {
+		if strings.TrimSpace(text) != "" {
+			return true
+		}
+	}
+	return s.TokenInput > 0 || s.TokenOutput > 0
 }
 
 type TimeEntry struct {

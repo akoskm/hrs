@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -97,5 +98,24 @@ func TestImportCodexLogs(t *testing.T) {
 		if slot.MsgCount == 0 {
 			t.Fatal("msg_count = 0, want > 0")
 		}
+	}
+}
+
+func TestParseCodexSlotsSkipsMetadataOnlyNoise(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "metadata-only.jsonl")
+	content := `{"timestamp":"2026-03-30T11:23:39.100Z","type":"session_meta","payload":{"cwd":"/tmp/demo"}}` + "\n" +
+		`{"timestamp":"2026-03-30T11:23:39.200Z","type":"turn_context","payload":{"cwd":"/tmp/demo"}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	slots, err := ParseCodexSlots(path)
+	if err != nil {
+		t.Fatalf("ParseCodexSlots() error = %v", err)
+	}
+	if len(slots) != 0 {
+		t.Fatalf("len(slots) = %d, want 0", len(slots))
 	}
 }

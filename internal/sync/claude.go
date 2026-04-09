@@ -53,7 +53,7 @@ type claudeMessage struct {
 	Timestamp string `json:"timestamp"`
 	Cwd       string `json:"cwd"`
 	GitBranch string `json:"gitBranch"`
-	Message *struct {
+	Message   *struct {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
 		Usage   *struct {
@@ -95,6 +95,31 @@ func ParseClaudeFile(path string) ([]model.ActivitySlot, error) {
 			return nil, fmt.Errorf("parse timestamp %s: %w", path, err)
 		}
 		hasData = true
+		if msg.Message == nil {
+			continue
+		}
+
+		tokenInput := 0
+		tokenOutput := 0
+		if msg.Message.Usage != nil {
+			tokenInput = msg.Message.Usage.InputTokens
+			tokenOutput = msg.Message.Usage.OutputTokens
+		}
+
+		normalized := ""
+		if msg.Message.Role == "user" {
+			text, err := firstUserText(msg.Message.Content)
+			if err != nil {
+				return nil, fmt.Errorf("parse content %s: %w", path, err)
+			}
+			cleaned := cleanPromptText(text)
+			if cleaned != "" {
+				normalized = normalizeDescription(cleaned, 0)
+			}
+		}
+		if normalized == "" && tokenInput == 0 && tokenOutput == 0 {
+			continue
+		}
 
 		bucket := ts.Truncate(15 * time.Minute)
 		key := slotKey{slotTime: bucket, operator: claudeSource}
@@ -114,37 +139,13 @@ func ParseClaudeFile(path string) ([]model.ActivitySlot, error) {
 		if msg.GitBranch != "" && slot.GitBranch == "" {
 			slot.GitBranch = msg.GitBranch
 		}
-		if msg.Message != nil {
-			if msg.Message.Usage != nil {
-				slot.TokenInput += msg.Message.Usage.InputTokens
-				slot.TokenOutput += msg.Message.Usage.OutputTokens
+		slot.TokenInput += tokenInput
+		slot.TokenOutput += tokenOutput
+		if normalized != "" {
+			if slot.FirstText == "" {
+				slot.FirstText = normalized
 			}
-			if msg.Message.Role == "user" {
-				text, err := firstUserText(msg.Message.Content)
-				if err != nil {
-					return nil, fmt.Errorf("parse content %s: %w", path, err)
-				}
-				cleaned := cleanPromptText(text)
-				if cleaned != "" {
-					normalized := normalizeDescription(cleaned, 0)
-					if slot.FirstText == "" {
-						slot.FirstText = normalized
-					}
-					if len(slot.UserTexts) < 5 {
-						// deduplicate
-						dup := false
-						for _, existing := range slot.UserTexts {
-							if existing == normalized {
-								dup = true
-								break
-							}
-						}
-						if !dup {
-							slot.UserTexts = append(slot.UserTexts, normalized)
-						}
-					}
-				}
-			}
+			slot.UserTexts = appendUniqueText(slot.UserTexts, normalized, 5)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -292,6 +293,22 @@ func normalizeDescription(text string, limit int) string {
 		return text[:limit]
 	}
 	return strings.TrimSpace(text[:limit-3]) + "..."
+}
+
+func appendUniqueText(items []string, text string, limit int) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return items
+	}
+	for _, existing := range items {
+		if existing == text {
+			return items
+		}
+	}
+	if limit > 0 && len(items) >= limit {
+		return items
+	}
+	return append(items, text)
 }
 
 var noisePatterns = []string{

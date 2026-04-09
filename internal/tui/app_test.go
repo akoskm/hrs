@@ -2705,6 +2705,50 @@ func TestDayViewInspectorShowsMarkedRangeActivity(t *testing.T) {
 	}
 }
 
+func TestDayViewFiltersLowSignalActivitySlots(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	day := time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local)
+	if err := store.UpsertActivitySlots(ctx, []model.ActivitySlot{
+		{SlotTime: time.Date(2026, 4, 7, 8, 0, 0, 0, time.Local).UTC(), Operator: "hidden-agent", MsgCount: 5},
+		{SlotTime: time.Date(2026, 4, 7, 8, 15, 0, 0, time.Local).UTC(), Operator: "visible-agent", MsgCount: 7, FirstText: "real work", UserTexts: []string{"real work"}},
+	}); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(day)
+	m.dayFocusKind = "slot"
+	m.daySlotStart = time.Date(2026, 4, 7, 8, 15, 0, 0, time.Local)
+	m.daySlotSpan = 15 * time.Minute
+	m.slotMarkStart = time.Date(2026, 4, 7, 8, 0, 0, 0, time.Local)
+	m.slotMarkSpan = 15 * time.Minute
+	m.loadActivitySlots()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 30})
+	app := updated.(AppModel)
+	view := stripANSI(app.View())
+
+	checks := []string{
+		"1 active slots",
+		"Agent activity: 1 slot",
+		"real work",
+	}
+	for _, want := range checks {
+		if !strings.Contains(view, want) {
+			t.Fatalf("day view missing %q, got:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "hidden-agent") {
+		t.Fatalf("day view should hide low-signal slot, got:\n%s", view)
+	}
+}
+
 func TestRenderInspectorBodyClipsToViewportHeight(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
