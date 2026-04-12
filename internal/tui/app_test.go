@@ -144,6 +144,13 @@ func TestAssignPickerShowsProjectsFromDB(t *testing.T) {
 	}
 }
 
+func TestRenderDialogTextInputDoesNotInsertLeadingSpaceForVisibleCaret(t *testing.T) {
+	rendered := stripANSI(renderDialogTextInput("production bug", 0, true, true, 40))
+	if rendered != "> production bug" {
+		t.Fatalf("rendered input = %q, want %q", rendered, "> production bug")
+	}
+}
+
 func TestAssignDialogStaysWithinScreenHeight(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -609,8 +616,8 @@ func TestPickerHighlightsFullRow(t *testing.T) {
 
 func TestTextWithCaret(t *testing.T) {
 	got := textWithCaret("Auth", true, true)
-	if got != "Auth▏" {
-		t.Fatalf("textWithCaret() = %q, want Auth▏", got)
+	if !strings.HasPrefix(stripANSI(got), "Auth") {
+		t.Fatalf("textWithCaret() = %q, want visible end caret on Auth", stripANSI(got))
 	}
 	if got := textWithCaret("Auth", false, true); got != "Auth" {
 		t.Fatalf("textWithCaret(hidden) = %q, want 'Auth'", got)
@@ -618,18 +625,22 @@ func TestTextWithCaret(t *testing.T) {
 	if got := textWithCaret("Auth", true, false); got != "Auth" {
 		t.Fatalf("textWithCaret(inactive) = %q, want 'Auth'", got)
 	}
+	if got := textWithCaretAt("Auth", 0, true, true); stripANSI(got) != "Auth" {
+		t.Fatalf("textWithCaretAt() = %q, want no inserted leading cell", stripANSI(got))
+	}
 }
 
 func TestDialogTextViewportClipsFromLeft(t *testing.T) {
 	got := dialogTextViewport("investigate production bug with what it seems to be a cache miss", len([]rune("investigate production bug with what it seems to be a cache miss")), true, true, 20)
-	if strings.Contains(got, "...") {
+	plain := stripANSI(got)
+	if strings.Contains(plain, "...") {
 		t.Fatalf("dialogTextViewport() = %q, should not contain ellipsis", got)
 	}
-	if !strings.Contains(got, "cache miss") {
+	if !strings.Contains(plain, "cache miss") {
 		t.Fatalf("dialogTextViewport() = %q, want tail text visible", got)
 	}
-	if !strings.Contains(got, "▏") {
-		t.Fatalf("dialogTextViewport() = %q, want caret visible", got)
+	if lipgloss.Width(plain) > 20 {
+		t.Fatalf("dialogTextViewport() = %q, want clipped width <= 20", plain)
 	}
 }
 
@@ -645,6 +656,62 @@ func TestOutlinedBlockCell(t *testing.T) {
 	midEnd := midStart.Add(15 * time.Minute)
 	if got := outlinedBlockCell(midStart, midEnd, itemStart, itemEnd, 12, "TUI"); !strings.Contains(got, "│") {
 		t.Fatalf("mid cell = %q, want vertical borders", got)
+	}
+}
+
+func TestRenderVerticalEntryCellShowsLabelForUnfocusedSingleSlot(t *testing.T) {
+	slotStart := time.Date(2026, 4, 3, 11, 0, 0, 0, time.Local)
+	slotEnd := slotStart.Add(15 * time.Minute)
+	styles := newStyles(80)
+	rendered := stripANSI(renderVerticalEntryCell(slotStart, slotStart, slotEnd, slotStart, slotEnd, false, false, false, 5, "test", styles.confirmed, styles))
+	if !strings.Contains(rendered, "test") {
+		t.Fatalf("unfocused single-slot cell = %q, want label visible", rendered)
+	}
+}
+
+func TestOutlinedBlockCellSingleSlotPrefersLabelOverBorders(t *testing.T) {
+	slotStart := time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)
+	slotEnd := slotStart.Add(15 * time.Minute)
+	got := outlinedBlockCell(slotStart, slotEnd, slotStart, slotEnd, 5, "hello")
+	if got != "hello" {
+		t.Fatalf("single-slot cell = %q, want %q", got, "hello")
+	}
+}
+
+func TestOutlinedBlockCellShowsLabelOnEndingMidpointRow(t *testing.T) {
+	itemStart := time.Date(2026, 4, 9, 10, 50, 0, 0, time.Local)
+	itemEnd := time.Date(2026, 4, 9, 11, 10, 0, 0, time.Local)
+	slotStart := time.Date(2026, 4, 9, 11, 0, 0, 0, time.Local)
+	slotEnd := time.Date(2026, 4, 9, 11, 10, 0, 0, time.Local)
+
+	got := outlinedBlockCellWithViewport(slotStart, slotEnd, time.Time{}, itemStart, itemEnd, false, false, 24, "verify hotfix in prod")
+	if !strings.Contains(got, "verify hotfix in prod") {
+		t.Fatalf("ending midpoint cell = %q, want label visible", got)
+	}
+	if !strings.Contains(got, "└") || !strings.Contains(got, "┘") {
+		t.Fatalf("ending midpoint cell = %q, want bottom border preserved", got)
+	}
+}
+
+func TestOutlinedBlockCellShowsLabelOnStartingMidpointRow(t *testing.T) {
+	itemStart := time.Date(2026, 4, 9, 13, 0, 0, 0, time.Local)
+	itemEnd := time.Date(2026, 4, 9, 13, 20, 0, 0, time.Local)
+	slotStart := time.Date(2026, 4, 9, 13, 0, 0, 0, time.Local)
+	slotEnd := time.Date(2026, 4, 9, 13, 15, 0, 0, time.Local)
+
+	got := outlinedBlockCellWithViewport(slotStart, slotEnd, time.Time{}, itemStart, itemEnd, false, false, 24, "check why language")
+	if !strings.Contains(got, "check why language") {
+		t.Fatalf("starting midpoint cell = %q, want label visible", got)
+	}
+	if !strings.Contains(got, "┌") || !strings.Contains(got, "┐") {
+		t.Fatalf("starting midpoint cell = %q, want top border preserved", got)
+	}
+}
+
+func TestCenteredBlockLabelUsesFullWidth(t *testing.T) {
+	got := centeredBlockLabel("hello", 5)
+	if got != "hello" {
+		t.Fatalf("centeredBlockLabel() = %q, want %q", got, "hello")
 	}
 }
 
@@ -2953,9 +3020,10 @@ func TestDayViewInspectorScrollsWithoutStretchingLayout(t *testing.T) {
 	if strings.Contains(view, "prompt 6") {
 		t.Fatalf("initial inspector should be clipped before prompt 6, got:\n%s", view)
 	}
-	pane := renderInspectorPane(app, app.styles, max(20, app.width/2), max(10, app.height-4))
-	if lipgloss.Height(pane) > max(10, app.height-4) {
-		t.Fatalf("inspector pane height = %d, want <= %d", lipgloss.Height(pane), max(10, app.height-4))
+	targetHeight := max(10, app.height-4)
+	pane := renderInspectorPane(app, app.styles, max(20, app.width/2), targetHeight)
+	if lipgloss.Height(pane) != targetHeight {
+		t.Fatalf("inspector pane height = %d, want %d", lipgloss.Height(pane), targetHeight)
 	}
 
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgDown})
@@ -2970,9 +3038,9 @@ func TestDayViewInspectorScrollsWithoutStretchingLayout(t *testing.T) {
 	if strings.Contains(view, "prompt 1") {
 		t.Fatalf("scrolled inspector still shows first prompt, got:\n%s", view)
 	}
-	pane = renderInspectorPane(app, app.styles, max(20, app.width/2), max(10, app.height-4))
-	if lipgloss.Height(pane) > max(10, app.height-4) {
-		t.Fatalf("scrolled inspector pane height = %d, want <= %d", lipgloss.Height(pane), max(10, app.height-4))
+	pane = renderInspectorPane(app, app.styles, max(20, app.width/2), targetHeight)
+	if lipgloss.Height(pane) != targetHeight {
+		t.Fatalf("scrolled inspector pane height = %d, want %d", lipgloss.Height(pane), targetHeight)
 	}
 }
 

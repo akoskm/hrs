@@ -2380,7 +2380,7 @@ func renderInspectorPane(m AppModel, styles tuiStyles, width int, height int) st
 	tabs := renderInspectorTabs(m, styles)
 	body := renderInspectorBody(m, innerWidth, inspectorBodyHeight(height))
 	content := tabs + "\n" + body
-	return styles.inspectorBox.Width(max(20, width-2)).Render(content)
+	return styles.inspectorBox.Width(max(20, width-2)).Height(max(1, height-2)).Render(content)
 }
 
 func inspectorBodyHeight(height int) int {
@@ -2881,6 +2881,9 @@ func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart,
 	fill := strings.Repeat("─", innerWidth)
 	space := strings.Repeat(" ", innerWidth)
 	if starts && ends {
+		if lipgloss.Width(label) > innerWidth && lipgloss.Width(label) <= width {
+			return compactBlockLabel(label, width)
+		}
 		return "┌" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "┐"
 	}
 	if topAnchorRow && starts {
@@ -2899,9 +2902,18 @@ func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart,
 		return "│" + space + "│"
 	}
 	if starts {
+		if containsMid && !anchoredTop {
+			return borderLabelRow('┌', '┐', label, width)
+		}
 		return "┌" + fill + "┐"
 	}
 	if ends {
+		if containsMid && !anchoredTop {
+			if touchesBelow {
+				return borderLabelRow('├', '┤', label, width)
+			}
+			return borderLabelRow('└', '┘', label, width)
+		}
 		if touchesBelow {
 			return "├" + fill + "┤"
 		}
@@ -2911,6 +2923,16 @@ func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart,
 		return "│" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "│"
 	}
 	return "│" + space + "│"
+}
+
+func borderLabelRow(left, right rune, label string, width int) string {
+	if width <= 1 {
+		return string(left)
+	}
+	innerWidth := max(0, width-2)
+	trimmed := truncateForWidth(label, innerWidth)
+	fill := strings.Repeat("─", max(0, innerWidth-lipgloss.Width(trimmed)))
+	return string(left) + trimmed + fill + string(right)
 }
 
 func entryAnchoredAtViewportTop(viewportStart, itemStart time.Time) bool {
@@ -2928,15 +2950,25 @@ func entryClippedAtViewportTop(viewportStart, slotStart, itemStart time.Time) bo
 }
 
 func centeredBlockLabel(label string, width int) string {
-	if width <= 1 {
+	if width <= 0 {
 		return ""
 	}
-	trimmed := truncateForWidth(label, width-2)
+	trimmed := truncateForWidth(label, width)
 	if strings.TrimSpace(trimmed) == "" {
 		return strings.Repeat(" ", width)
 	}
-	text := " " + trimmed
-	return padRight(text, width)
+	return padRight(trimmed, width)
+}
+
+func compactBlockLabel(label string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	trimmed := truncateForWidth(label, width)
+	if strings.TrimSpace(trimmed) == "" {
+		return strings.Repeat(" ", width)
+	}
+	return padRight(trimmed, width)
 }
 
 func rangesOverlap(aStart, aEnd, bStart, bEnd time.Time) bool {
@@ -3624,7 +3656,7 @@ func dialogTextViewport(text string, cursor int, visible, active bool, width int
 	value := []rune(text)
 	pos := clampTextCursor(text, cursor)
 	caretWidth := 0
-	if active && visible {
+	if active && visible && pos == len(value) {
 		caretWidth = 1
 	}
 	if len(value)+caretWidth <= width {
@@ -3653,7 +3685,11 @@ func textWithCaretAt(text string, cursor int, visible, active bool) string {
 	if !visible {
 		return text
 	}
-	return string(value[:pos]) + "▏" + string(value[pos:])
+	caretStyle := lipgloss.NewStyle().Reverse(true)
+	if pos >= len(value) {
+		return text + "▏"
+	}
+	return string(value[:pos]) + caretStyle.Render(string(value[pos])) + string(value[pos+1:])
 }
 
 func projectDialogWidth(width int) int {
