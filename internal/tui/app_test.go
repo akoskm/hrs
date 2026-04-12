@@ -2799,7 +2799,7 @@ func TestDayViewRendersTimelineWithNoEntries(t *testing.T) {
 		t.Fatalf("day view missing status bar, got:\n%s", view)
 	}
 	if got := lipgloss.Height(app.View()); got != app.height {
-		t.Fatalf("day view height = %d, want %d", got, app.height)
+		t.Fatalf("day view height = %d, want %d\n%s", got, app.height, stripANSI(app.View()))
 	}
 }
 
@@ -3257,8 +3257,6 @@ func TestDayViewFullUIElements(t *testing.T) {
 	view := stripANSI(app.View())
 
 	checks := map[string]string{
-		"header":          "hrs",
-		"timeline title":  "Timeline",
 		"date header":     "2026-04-03",
 		"time column":     "time",
 		"activity column": "activity",
@@ -3275,6 +3273,12 @@ func TestDayViewFullUIElements(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Errorf("missing %s (%q) in view:\n%s", name, want, view)
 		}
+	}
+	if strings.Contains(view, "hrs") {
+		t.Errorf("unexpected day view header in view:\n%s", view)
+	}
+	if strings.Contains(view, "Timeline") {
+		t.Errorf("unexpected day view title in view:\n%s", view)
 	}
 }
 

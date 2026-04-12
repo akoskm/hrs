@@ -501,23 +501,23 @@ func (m AppModel) View() string {
 		styles = newStyles(m.width)
 	}
 	var sections []string
-	sections = append(sections, styles.header.Render(renderHeader(m.entries, m.width)))
+	showDayLayout := m.mode == modeTimeline && m.timelineView == timelineViewDay
+	if !showDayLayout {
+		sections = append(sections, styles.header.Render(renderHeader(m.entries, m.width)))
+	}
 	if m.err != nil {
 		sections = append(sections, styles.error.Render("error: "+m.err.Error()))
 	}
 	var b strings.Builder
-	b.WriteString(styles.title.Render("Timeline") + "\n")
 	if m.timelineView == timelineViewDay {
-		timelineModel := m
 		inspectorWidth := max(20, m.width/2)
-		timelineModel.width = max(40, m.width-inspectorWidth-2)
-		if m.mode == modeTimeline {
-			timelineModel.height = dayPaneHeight(m.height)
-		}
-		b.WriteString(renderDayTimeline(timelineModel, styles))
+		timelineWidth := max(40, m.width-inspectorWidth-2)
+		b.WriteString(renderDayTimelinePane(m, styles, timelineWidth, dayPaneHeight(m.height)))
 	} else if len(m.entries) == 0 {
+		b.WriteString(styles.title.Render("Timeline") + "\n")
 		b.WriteString(styles.muted.Render("no entries") + "\n")
 	} else {
+		b.WriteString(styles.title.Render("Timeline") + "\n")
 		cols := timelineColumns(m.width)
 		header := renderTableHeader(cols, styles)
 		b.WriteString(header + "\n")
@@ -550,11 +550,10 @@ func (m AppModel) View() string {
 		}
 	}
 	body := b.String()
-	if m.mode == modeTimeline && m.timelineView == timelineViewDay {
+	if showDayLayout {
 		inspectorWidth := dayInspectorWidth(m.width)
 		inspector := renderInspectorPane(m, styles, inspectorWidth, dayPaneHeight(m.height))
-		scrollbar := renderDayScrollbar(m, styles)
-		body = lipgloss.JoinHorizontal(lipgloss.Top, body, scrollbar, inspector)
+		body = lipgloss.JoinHorizontal(lipgloss.Top, body, inspector)
 	}
 	sections = append(sections, body)
 	if m.mode == modeSearch {
@@ -2343,7 +2342,7 @@ func renderDayTimeline(m AppModel, styles tuiStyles) string {
 	}
 	subheaderParts = append(subheaderParts, fmt.Sprintf("%s-%s", clock(window.start), clock(window.end)))
 	subheader := strings.Join(subheaderParts, " | ")
-	b.WriteString(styles.muted.Render(subheader) + "\n")
+	b.WriteString(styles.muted.Render(truncateForWidth(subheader, timelineWidth(m.width))) + "\n")
 
 	// header
 	b.WriteString(padRight("time", 5) + " " + padRight("activity", activityColWidth) + "\n")
@@ -2360,18 +2359,18 @@ func renderDayTimeline(m AppModel, styles tuiStyles) string {
 	if m.dayFocusKind == "slot" && !m.daySlotStart.IsZero() {
 		if !m.slotMarkStart.IsZero() {
 			rng := m.selectedCreateRange()
-			b.WriteString(styles.muted.Render(fmt.Sprintf("%s | marking %s-%s | up/down extend | enter create | esc cancel", selectedWeekday, clock(rng.start), clock(rng.end))))
+			b.WriteString(styles.muted.Render(truncateForWidth(fmt.Sprintf("%s | marking %s-%s | up/down extend | enter create | esc cancel", selectedWeekday, clock(rng.start), clock(rng.end)), timelineWidth(m.width))))
 		} else {
-			b.WriteString(styles.muted.Render(fmt.Sprintf("%s | slot %s-%s | space mark range | enter create or edit overlap", selectedWeekday, clock(m.daySlotStart), clock(m.daySlotStart.Add(m.daySlotSpan)))))
+			b.WriteString(styles.muted.Render(truncateForWidth(fmt.Sprintf("%s | slot %s-%s | space mark range | enter create or edit overlap", selectedWeekday, clock(m.daySlotStart), clock(m.daySlotStart.Add(m.daySlotSpan))), timelineWidth(m.width))))
 		}
 		return b.String()
 	}
 	if gap := m.focusedGap(); gap != nil {
-		b.WriteString(styles.muted.Render(fmt.Sprintf("%s | focus gap %s-%s | %s | enter add entry", selectedWeekday, clock(gap.start), clock(gap.end), formatGapDuration(*gap))))
+		b.WriteString(styles.muted.Render(truncateForWidth(fmt.Sprintf("%s | focus gap %s-%s | %s | enter add entry", selectedWeekday, clock(gap.start), clock(gap.end), formatGapDuration(*gap)), timelineWidth(m.width))))
 		return b.String()
 	}
 	if len(dayEntries) == 0 {
-		b.WriteString(styles.muted.Render(fmt.Sprintf("%s | focus empty day | left/right change day | t today", selectedWeekday)))
+		b.WriteString(styles.muted.Render(truncateForWidth(fmt.Sprintf("%s | focus empty day | left/right change day | t today", selectedWeekday), timelineWidth(m.width))))
 		return b.String()
 	}
 	selected := m.entries[m.cursor]
@@ -2380,7 +2379,7 @@ func renderDayTimeline(m AppModel, styles tuiStyles) string {
 		project = selected.ProjectName
 	}
 	label := timelineBlockLabel(selected)
-	b.WriteString(styles.muted.Render(fmt.Sprintf("%s | focus %s | %s | %s | %s", selectedWeekday, formatRange(selected.StartedAt, selected.EndedAt), selected.Operator, truncateForWidth(label, 32), truncateForWidth(project, 20))))
+	b.WriteString(styles.muted.Render(truncateForWidth(fmt.Sprintf("%s | focus %s | %s | %s | %s", selectedWeekday, formatRange(selected.StartedAt, selected.EndedAt), selected.Operator, truncateForWidth(label, 32), truncateForWidth(project, 20)), timelineWidth(m.width))))
 	return b.String()
 }
 
@@ -2395,7 +2394,18 @@ func dayPaneHeight(height int) int {
 	if height <= 0 {
 		return 12
 	}
-	return max(12, height-2)
+	return max(12, height-1)
+}
+
+func renderDayTimelinePane(m AppModel, styles tuiStyles, width int, height int) string {
+	innerWidth := max(16, width-6)
+	timelineModel := m
+	timelineModel.width = innerWidth
+	timelineModel.height = max(10, height-1)
+	body := renderDayTimeline(timelineModel, styles)
+	scrollbar := renderDayScrollbar(timelineModel, styles)
+	content := lipgloss.JoinHorizontal(lipgloss.Top, body, scrollbar)
+	return styles.inspectorBox.Width(max(20, width-2)).Height(max(1, height-2)).Render(content)
 }
 
 func renderInspectorPane(m AppModel, styles tuiStyles, width int, height int) string {
