@@ -151,6 +151,85 @@ func TestRenderDialogTextInputDoesNotInsertLeadingSpaceForVisibleCaret(t *testin
 	}
 }
 
+func TestTextWithCaretAtEndDoesNotAddExtraCell(t *testing.T) {
+	rendered := stripANSI(textWithCaret("Auth", true, true))
+	if rendered != "Auth" {
+		t.Fatalf("textWithCaret(end) = %q, want %q", rendered, "Auth")
+	}
+}
+
+func TestRenderDialogTextInputLongTextDoesNotShiftOnBlinkAtEnd(t *testing.T) {
+	text := "investigate production bug with cache miss"
+	hidden := stripANSI(renderDialogTextInput(text, len([]rune(text)), false, true, 20))
+	visible := stripANSI(renderDialogTextInput(text, len([]rune(text)), true, true, 20))
+	if hidden != visible {
+		t.Fatalf("long input shifts on blink: hidden=%q visible=%q", hidden, visible)
+	}
+}
+
+func TestEntryEditDialogLongDescriptionCanScrollBackToBeginning(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", HourlyRate: 100, Currency: "USD"}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	desc := "invetigate production bug with what it seems to be a deduplication"
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: desc, StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	app.width = 50
+	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	for i := 0; i < len([]rune(desc)); i++ {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyLeft})
+		app = updated.(AppModel)
+	}
+	view := stripANSI(renderEntryEditDialog(app, newStyles(app.width), ""))
+	if !strings.Contains(view, "invetigate") {
+		t.Fatalf("dialog view missing beginning after scrolling left, got:\n%s", view)
+	}
+}
+
+func TestEntryEditDialogHomeEndMoveCursorToBounds(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", HourlyRate: 100, Currency: "USD"}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	desc := "invetigate production bug with what it seems to be a deduplication"
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: desc, StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyHome})
+	app = updated.(AppModel)
+	if app.entryInputCursor != 0 {
+		t.Fatalf("entryInputCursor after home = %d, want 0", app.entryInputCursor)
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	app = updated.(AppModel)
+	if app.entryInputCursor != len([]rune(desc)) {
+		t.Fatalf("entryInputCursor after end = %d, want %d", app.entryInputCursor, len([]rune(desc)))
+	}
+}
+
 func TestAssignDialogStaysWithinScreenHeight(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)

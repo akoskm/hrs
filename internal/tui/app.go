@@ -1627,6 +1627,14 @@ func (m *AppModel) handleEntryEditKey(msg tea.KeyMsg) tea.Cmd {
 		if !m.entryProjectOnly && m.entryInputField == "description" {
 			m.entryInputCursor = max(0, m.entryInputCursor-1)
 		}
+	case "home":
+		if !m.entryProjectOnly && m.entryInputField == "description" {
+			m.entryInputCursor = 0
+		}
+	case "end":
+		if !m.entryProjectOnly && m.entryInputField == "description" {
+			m.entryInputCursor = len([]rune(m.entryInput))
+		}
 	case "right":
 		if !m.entryProjectOnly && m.entryInputField == "description" {
 			m.entryInputCursor = min(len([]rune(m.entryInput)), m.entryInputCursor+1)
@@ -1727,6 +1735,14 @@ func (m *AppModel) handleGapEntryKey(msg tea.KeyMsg) tea.Cmd {
 	case "left":
 		if m.gapInputField == "description" {
 			m.gapInputCursor = max(0, m.gapInputCursor-1)
+		}
+	case "home":
+		if m.gapInputField == "description" {
+			m.gapInputCursor = 0
+		}
+	case "end":
+		if m.gapInputField == "description" {
+			m.gapInputCursor = len([]rune(m.gapInput))
 		}
 	case "right":
 		if m.gapInputField == "description" {
@@ -3442,7 +3458,7 @@ func renderGapEntryDialog(m AppModel, styles tuiStyles, background string) strin
 		inputStyle = lipgloss.NewStyle().Bold(true)
 	}
 	content.WriteString(styles.muted.Render("Description") + "\n")
-	content.WriteString(inputStyle.Render(renderDialogTextInput(m.gapInput, m.gapInputCursor, m.caretVisible, m.gapInputField == "description", innerWidth)))
+	content.WriteString(renderDialogTextInputStyled(m.gapInput, m.gapInputCursor, m.caretVisible, m.gapInputField == "description", innerWidth, inputStyle))
 	content.WriteString("\n\n")
 	content.WriteString(styles.muted.Render("Project") + "\n")
 	content.WriteString(renderPickerLine("Unassign", 0, m.gapProjectCursor, styles, innerWidth) + "\n")
@@ -3485,7 +3501,7 @@ func renderEntryEditDialog(m AppModel, styles tuiStyles, background string) stri
 			inputStyle = lipgloss.NewStyle().Bold(true)
 		}
 		content.WriteString(styles.muted.Render("Description") + "\n")
-		content.WriteString(inputStyle.Render(renderDialogTextInput(m.entryInput, m.entryInputCursor, m.caretVisible, m.entryInputField == "description", innerWidth)))
+		content.WriteString(renderDialogTextInputStyled(m.entryInput, m.entryInputCursor, m.caretVisible, m.entryInputField == "description", innerWidth, inputStyle))
 		content.WriteString("\n\n")
 	}
 	content.WriteString(styles.muted.Render("Project") + "\n")
@@ -3641,39 +3657,60 @@ func textWithCaret(text string, visible, active bool) string {
 }
 
 func renderDialogTextInput(text string, cursor int, visible, active bool, width int) string {
+	return renderDialogTextInputStyled(text, cursor, visible, active, width, lipgloss.NewStyle())
+}
+
+func renderDialogTextInputStyled(text string, cursor int, visible, active bool, width int, style lipgloss.Style) string {
 	if width <= 0 {
 		return ""
 	}
 	prefix := []rune("> ")
 	available := max(0, width-len(prefix))
-	return string(prefix) + dialogTextViewport(text, cursor, visible, active, available)
+	segment, relCursor := dialogTextViewportSegment(text, cursor, available)
+	if !active || !visible {
+		return style.Render(string(prefix) + segment)
+	}
+	caretStyle := style.Copy().Reverse(true)
+	value := []rune(segment)
+	if len(value) == 0 {
+		return style.Render(string(prefix)) + caretStyle.Render("▏")
+	}
+	if relCursor >= len(value) {
+		return style.Render(string(prefix)+string(value[:len(value)-1])) + caretStyle.Render(string(value[len(value)-1]))
+	}
+	return style.Render(string(prefix)+string(value[:relCursor])) + caretStyle.Render(string(value[relCursor])) + style.Render(string(value[relCursor+1:]))
 }
 
 func dialogTextViewport(text string, cursor int, visible, active bool, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	value := []rune(text)
-	pos := clampTextCursor(text, cursor)
-	caretWidth := 0
-	if active && visible && pos == len(value) {
-		caretWidth = 1
-	}
-	if len(value)+caretWidth <= width {
-		return textWithCaretAt(text, pos, visible, active)
-	}
-	available := max(0, width-caretWidth)
-	start := max(0, pos-available)
-	end := min(len(value), start+available)
-	for end < len(value) && pos < start+available {
-		start++
-		end++
-	}
-	segment := string(value[start:end])
+	segment, relCursor := dialogTextViewportSegment(text, cursor, width)
 	if !active || !visible {
 		return segment
 	}
-	return textWithCaretAt(segment, pos-start, true, true)
+	return textWithCaretAt(segment, relCursor, true, true)
+}
+
+func dialogTextViewportSegment(text string, cursor int, width int) (string, int) {
+	if width <= 0 {
+		return "", 0
+	}
+	value := []rune(text)
+	pos := clampTextCursor(text, cursor)
+	if len(value) <= width {
+		return text, pos
+	}
+	available := width
+	start := 0
+	if pos >= available {
+		start = pos - available + 1
+	}
+	if start+available > len(value) {
+		start = max(0, len(value)-available)
+	}
+	end := min(len(value), start+available)
+	return string(value[start:end]), pos - start
 }
 
 func textWithCaretAt(text string, cursor int, visible, active bool) string {
@@ -3685,9 +3722,12 @@ func textWithCaretAt(text string, cursor int, visible, active bool) string {
 	if !visible {
 		return text
 	}
-	caretStyle := lipgloss.NewStyle().Reverse(true)
+	caretStyle := lipgloss.NewStyle().Reverse(true).Bold(true)
 	if pos >= len(value) {
-		return text + "▏"
+		if len(value) == 0 {
+			return "▏"
+		}
+		return string(value[:len(value)-1]) + caretStyle.Render(string(value[len(value)-1]))
 	}
 	return string(value[:pos]) + caretStyle.Render(string(value[pos])) + string(value[pos+1:])
 }
