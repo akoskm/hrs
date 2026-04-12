@@ -612,11 +612,24 @@ func TestTextWithCaret(t *testing.T) {
 	if got != "Auth▏" {
 		t.Fatalf("textWithCaret() = %q, want Auth▏", got)
 	}
-	if got := textWithCaret("Auth", false, true); got != "Auth " {
-		t.Fatalf("textWithCaret(hidden) = %q, want 'Auth '", got)
+	if got := textWithCaret("Auth", false, true); got != "Auth" {
+		t.Fatalf("textWithCaret(hidden) = %q, want 'Auth'", got)
 	}
 	if got := textWithCaret("Auth", true, false); got != "Auth" {
 		t.Fatalf("textWithCaret(inactive) = %q, want 'Auth'", got)
+	}
+}
+
+func TestDialogTextViewportClipsFromLeft(t *testing.T) {
+	got := dialogTextViewport("investigate production bug with what it seems to be a cache miss", len([]rune("investigate production bug with what it seems to be a cache miss")), true, true, 20)
+	if strings.Contains(got, "...") {
+		t.Fatalf("dialogTextViewport() = %q, should not contain ellipsis", got)
+	}
+	if !strings.Contains(got, "cache miss") {
+		t.Fatalf("dialogTextViewport() = %q, want tail text visible", got)
+	}
+	if !strings.Contains(got, "▏") {
+		t.Fatalf("dialogTextViewport() = %q, want caret visible", got)
 	}
 }
 
@@ -1642,6 +1655,50 @@ func TestDeleteWordInEntryEditDialog(t *testing.T) {
 	}
 }
 
+func TestWordNavigationInEntryEditDialog(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", HourlyRate: 100, Currency: "USD"}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "Hello brave world", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}, Alt: true})
+	app = updated.(AppModel)
+	if app.entryInputCursor != len([]rune("Hello brave ")) {
+		t.Fatalf("entryInputCursor = %d, want %d", app.entryInputCursor, len([]rune("Hello brave ")))
+	}
+	for _, r := range "new " {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = updated.(AppModel)
+	}
+	if app.entryInput != "Hello brave new world" {
+		t.Fatalf("entryInput = %q, want %q", app.entryInput, "Hello brave new world")
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}, Alt: true})
+	app = updated.(AppModel)
+	if app.entryInputCursor != len([]rune("Hello brave new world")) {
+		t.Fatalf("entryInputCursor = %d, want end", app.entryInputCursor)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'!'}})
+	app = updated.(AppModel)
+	if app.entryInput != "Hello brave new world!" {
+		t.Fatalf("entryInput = %q, want %q", app.entryInput, "Hello brave new world!")
+	}
+}
+
 func TestBackspaceAndClearInGapDialog(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -1759,6 +1816,43 @@ func TestDeleteWordInGapDialog(t *testing.T) {
 	}
 }
 
+func TestWordNavigationInGapDialog(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	today := dayStart(time.Now())
+	app.timelineView = timelineViewDay
+	app.dayDate = today
+	app.daySlotSpan = 15 * time.Minute
+	app.daySlotStart = time.Date(today.Year(), today.Month(), today.Day(), 9, 0, 0, 0, time.Local)
+	app.dayFocusKind = "slot"
+
+	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	for _, r := range "Alpha beta gamma" {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = updated.(AppModel)
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyLeft, Alt: true})
+	app = updated.(AppModel)
+	if app.gapInputCursor != len([]rune("Alpha beta ")) {
+		t.Fatalf("gapInputCursor = %d, want %d", app.gapInputCursor, len([]rune("Alpha beta ")))
+	}
+	for _, r := range "new " {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = updated.(AppModel)
+	}
+	if app.gapInput != "Alpha beta new gamma" {
+		t.Fatalf("gapInput = %q, want %q", app.gapInput, "Alpha beta new gamma")
+	}
+}
+
 func TestActionInspectorLines(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -1775,12 +1869,18 @@ func TestActionInspectorLines(t *testing.T) {
 	if len(lines) == 0 || !strings.Contains(lines[0], "create entry") {
 		t.Fatalf("slot action lines = %v, want create entry hint", lines)
 	}
+	if !strings.Contains(lines[0], "Enter/c") {
+		t.Fatalf("slot action lines = %v, want Enter/c hint", lines)
+	}
 
 	// Gap mode
 	app.dayFocusKind = "gap"
 	lines = actionInspectorLines(app)
 	if len(lines) == 0 || !strings.Contains(lines[0], "manual entry") {
 		t.Fatalf("gap action lines = %v, want manual entry hint", lines)
+	}
+	if !strings.Contains(lines[0], "Enter/c") {
+		t.Fatalf("gap action lines = %v, want Enter/c hint", lines)
 	}
 
 	// Entry mode
@@ -1801,6 +1901,29 @@ func TestActionInspectorLines(t *testing.T) {
 	}
 	if !hasAssign {
 		t.Fatalf("entry action lines with selection = %v, want assign hint", lines)
+	}
+}
+
+func TestCOpensGapEntryDialogFromDaySlot(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	today := dayStart(time.Now())
+	app.timelineView = timelineViewDay
+	app.dayDate = today
+	app.daySlotSpan = 15 * time.Minute
+	app.daySlotStart = time.Date(today.Year(), today.Month(), today.Day(), 9, 0, 0, 0, time.Local)
+	app.dayFocusKind = "slot"
+
+	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	app = updated.(AppModel)
+	if app.mode != modeGapEntry {
+		t.Fatalf("mode = %q, want gap-entry", app.mode)
 	}
 }
 

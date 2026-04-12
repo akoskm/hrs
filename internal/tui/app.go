@@ -66,10 +66,12 @@ type AppModel struct {
 	gapStartInput      string
 	gapEndInput        string
 	gapInputField      string
+	gapInputCursor     int
 	entryInput         string
 	entryStartInput    string
 	entryEndInput      string
 	entryInputField    string
+	entryInputCursor   int
 	entryProjectOnly   bool
 	dayFocusKind       string
 	dayGapFocus        int
@@ -387,7 +389,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cursorBlinkCmd()
 			}
 			return m, nil
-		case "a":
+		case "a", "c":
 			if m.timelineView == timelineViewDay && (m.dayFocusKind == "gap" || m.dayFocusKind == "slot") {
 				m.openGapEntryDialog()
 				return m, cursorBlinkCmd()
@@ -1311,10 +1313,74 @@ func gapEntryFieldIsText(field string) bool {
 	return field == "description" || field == "start" || field == "end"
 }
 
+func clampTextCursor(text string, cursor int) int {
+	return max(0, min(cursor, len([]rune(text))))
+}
+
+func insertTextAtCursor(text string, cursor int, insert string) (string, int) {
+	value := []rune(text)
+	pos := clampTextCursor(text, cursor)
+	inserted := []rune(insert)
+	updated := append(append(value[:pos:pos], inserted...), value[pos:]...)
+	return string(updated), pos + len(inserted)
+}
+
+func backspaceTextAtCursor(text string, cursor int) (string, int) {
+	value := []rune(text)
+	pos := clampTextCursor(text, cursor)
+	if pos == 0 {
+		return text, 0
+	}
+	updated := append(value[:pos-1:pos-1], value[pos:]...)
+	return string(updated), pos - 1
+}
+
+func deleteWordBackwardAtCursor(text string, cursor int) (string, int) {
+	value := []rune(text)
+	pos := clampTextCursor(text, cursor)
+	if pos == 0 {
+		return text, 0
+	}
+	start := pos - 1
+	for start >= 0 && unicode.IsSpace(value[start]) {
+		start--
+	}
+	for start >= 0 && !unicode.IsSpace(value[start]) {
+		start--
+	}
+	start++
+	updated := append(value[:start:start], value[pos:]...)
+	return string(updated), start
+}
+
+func moveCursorByWord(text string, cursor, direction int) int {
+	value := []rune(text)
+	pos := clampTextCursor(text, cursor)
+	if len(value) == 0 || direction == 0 {
+		return pos
+	}
+	if direction < 0 {
+		for pos > 0 && unicode.IsSpace(value[pos-1]) {
+			pos--
+		}
+		for pos > 0 && !unicode.IsSpace(value[pos-1]) {
+			pos--
+		}
+		return pos
+	}
+	for pos < len(value) && unicode.IsSpace(value[pos]) {
+		pos++
+	}
+	for pos < len(value) && !unicode.IsSpace(value[pos]) {
+		pos++
+	}
+	return pos
+}
+
 func (m *AppModel) appendEntryFieldInput(text string) {
 	switch m.entryInputField {
 	case "description":
-		m.entryInput += text
+		m.entryInput, m.entryInputCursor = insertTextAtCursor(m.entryInput, m.entryInputCursor, text)
 	case "start":
 		m.entryStartInput = appendClockInput(m.entryStartInput, text)
 	case "end":
@@ -1325,9 +1391,7 @@ func (m *AppModel) appendEntryFieldInput(text string) {
 func (m *AppModel) backspaceEntryFieldInput() {
 	switch m.entryInputField {
 	case "description":
-		if len(m.entryInput) > 0 {
-			m.entryInput = m.entryInput[:len(m.entryInput)-1]
-		}
+		m.entryInput, m.entryInputCursor = backspaceTextAtCursor(m.entryInput, m.entryInputCursor)
 	case "start":
 		if len(m.entryStartInput) > 0 {
 			m.entryStartInput = m.entryStartInput[:len(m.entryStartInput)-1]
@@ -1342,9 +1406,15 @@ func (m *AppModel) backspaceEntryFieldInput() {
 func (m *AppModel) deleteWordEntryFieldInput() {
 	switch m.entryInputField {
 	case "description":
-		m.entryInput = deleteWordBackward(m.entryInput)
+		m.entryInput, m.entryInputCursor = deleteWordBackwardAtCursor(m.entryInput, m.entryInputCursor)
 	default:
 		m.backspaceEntryFieldInput()
+	}
+}
+
+func (m *AppModel) moveEntryFieldCursorWord(direction int) {
+	if m.entryInputField == "description" {
+		m.entryInputCursor = moveCursorByWord(m.entryInput, m.entryInputCursor, direction)
 	}
 }
 
@@ -1352,6 +1422,7 @@ func (m *AppModel) clearEntryFieldInput() {
 	switch m.entryInputField {
 	case "description":
 		m.entryInput = ""
+		m.entryInputCursor = 0
 	case "start":
 		m.entryStartInput = ""
 	case "end":
@@ -1362,7 +1433,7 @@ func (m *AppModel) clearEntryFieldInput() {
 func (m *AppModel) appendGapFieldInput(text string) {
 	switch m.gapInputField {
 	case "description":
-		m.gapInput += text
+		m.gapInput, m.gapInputCursor = insertTextAtCursor(m.gapInput, m.gapInputCursor, text)
 	case "start":
 		m.gapStartInput = appendClockInput(m.gapStartInput, text)
 	case "end":
@@ -1394,9 +1465,7 @@ func appendClockInput(current, text string) string {
 func (m *AppModel) backspaceGapFieldInput() {
 	switch m.gapInputField {
 	case "description":
-		if len(m.gapInput) > 0 {
-			m.gapInput = m.gapInput[:len(m.gapInput)-1]
-		}
+		m.gapInput, m.gapInputCursor = backspaceTextAtCursor(m.gapInput, m.gapInputCursor)
 	case "start":
 		if len(m.gapStartInput) > 0 {
 			m.gapStartInput = m.gapStartInput[:len(m.gapStartInput)-1]
@@ -1411,31 +1480,23 @@ func (m *AppModel) backspaceGapFieldInput() {
 func (m *AppModel) deleteWordGapFieldInput() {
 	switch m.gapInputField {
 	case "description":
-		m.gapInput = deleteWordBackward(m.gapInput)
+		m.gapInput, m.gapInputCursor = deleteWordBackwardAtCursor(m.gapInput, m.gapInputCursor)
 	default:
 		m.backspaceGapFieldInput()
 	}
 }
 
-func deleteWordBackward(text string) string {
-	value := []rune(text)
-	if len(value) == 0 {
-		return ""
+func (m *AppModel) moveGapFieldCursorWord(direction int) {
+	if m.gapInputField == "description" {
+		m.gapInputCursor = moveCursorByWord(m.gapInput, m.gapInputCursor, direction)
 	}
-	idx := len(value) - 1
-	for idx >= 0 && unicode.IsSpace(value[idx]) {
-		idx--
-	}
-	for idx >= 0 && !unicode.IsSpace(value[idx]) {
-		idx--
-	}
-	return string(value[:idx+1])
 }
 
 func (m *AppModel) clearGapFieldInput() {
 	switch m.gapInputField {
 	case "description":
 		m.gapInput = ""
+		m.gapInputCursor = 0
 	case "start":
 		m.gapStartInput = ""
 	case "end":
@@ -1470,6 +1531,7 @@ func (m *AppModel) openGapEntryDialog() {
 	m.mode = modeGapEntry
 	m.gapInput = ""
 	m.gapInputField = "description"
+	m.gapInputCursor = 0
 	m.gapStartInput = clock(rng.start)
 	m.gapEndInput = clock(rng.end)
 	m.gapProjectCursor = 0
@@ -1492,6 +1554,7 @@ func (m *AppModel) openEntryEditDialog(projectOnly bool) {
 	if entry.Description != nil {
 		m.entryInput = *entry.Description
 	}
+	m.entryInputCursor = len([]rune(m.entryInput))
 	m.entryStartInput = clock(entry.StartedAt)
 	if entry.EndedAt != nil {
 		m.entryEndInput = clock(*entry.EndedAt)
@@ -1510,6 +1573,7 @@ func (m *AppModel) closeEntryEditDialog() {
 	m.mode = modeTimeline
 	m.entryInput = ""
 	m.entryInputField = ""
+	m.entryInputCursor = 0
 	m.entryStartInput = ""
 	m.entryEndInput = ""
 	m.entryProjectCursor = 0
@@ -1545,7 +1609,7 @@ func (m *AppModel) handleDeleteConfirmKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 func (m *AppModel) handleEntryEditKey(msg tea.KeyMsg) tea.Cmd {
-	if !m.entryProjectOnly && msg.Type == tea.KeyRunes && entryEditFieldIsText(m.entryInputField) {
+	if !m.entryProjectOnly && msg.Type == tea.KeyRunes && !msg.Alt && entryEditFieldIsText(m.entryInputField) {
 		m.appendEntryFieldInput(string(msg.Runes))
 		return nil
 	}
@@ -1558,6 +1622,22 @@ func (m *AppModel) handleEntryEditKey(msg tea.KeyMsg) tea.Cmd {
 	case "tab":
 		if !m.entryProjectOnly {
 			m.entryInputField = nextEntryField(m.entryInputField)
+		}
+	case "left":
+		if !m.entryProjectOnly && m.entryInputField == "description" {
+			m.entryInputCursor = max(0, m.entryInputCursor-1)
+		}
+	case "right":
+		if !m.entryProjectOnly && m.entryInputField == "description" {
+			m.entryInputCursor = min(len([]rune(m.entryInput)), m.entryInputCursor+1)
+		}
+	case "alt+left", "alt+b":
+		if !m.entryProjectOnly {
+			m.moveEntryFieldCursorWord(-1)
+		}
+	case "alt+right", "alt+f":
+		if !m.entryProjectOnly {
+			m.moveEntryFieldCursorWord(1)
 		}
 	case "up", "k":
 		if m.entryProjectCursor > 0 {
@@ -1577,7 +1657,7 @@ func (m *AppModel) handleEntryEditKey(msg tea.KeyMsg) tea.Cmd {
 		}
 	case " ", "space":
 		if !m.entryProjectOnly && m.entryInputField == "description" {
-			m.entryInput += " "
+			m.entryInput, m.entryInputCursor = insertTextAtCursor(m.entryInput, m.entryInputCursor, " ")
 		}
 	case "delete":
 		if !m.entryProjectOnly {
@@ -1626,12 +1706,13 @@ func (m *AppModel) closeGapEntryDialog() {
 	m.gapStartInput = ""
 	m.gapEndInput = ""
 	m.gapInputField = ""
+	m.gapInputCursor = 0
 	m.gapProjectCursor = 0
 	m.caretVisible = false
 }
 
 func (m *AppModel) handleGapEntryKey(msg tea.KeyMsg) tea.Cmd {
-	if msg.Type == tea.KeyRunes && gapEntryFieldIsText(m.gapInputField) {
+	if msg.Type == tea.KeyRunes && !msg.Alt && gapEntryFieldIsText(m.gapInputField) {
 		m.appendGapFieldInput(string(msg.Runes))
 		return nil
 	}
@@ -1643,6 +1724,18 @@ func (m *AppModel) handleGapEntryKey(msg tea.KeyMsg) tea.Cmd {
 		m.closeGapEntryDialog()
 	case "tab":
 		m.gapInputField = nextGapField(m.gapInputField)
+	case "left":
+		if m.gapInputField == "description" {
+			m.gapInputCursor = max(0, m.gapInputCursor-1)
+		}
+	case "right":
+		if m.gapInputField == "description" {
+			m.gapInputCursor = min(len([]rune(m.gapInput)), m.gapInputCursor+1)
+		}
+	case "alt+left", "alt+b":
+		m.moveGapFieldCursorWord(-1)
+	case "alt+right", "alt+f":
+		m.moveGapFieldCursorWord(1)
 	case "up", "k":
 		if m.gapProjectCursor > 0 {
 			m.gapProjectCursor--
@@ -1657,7 +1750,7 @@ func (m *AppModel) handleGapEntryKey(msg tea.KeyMsg) tea.Cmd {
 		m.deleteWordGapFieldInput()
 	case " ", "space":
 		if m.gapInputField == "description" {
-			m.gapInput += " "
+			m.gapInput, m.gapInputCursor = insertTextAtCursor(m.gapInput, m.gapInputCursor, " ")
 		}
 	case "delete":
 		m.clearGapFieldInput()
@@ -2513,7 +2606,7 @@ func pluralize(count int, singular, plural string) string {
 func actionInspectorLines(m AppModel) []string {
 	if m.dayFocusKind == "slot" {
 		return []string{
-			"Enter: create entry or edit overlap",
+			"Enter/c: create entry or edit overlap",
 			"Up/Down: move 15m",
 			"Shift+Up/Down: move 1h",
 			"j/k: prev/next item",
@@ -2522,7 +2615,7 @@ func actionInspectorLines(m AppModel) []string {
 	}
 	if m.dayFocusKind == "gap" {
 		return []string{
-			"Enter: add manual entry",
+			"Enter/c: add manual entry",
 			"Tab: next inspector tab",
 			"Left/Right: prev/next day",
 		}
@@ -3317,7 +3410,7 @@ func renderGapEntryDialog(m AppModel, styles tuiStyles, background string) strin
 		inputStyle = lipgloss.NewStyle().Bold(true)
 	}
 	content.WriteString(styles.muted.Render("Description") + "\n")
-	content.WriteString(inputStyle.Render(truncateForWidth("> "+textWithCaret(m.gapInput, m.caretVisible, m.gapInputField == "description"), innerWidth)))
+	content.WriteString(inputStyle.Render(renderDialogTextInput(m.gapInput, m.gapInputCursor, m.caretVisible, m.gapInputField == "description", innerWidth)))
 	content.WriteString("\n\n")
 	content.WriteString(styles.muted.Render("Project") + "\n")
 	content.WriteString(renderPickerLine("Unassign", 0, m.gapProjectCursor, styles, innerWidth) + "\n")
@@ -3360,7 +3453,7 @@ func renderEntryEditDialog(m AppModel, styles tuiStyles, background string) stri
 			inputStyle = lipgloss.NewStyle().Bold(true)
 		}
 		content.WriteString(styles.muted.Render("Description") + "\n")
-		content.WriteString(inputStyle.Render(truncateForWidth("> "+textWithCaret(m.entryInput, m.caretVisible, m.entryInputField == "description"), innerWidth)))
+		content.WriteString(inputStyle.Render(renderDialogTextInput(m.entryInput, m.entryInputCursor, m.caretVisible, m.entryInputField == "description", innerWidth)))
 		content.WriteString("\n\n")
 	}
 	content.WriteString(styles.muted.Render("Project") + "\n")
@@ -3512,13 +3605,55 @@ func projectColorIndicator(project model.Project) string {
 }
 
 func textWithCaret(text string, visible, active bool) string {
+	return textWithCaretAt(text, len([]rune(text)), visible, active)
+}
+
+func renderDialogTextInput(text string, cursor int, visible, active bool, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	prefix := []rune("> ")
+	available := max(0, width-len(prefix))
+	return string(prefix) + dialogTextViewport(text, cursor, visible, active, available)
+}
+
+func dialogTextViewport(text string, cursor int, visible, active bool, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	value := []rune(text)
+	pos := clampTextCursor(text, cursor)
+	caretWidth := 0
+	if active && visible {
+		caretWidth = 1
+	}
+	if len(value)+caretWidth <= width {
+		return textWithCaretAt(text, pos, visible, active)
+	}
+	available := max(0, width-caretWidth)
+	start := max(0, pos-available)
+	end := min(len(value), start+available)
+	for end < len(value) && pos < start+available {
+		start++
+		end++
+	}
+	segment := string(value[start:end])
+	if !active || !visible {
+		return segment
+	}
+	return textWithCaretAt(segment, pos-start, true, true)
+}
+
+func textWithCaretAt(text string, cursor int, visible, active bool) string {
 	if !active {
 		return text
 	}
-	if visible {
-		return text + "▏"
+	value := []rune(text)
+	pos := clampTextCursor(text, cursor)
+	if !visible {
+		return text
 	}
-	return text + " "
+	return string(value[:pos]) + "▏" + string(value[pos:])
 }
 
 func projectDialogWidth(width int) int {
