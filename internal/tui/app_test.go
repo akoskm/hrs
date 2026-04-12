@@ -158,11 +158,18 @@ func TestTextWithCaretAtEndDoesNotAddExtraCell(t *testing.T) {
 	}
 }
 
+func TestRenderDialogTextInputShowsCaretAfterLastCharacter(t *testing.T) {
+	rendered := stripANSI(renderDialogTextInput("DELTA-838 reviews", len([]rune("DELTA-838 reviews")), true, true, 40))
+	if rendered != "> DELTA-838 reviews▏" {
+		t.Fatalf("rendered input = %q, want %q", rendered, "> DELTA-838 reviews▏")
+	}
+}
+
 func TestRenderDialogTextInputLongTextDoesNotShiftOnBlinkAtEnd(t *testing.T) {
 	text := "investigate production bug with cache miss"
 	hidden := stripANSI(renderDialogTextInput(text, len([]rune(text)), false, true, 20))
 	visible := stripANSI(renderDialogTextInput(text, len([]rune(text)), true, true, 20))
-	if hidden != visible {
+	if strings.TrimRight(hidden, " ") != strings.TrimSuffix(visible, "▏") {
 		t.Fatalf("long input shifts on blink: hidden=%q visible=%q", hidden, visible)
 	}
 }

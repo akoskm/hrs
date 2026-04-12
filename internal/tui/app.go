@@ -3666,8 +3666,12 @@ func renderDialogTextInputStyled(text string, cursor int, visible, active bool, 
 	}
 	prefix := []rune("> ")
 	available := max(0, width-len(prefix))
-	segment, relCursor := dialogTextViewportSegment(text, cursor, available)
+	reserveEndCaret := active && cursor >= len([]rune(text))
+	segment, relCursor := dialogTextViewportSegment(text, cursor, available, reserveEndCaret)
 	if !active || !visible {
+		if reserveEndCaret && available > 0 {
+			return style.Render(string(prefix) + padRight(segment, available))
+		}
 		return style.Render(string(prefix) + segment)
 	}
 	caretStyle := style.Copy().Reverse(true)
@@ -3676,7 +3680,7 @@ func renderDialogTextInputStyled(text string, cursor int, visible, active bool, 
 		return style.Render(string(prefix)) + caretStyle.Render("▏")
 	}
 	if relCursor >= len(value) {
-		return style.Render(string(prefix)+string(value[:len(value)-1])) + caretStyle.Render(string(value[len(value)-1]))
+		return style.Render(string(prefix)+segment) + caretStyle.Render("▏")
 	}
 	return style.Render(string(prefix)+string(value[:relCursor])) + caretStyle.Render(string(value[relCursor])) + style.Render(string(value[relCursor+1:]))
 }
@@ -3685,23 +3689,26 @@ func dialogTextViewport(text string, cursor int, visible, active bool, width int
 	if width <= 0 {
 		return ""
 	}
-	segment, relCursor := dialogTextViewportSegment(text, cursor, width)
+	segment, relCursor := dialogTextViewportSegment(text, cursor, width, false)
 	if !active || !visible {
 		return segment
 	}
 	return textWithCaretAt(segment, relCursor, true, true)
 }
 
-func dialogTextViewportSegment(text string, cursor int, width int) (string, int) {
+func dialogTextViewportSegment(text string, cursor int, width int, reserveEndCaret bool) (string, int) {
 	if width <= 0 {
 		return "", 0
 	}
 	value := []rune(text)
 	pos := clampTextCursor(text, cursor)
-	if len(value) <= width {
+	available := width
+	if reserveEndCaret && available > 0 {
+		available--
+	}
+	if len(value) <= available {
 		return text, pos
 	}
-	available := width
 	start := 0
 	if pos >= available {
 		start = pos - available + 1
