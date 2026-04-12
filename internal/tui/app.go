@@ -512,7 +512,7 @@ func (m AppModel) View() string {
 		inspectorWidth := max(20, m.width/2)
 		timelineModel.width = max(40, m.width-inspectorWidth-2)
 		if m.mode == modeTimeline {
-			timelineModel.height = max(12, m.height-4)
+			timelineModel.height = dayPaneHeight(m.height)
 		}
 		b.WriteString(renderDayTimeline(timelineModel, styles))
 	} else if len(m.entries) == 0 {
@@ -552,7 +552,7 @@ func (m AppModel) View() string {
 	body := b.String()
 	if m.mode == modeTimeline && m.timelineView == timelineViewDay {
 		inspectorWidth := dayInspectorWidth(m.width)
-		inspector := renderInspectorPane(m, styles, inspectorWidth, max(10, m.height-4))
+		inspector := renderInspectorPane(m, styles, inspectorWidth, dayPaneHeight(m.height))
 		scrollbar := renderDayScrollbar(m, styles)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, body, scrollbar, inspector)
 	}
@@ -804,7 +804,7 @@ func (m *AppModel) moveSlot(delta, span time.Duration) {
 	// snap to row boundaries when inside the visible timeline, fall back to fixed step
 	dayEntries := dayEntriesForDate(m.entries, day.Format("2006-01-02"))
 	window := dayTimelineWindow(dayEntries, day, m.dayWindowStart)
-	rows := dayTimelineRows(window, m.height)
+	rows := dayTimelineRows(window, dayPaneHeight(m.height))
 	candidate := time.Time{}
 	if len(rows) > 0 && !start.Before(rows[0].start) && start.Before(rows[len(rows)-1].end) {
 		if delta > 0 {
@@ -908,7 +908,7 @@ func (m *AppModel) slotAfterEntry(entry model.TimeEntryDetail) {
 	day := m.displayedDay()
 	dayEntries := dayEntriesForDate(m.entries, day.Format("2006-01-02"))
 	window := dayTimelineWindow(dayEntries, day, m.dayWindowStart)
-	rows := dayTimelineRows(window, m.height)
+	rows := dayTimelineRows(window, dayPaneHeight(m.height))
 	entryEnd := timelineBlockEnd(entry)
 	for _, row := range rows {
 		if !row.start.Before(entryEnd) {
@@ -925,7 +925,7 @@ func (m *AppModel) slotBeforeEntry(entry model.TimeEntryDetail) {
 	day := m.displayedDay()
 	dayEntries := dayEntriesForDate(m.entries, day.Format("2006-01-02"))
 	window := dayTimelineWindow(dayEntries, day, m.dayWindowStart)
-	rows := dayTimelineRows(window, m.height)
+	rows := dayTimelineRows(window, dayPaneHeight(m.height))
 	for i := len(rows) - 1; i >= 0; i-- {
 		if !rows[i].end.After(entry.StartedAt) {
 			m.daySlotStart = rows[i].start
@@ -2391,6 +2391,13 @@ func inspectorHeight(height int) int {
 	return min(12, max(8, height/3))
 }
 
+func dayPaneHeight(height int) int {
+	if height <= 0 {
+		return 12
+	}
+	return max(12, height-2)
+}
+
 func renderInspectorPane(m AppModel, styles tuiStyles, width int, height int) string {
 	innerWidth := max(20, width-4)
 	tabs := renderInspectorTabs(m, styles)
@@ -2550,7 +2557,7 @@ func (m *AppModel) scrollInspectorPage(direction int) {
 	if direction == 0 {
 		return
 	}
-	page := max(1, inspectorBodyHeight(max(10, m.height-4))-1)
+	page := max(1, inspectorBodyHeight(dayPaneHeight(m.height))-1)
 	m.scrollInspectorLines(direction * page)
 }
 
@@ -2575,7 +2582,7 @@ func (m *AppModel) syncInspectorViewport() {
 		m.inspectorViewKey = key
 		m.inspectorOffset = 0
 	}
-	maxOffset := max(0, len(inspectorLines(*m))-inspectorBodyHeight(max(10, m.height-4)))
+	maxOffset := max(0, len(inspectorLines(*m))-inspectorBodyHeight(dayPaneHeight(m.height)))
 	m.inspectorOffset = max(0, min(m.inspectorOffset, maxOffset))
 }
 
@@ -2728,7 +2735,7 @@ func dayScrollbar(totalRows int, windowStart time.Time, day time.Time) (thumbSta
 func renderDayScrollbar(m AppModel, styles tuiStyles) string {
 	dayEntries := dayEntriesForDate(m.entries, m.displayedDay().Format("2006-01-02"))
 	window := dayTimelineWindow(dayEntries, m.displayedDay(), m.dayWindowStart)
-	rows := dayTimelineRows(window, m.height)
+	rows := dayTimelineRows(window, dayPaneHeight(m.height))
 	thumbStart, thumbEnd := dayScrollbar(len(rows), window.start, m.displayedDay())
 
 	// 4 header lines (date, subheader, column header, separator) + row lines + 1 footer

@@ -2798,6 +2798,9 @@ func TestDayViewRendersTimelineWithNoEntries(t *testing.T) {
 	if !strings.Contains(view, "entries") && !strings.Contains(view, "day") {
 		t.Fatalf("day view missing status bar, got:\n%s", view)
 	}
+	if got := lipgloss.Height(app.View()); got != app.height {
+		t.Fatalf("day view height = %d, want %d", got, app.height)
+	}
 }
 
 func TestDayViewRendersEntriesAndActivity(t *testing.T) {
@@ -3106,7 +3109,7 @@ func TestDayViewInspectorScrollsWithoutStretchingLayout(t *testing.T) {
 	if strings.Contains(view, "prompt 6") {
 		t.Fatalf("initial inspector should be clipped before prompt 6, got:\n%s", view)
 	}
-	targetHeight := max(10, app.height-4)
+	targetHeight := dayPaneHeight(app.height)
 	pane := renderInspectorPane(app, app.styles, max(20, app.width/2), targetHeight)
 	if lipgloss.Height(pane) != targetHeight {
 		t.Fatalf("inspector pane height = %d, want %d", lipgloss.Height(pane), targetHeight)
