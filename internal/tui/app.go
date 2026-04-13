@@ -2862,7 +2862,7 @@ func renderActivityCell(m AppModel, viewportStart, slotStart, slotEnd time.Time,
 
 func renderVerticalEntryCell(viewportStart, slotStart, slotEnd, itemStart, itemEnd time.Time, touchesAbove, touchesBelow, focused bool, width int, label string, baseStyle lipgloss.Style, styles tuiStyles) string {
 	if focused {
-		return renderVerticalRangeCell(viewportStart, slotStart, slotEnd, itemStart, itemEnd, true, width, label, baseStyle, styles)
+		return renderVerticalRangeCell(viewportStart, slotStart, slotEnd, itemStart, itemEnd, touchesAbove, touchesBelow, true, width, label, baseStyle, styles)
 	}
 	text := outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart, itemEnd, touchesAbove, touchesBelow, width, label)
 	if strings.TrimSpace(text) == "" {
@@ -2871,22 +2871,10 @@ func renderVerticalEntryCell(viewportStart, slotStart, slotEnd, itemStart, itemE
 	return baseStyle.Render(text)
 }
 
-func renderVerticalRangeCell(viewportStart, slotStart, slotEnd, itemStart, itemEnd time.Time, focused bool, width int, label string, baseStyle lipgloss.Style, styles tuiStyles) string {
-	text := " "
-	starts := !itemStart.Before(slotStart) && itemStart.Before(slotEnd)
-	ends := itemEnd.After(slotStart) && !itemEnd.After(slotEnd)
-	midpoint := itemStart.Add(itemEnd.Sub(itemStart) / 2)
-	containsMid := !midpoint.Before(slotStart) && midpoint.Before(slotEnd)
-	anchoredTop := entryAnchoredAtViewportTop(viewportStart, itemStart)
-	topAnchorRow := anchoredTop && slotStart.Equal(viewportStart)
-	if starts && ends {
-		text = centeredBlockLabel(label, width)
-	} else if topAnchorRow {
-		text = centeredBlockLabel(label, width)
-	} else if containsMid && !anchoredTop {
-		text = centeredBlockLabel(label, width)
-	} else {
-		text = strings.Repeat(" ", width)
+func renderVerticalRangeCell(viewportStart, slotStart, slotEnd, itemStart, itemEnd time.Time, touchesAbove, touchesBelow, focused bool, width int, label string, baseStyle lipgloss.Style, styles tuiStyles) string {
+	text := outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart, itemEnd, touchesAbove, touchesBelow, width, label)
+	if strings.TrimSpace(text) == "" {
+		return padRight("", width)
 	}
 	style := baseStyle
 	if focused {
@@ -2905,6 +2893,8 @@ func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart,
 	}
 	starts := !itemStart.Before(slotStart) && itemStart.Before(slotEnd)
 	ends := itemEnd.After(slotStart) && !itemEnd.After(slotEnd)
+	slotDuration := slotEnd.Sub(slotStart)
+	preferTopBorderLabel := slotDuration > 0 && itemEnd.Sub(itemStart) <= 3*slotDuration
 	midpoint := itemStart.Add(itemEnd.Sub(itemStart) / 2)
 	containsMid := !midpoint.Before(slotStart) && midpoint.Before(slotEnd)
 	anchoredTop := entryAnchoredAtViewportTop(viewportStart, itemStart)
@@ -2929,30 +2919,30 @@ func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart,
 		return "│" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "│"
 	}
 	if starts && touchesAbove {
-		if containsMid && !anchoredTop {
-			return "│" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "│"
+		if containsMid && !anchoredTop && !preferTopBorderLabel {
+			return borderLabelRow('┌', '┐', label, width)
 		}
 		return "│" + space + "│"
 	}
 	if starts {
+		if preferTopBorderLabel {
+			return borderLabelRow('┌', '┐', label, width)
+		}
 		if containsMid && !anchoredTop {
 			return borderLabelRow('┌', '┐', label, width)
 		}
 		return "┌" + fill + "┐"
 	}
 	if ends {
-		if containsMid && !anchoredTop {
-			if touchesBelow {
-				return borderLabelRow('├', '┤', label, width)
-			}
-			return borderLabelRow('└', '┘', label, width)
+		if containsMid && !anchoredTop && !preferTopBorderLabel {
+			return borderLabelRow('┌', '┐', label, width)
 		}
 		if touchesBelow {
 			return "├" + fill + "┤"
 		}
 		return "└" + fill + "┘"
 	}
-	if containsMid && !anchoredTop {
+	if containsMid && !anchoredTop && !preferTopBorderLabel {
 		return "│" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "│"
 	}
 	return "│" + space + "│"

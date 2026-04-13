@@ -764,18 +764,18 @@ func TestOutlinedBlockCellSingleSlotPrefersLabelOverBorders(t *testing.T) {
 	}
 }
 
-func TestOutlinedBlockCellShowsLabelOnEndingMidpointRow(t *testing.T) {
+func TestOutlinedBlockCellKeepsBottomBorderWhenShortBlockLabelMovesToTop(t *testing.T) {
 	itemStart := time.Date(2026, 4, 9, 10, 50, 0, 0, time.Local)
 	itemEnd := time.Date(2026, 4, 9, 11, 10, 0, 0, time.Local)
 	slotStart := time.Date(2026, 4, 9, 11, 0, 0, 0, time.Local)
 	slotEnd := time.Date(2026, 4, 9, 11, 10, 0, 0, time.Local)
 
 	got := outlinedBlockCellWithViewport(slotStart, slotEnd, time.Time{}, itemStart, itemEnd, false, false, 24, "verify hotfix in prod")
-	if !strings.Contains(got, "verify hotfix in prod") {
-		t.Fatalf("ending midpoint cell = %q, want label visible", got)
+	if strings.Contains(got, "verify hotfix in prod") {
+		t.Fatalf("ending midpoint cell = %q, want label only on top border row", got)
 	}
-	if !strings.Contains(got, "└") || !strings.Contains(got, "┘") {
-		t.Fatalf("ending midpoint cell = %q, want bottom border preserved", got)
+	if got != "└──────────────────────┘" {
+		t.Fatalf("ending midpoint cell = %q, want preserved bottom border", got)
 	}
 }
 
@@ -786,11 +786,9 @@ func TestOutlinedBlockCellShowsLabelOnStartingMidpointRow(t *testing.T) {
 	slotEnd := time.Date(2026, 4, 9, 13, 15, 0, 0, time.Local)
 
 	got := outlinedBlockCellWithViewport(slotStart, slotEnd, time.Time{}, itemStart, itemEnd, false, false, 24, "check why language")
-	if !strings.Contains(got, "check why language") {
-		t.Fatalf("starting midpoint cell = %q, want label visible", got)
-	}
-	if !strings.Contains(got, "┌") || !strings.Contains(got, "┐") {
-		t.Fatalf("starting midpoint cell = %q, want top border preserved", got)
+	want := "┌check why language────┐"
+	if got != want {
+		t.Fatalf("starting midpoint cell = %q, want %q", got, want)
 	}
 }
 
@@ -3436,6 +3434,57 @@ func TestDayViewShowsViewportTopEntryLabelOnlyOnce(t *testing.T) {
 
 	if got := strings.Count(rowsView, "improve TUI experience"); got != 1 {
 		t.Fatalf("viewport-top entry label count = %d, want 1, got:\n%s", got, view)
+	}
+}
+
+func TestDayViewShortEntryRendersTitleInTopBorderRow(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "hrs",
+		Description:  "restore top border title",
+		StartedAt:    time.Date(2026, 4, 7, 18, 0, 0, 0, time.Local),
+		EndedAt:      time.Date(2026, 4, 7, 18, 45, 0, 0, time.Local),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local))
+	m.dayWindowStart = time.Date(2026, 4, 7, 18, 0, 0, 0, time.Local)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 35})
+	app := updated.(AppModel)
+	view := stripANSI(renderDayTimeline(app, newStyles(app.width)))
+
+	var firstRow string
+	for _, line := range strings.Split(strings.TrimRight(view, "\n"), "\n") {
+		if strings.HasPrefix(line, "18:00") {
+			firstRow = line
+			break
+		}
+	}
+	if firstRow == "" {
+		t.Fatalf("missing 18:00 row, got:\n%s", view)
+	}
+	if !strings.Contains(firstRow, "restore top border title") {
+		t.Fatalf("18:00 row = %q, want title in first row, got:\n%s", firstRow, view)
+	}
+	if !strings.Contains(firstRow, "┌restore top border title") {
+		t.Fatalf("18:00 row = %q, want title embedded in top border, got:\n%s", firstRow, view)
+	}
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	rowsView := strings.Join(lines[4:len(lines)-1], "\n")
+	if got := strings.Count(rowsView, "restore top border title"); got != 1 {
+		t.Fatalf("title count = %d, want 1, got:\n%s", got, view)
 	}
 }
 
