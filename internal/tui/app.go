@@ -2894,7 +2894,9 @@ func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart,
 	starts := !itemStart.Before(slotStart) && itemStart.Before(slotEnd)
 	ends := itemEnd.After(slotStart) && !itemEnd.After(slotEnd)
 	slotDuration := slotEnd.Sub(slotStart)
+	hasInteriorRow := slotDuration > 0 && itemEnd.Sub(itemStart) > 2*slotDuration
 	preferTopBorderLabel := slotDuration > 0 && itemEnd.Sub(itemStart) <= 3*slotDuration
+	preferInteriorLabel := touchesAbove && preferTopBorderLabel
 	midpoint := itemStart.Add(itemEnd.Sub(itemStart) / 2)
 	containsMid := !midpoint.Before(slotStart) && midpoint.Before(slotEnd)
 	anchoredTop := entryAnchoredAtViewportTop(viewportStart, itemStart)
@@ -2919,10 +2921,10 @@ func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart,
 		return "│" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "│"
 	}
 	if starts && touchesAbove {
-		if containsMid && !anchoredTop && !preferTopBorderLabel {
-			return borderLabelRow('┌', '┐', label, width)
+		if preferInteriorLabel && !hasInteriorRow {
+			return borderLabelRow('├', '┤', label, width)
 		}
-		return "│" + space + "│"
+		return "├" + fill + "┤"
 	}
 	if starts {
 		if preferTopBorderLabel {
@@ -2934,6 +2936,15 @@ func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart,
 		return "┌" + fill + "┐"
 	}
 	if ends {
+		if preferInteriorLabel && !hasInteriorRow {
+			return "└" + fill + "┘"
+		}
+		if touchesBelow {
+			return "│" + space + "│"
+		}
+		if containsMid && !anchoredTop && preferInteriorLabel {
+			return borderLabelRow('└', '┘', label, width)
+		}
 		if containsMid && !anchoredTop && !preferTopBorderLabel {
 			return borderLabelRow('┌', '┐', label, width)
 		}
@@ -2942,7 +2953,7 @@ func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart,
 		}
 		return "└" + fill + "┘"
 	}
-	if containsMid && !anchoredTop && !preferTopBorderLabel {
+	if containsMid && !anchoredTop && (!preferTopBorderLabel || preferInteriorLabel) {
 		return "│" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "│"
 	}
 	return "│" + space + "│"

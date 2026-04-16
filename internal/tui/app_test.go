@@ -825,11 +825,28 @@ func TestOutlinedBlockCellSharedBoundaryForTouchingEntries(t *testing.T) {
 	lowerSlotEnd := boundary.Add(15 * time.Minute)
 	lowerEnd := boundary.Add(75 * time.Minute)
 
-	if got := outlinedBlockCellWithViewport(upperSlotStart, upperSlotEnd, time.Time{}, upperStart, boundary, false, true, 12, "upper"); !strings.Contains(got, "├") || !strings.Contains(got, "┤") {
-		t.Fatalf("upper touching cell = %q, want shared boundary", got)
+	if got := outlinedBlockCellWithViewport(upperSlotStart, upperSlotEnd, time.Time{}, upperStart, boundary, false, true, 12, "upper"); strings.Contains(got, "├") || strings.Contains(got, "┤") {
+		t.Fatalf("upper touching cell = %q, want no duplicate shared boundary", got)
 	}
-	if got := outlinedBlockCellWithViewport(lowerSlotStart, lowerSlotEnd, time.Time{}, boundary, lowerEnd, true, false, 12, "lower"); strings.Contains(got, "┌") || strings.Contains(got, "┐") {
-		t.Fatalf("lower touching cell = %q, want no duplicate top border", got)
+	if got := outlinedBlockCellWithViewport(lowerSlotStart, lowerSlotEnd, time.Time{}, boundary, lowerEnd, true, false, 12, "lower"); !strings.Contains(got, "├") || !strings.Contains(got, "┤") {
+		t.Fatalf("lower touching cell = %q, want shared boundary on lower start row", got)
+	}
+}
+
+func TestOutlinedBlockCellTouchingShortBlockWithoutInteriorRowUsesSharedBoundaryLabel(t *testing.T) {
+	boundary := time.Date(2026, 4, 3, 20, 0, 0, 0, time.Local)
+	itemStart := boundary
+	itemEnd := boundary.Add(30 * time.Minute)
+	firstSlotStart := boundary
+	firstSlotEnd := boundary.Add(15 * time.Minute)
+	lastSlotStart := boundary.Add(15 * time.Minute)
+	lastSlotEnd := itemEnd
+
+	if got := outlinedBlockCellWithViewport(firstSlotStart, firstSlotEnd, time.Time{}, itemStart, itemEnd, true, false, 24, "fix e2e test suite"); !strings.Contains(got, "fix e2e test suite") || !strings.Contains(got, "├") {
+		t.Fatalf("first touching short cell = %q, want label on shared boundary", got)
+	}
+	if got := outlinedBlockCellWithViewport(lastSlotStart, lastSlotEnd, time.Time{}, itemStart, itemEnd, true, false, 24, "fix e2e test suite"); strings.Contains(got, "fix e2e test suite") {
+		t.Fatalf("last touching short cell = %q, want no duplicate label", got)
 	}
 }
 
@@ -3484,6 +3501,78 @@ func TestDayViewShortEntryRendersTitleInTopBorderRow(t *testing.T) {
 	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
 	rowsView := strings.Join(lines[4:len(lines)-1], "\n")
 	if got := strings.Count(rowsView, "restore top border title"); got != 1 {
+		t.Fatalf("title count = %d, want 1, got:\n%s", got, view)
+	}
+}
+
+func TestDayViewShortFocusedEntryTouchingAboveShowsTitleInsideBlock(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "hrs",
+		Description:  "entry above",
+		StartedAt:    time.Date(2026, 4, 7, 9, 0, 0, 0, time.Local),
+		EndedAt:      time.Date(2026, 4, 7, 10, 0, 0, 0, time.Local),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	created, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "hrs",
+		Description:  "freshly created block",
+		StartedAt:    time.Date(2026, 4, 7, 10, 0, 0, 0, time.Local),
+		EndedAt:      time.Date(2026, 4, 7, 10, 45, 0, 0, time.Local),
+	})
+	if err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local))
+	m.dayWindowStart = time.Date(2026, 4, 7, 9, 0, 0, 0, time.Local)
+	m.focusEntryByID(created.ID)
+	m.dayFocusKind = "entry"
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 35})
+	app := updated.(AppModel)
+	view := stripANSI(renderDayTimeline(app, newStyles(app.width)))
+
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	var firstRow string
+	var secondRow string
+	for i, line := range lines {
+		if strings.HasPrefix(line, "10:00") {
+			firstRow = line
+			if i+1 < len(lines) {
+				secondRow = lines[i+1]
+			}
+			break
+		}
+	}
+	if firstRow == "" {
+		t.Fatalf("missing 10:00 row, got:\n%s", view)
+	}
+	if strings.Contains(firstRow, "freshly created block") {
+		t.Fatalf("10:00 row = %q, want shared boundary row without title, got:\n%s", firstRow, view)
+	}
+	if !strings.Contains(firstRow, "10:00 ├") {
+		t.Fatalf("10:00 row = %q, want shared boundary on lower block start row, got:\n%s", firstRow, view)
+	}
+	if !strings.Contains(secondRow, "freshly created block") {
+		t.Fatalf("row after 10:00 = %q, want title inside lower block, got:\n%s", secondRow, view)
+	}
+	if !strings.Contains(secondRow, "│freshly created block") {
+		t.Fatalf("row after 10:00 = %q, want interior row title, got:\n%s", secondRow, view)
+	}
+	rowsView := strings.Join(lines[4:len(lines)-1], "\n")
+	if got := strings.Count(rowsView, "freshly created block"); got != 1 {
 		t.Fatalf("title count = %d, want 1, got:\n%s", got, view)
 	}
 }
