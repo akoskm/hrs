@@ -26,6 +26,7 @@ type inspectorTab string
 
 const (
 	modeTimeline      mode = "timeline"
+	modeReport        mode = "report"
 	modeAssign        mode = "assign"
 	modeEntryEdit     mode = "entry-edit"
 	modeGapEntry      mode = "gap-entry"
@@ -91,6 +92,7 @@ type AppModel struct {
 	slotMarkStart      time.Time
 	slotMarkSpan       time.Duration
 	confirmDeleteID    string
+	reportResult       db.ReportResult
 	activitySlots      []model.ActivitySlot
 	styles             tuiStyles
 	stylesWidth        int
@@ -226,6 +228,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		case "esc":
+			if m.mode == modeReport {
+				m.mode = modeTimeline
+				break
+			}
 			if !m.slotMarkStart.IsZero() {
 				m.slotMarkStart = time.Time{}
 				m.slotMarkSpan = 0
@@ -428,12 +434,21 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.mode == modeTimeline && m.lastSearch != "" {
 				m.jumpToSearchMatch(m.cursor, -1, false)
 			}
-		case "r":
+		case "s":
 			if m.mode == modeTimeline && m.syncFn != nil && !m.syncing {
 				m.syncing = true
 				m.syncFrame = 0
 				m.syncStatusErr = nil
 				return m, tea.Batch(runSyncCmd(m.syncFn), syncPulseCmd(40*time.Millisecond))
+			}
+		case "r":
+			if m.mode == modeTimeline {
+				if err := m.loadCurrentWeekReport(); err != nil {
+					m.err = err
+					return m, nil
+				}
+				m.mode = modeReport
+				return m, nil
 			}
 		case "d":
 			if m.mode == modeTimeline && len(m.entries) > 0 {
@@ -509,7 +524,9 @@ func (m AppModel) View() string {
 		sections = append(sections, styles.error.Render("error: "+m.err.Error()))
 	}
 	var b strings.Builder
-	if m.timelineView == timelineViewDay {
+	if m.mode == modeReport {
+		b.WriteString(renderReportView(m, styles))
+	} else if m.timelineView == timelineViewDay {
 		inspectorWidth := max(20, m.width/2)
 		timelineWidth := max(40, m.width-inspectorWidth-2)
 		b.WriteString(renderDayTimelinePane(m, styles, timelineWidth, dayPaneHeight(m.height)))
@@ -2659,7 +2676,7 @@ func actionInspectorLines(m AppModel) []string {
 		"Tab: next inspector tab",
 		"Left/Right: prev/next day",
 		"P: manage projects",
-		"R: sync now",
+		"S: sync now",
 	}
 	if len(m.selected) > 0 {
 		lines = append(lines, "p: assign selected entries")
@@ -3304,6 +3321,9 @@ func renderBaseStatusBar(m AppModel, width int) string {
 	if m.mode == modeSearch {
 		return truncateForWidth("/"+m.searchQuery+" | enter search | esc cancel", width)
 	}
+	if m.mode == modeReport {
+		return truncateForWidth("report | r refresh | esc back", width)
+	}
 	if m.timelineView == timelineViewDay {
 		text := fmt.Sprintf("entries %d | day %s | up/down 15m | shift+up/down 1h | j/k items | left/right day | wheel/pgup/pgdn inspector | enter create/edit | tab inspector", len(m.entries), m.displayedDay().Format("2006-01-02"))
 		return truncateForWidth(text, width)
@@ -3322,7 +3342,7 @@ func renderBaseStatusBar(m AppModel, width int) string {
 	if m.lastSearch != "" {
 		searchHint = " | / search n/N next"
 	}
-	text := fmt.Sprintf("entries %d | drafts %d | pos %s | r sync | up/down home/end pgup/pgdn space p assign P projects enter q%s", len(m.entries), drafts, position, searchHint)
+	text := fmt.Sprintf("entries %d | drafts %d | pos %s | s sync | up/down home/end pgup/pgdn space p assign P projects enter q%s", len(m.entries), drafts, position, searchHint)
 	return truncateForWidth(text, width)
 }
 
@@ -3335,6 +3355,43 @@ func mergeSyncIntoStatusBar(base string, m AppModel, width int) string {
 		right = strings.Repeat(" ", rightWidth-lipgloss.Width(right)) + right
 	}
 	return left + " " + right
+}
+
+func (m *AppModel) loadCurrentWeekReport() error {
+	start, end := reportWeekRange(time.Now().In(time.Local))
+	result, err := m.store.RangeReport(m.ctx, start, end)
+	if err != nil {
+		return err
+	}
+	m.reportResult = result
+	return nil
+}
+
+func reportWeekRange(now time.Time) (time.Time, time.Time) {
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	weekday := int(day.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	start := day.AddDate(0, 0, -(weekday - 1))
+	return start, start.AddDate(0, 0, 7)
+}
+
+func renderReportView(m AppModel, styles tuiStyles) string {
+	var b strings.Builder
+	b.WriteString(styles.title.Render("Report") + "\n")
+	b.WriteString(fmt.Sprintf("Range: %s..%s\n\n", m.reportResult.Range.From, m.reportResult.Range.To))
+	b.WriteString("Summary\n")
+	b.WriteString(fmt.Sprintf("Total hours: %.1f\n", float64(m.reportResult.Summary.TotalSecs)/3600))
+	b.WriteString(fmt.Sprintf("Billable hours: %.1f\n", float64(m.reportResult.Summary.BillableSecs)/3600))
+	b.WriteString(fmt.Sprintf("Non-billable hours: %.1f\n", float64(m.reportResult.Summary.NonBillableSecs)/3600))
+	b.WriteString(fmt.Sprintf("Active days: %d\n", m.reportResult.Summary.ActiveDays))
+	b.WriteString(fmt.Sprintf("Average daily hours: %.1f\n\n", float64(m.reportResult.Summary.AverageDailySecs)/3600))
+	b.WriteString("By project\n")
+	for _, project := range m.reportResult.Projects {
+		b.WriteString(fmt.Sprintf("%s %.1fh\n", project.ProjectName, float64(project.TotalSecs)/3600))
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func renderInlineSyncStatus(m AppModel, width int) string {

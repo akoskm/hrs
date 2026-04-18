@@ -1680,13 +1680,13 @@ func TestSyncStatusBarAnimatesWhileSyncing(t *testing.T) {
 		t.Fatalf("sync bar did not animate: %q", first)
 	}
 	model.syncing = false
-	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
 	app := updated.(AppModel)
 	if !app.syncing {
-		t.Fatal("syncing = false after r, want true")
+		t.Fatal("syncing = false after s, want true")
 	}
 	if cmd == nil {
-		t.Fatal("cmd = nil after r, want sync commands")
+		t.Fatal("cmd = nil after s, want sync commands")
 	}
 	updated, _ = model.Update(syncDoneMsg{})
 	app = updated.(AppModel)
@@ -1723,6 +1723,41 @@ func TestCycleInspectorTab(t *testing.T) {
 	app = updated.(AppModel)
 	if app.inspectorTab != inspectorActions {
 		t.Fatalf("after shift+tab = %q, want actions", app.inspectorTab)
+	}
+}
+
+func TestTimelineCanOpenReportView(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	now := time.Now().In(time.Local)
+	start := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, time.Local)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "elaiia",
+		Description:  "Reportable work",
+		StartedAt:    start,
+		EndedAt:      start.Add(2 * time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	app := updated.(AppModel)
+	view := stripANSI(app.View())
+	if !strings.Contains(view, "Report") || !strings.Contains(view, "Summary") {
+		t.Fatalf("report view missing summary sections: %q", view)
+	}
+	if !strings.Contains(view, "Elaiia") {
+		t.Fatalf("report view missing project data: %q", view)
 	}
 }
 

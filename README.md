@@ -63,6 +63,7 @@ Stored at `~/.config/hrs/hrs.db`. Override with `--db` flag or `HRS_DB` env var.
 | `a` | Add entry in gap |
 | `e` | Edit entry |
 | `d` | Delete entry |
+| `s` | Sync now |
 | `Tab` | Switch tabs |
 | `q` | Quit |
 
