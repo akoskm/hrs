@@ -230,15 +230,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeDeleteConfirm {
 			return m, m.handleDeleteConfirmKey(msg)
 		}
+		if m.mode == modeReport {
+			return m.handleReportKey(msg)
+		}
 		switch msg.String() {
 		case "ctrl+c", "q":
 			m.quitting = true
 			return m, tea.Quit
 		case "esc":
-			if m.mode == modeReport {
-				m.mode = modeTimeline
-				break
-			}
 			if !m.slotMarkStart.IsZero() {
 				m.slotMarkStart = time.Time{}
 				m.slotMarkSpan = 0
@@ -265,9 +264,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.inspectorOffset = 0
 			}
 		case "up":
-			if m.mode == modeReport {
-				m.moveReportProjectCursor(-1)
-			} else if m.timelineView == timelineViewDay {
+			if m.timelineView == timelineViewDay {
 				if m.dayFocusKind == "entry" && m.cursor >= 0 && m.cursor < len(m.entries) {
 					m.slotBeforeEntry(m.entries[m.cursor])
 				} else {
@@ -279,9 +276,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ensureVisible()
 			}
 		case "k":
-			if m.mode == modeReport {
-				m.moveReportProjectCursor(-1)
-			} else if m.timelineView == timelineViewDay {
+			if m.timelineView == timelineViewDay {
 				m.jumpDayItem(-1)
 			} else if m.cursor > 0 {
 				m.cursor--
@@ -363,8 +358,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.projectCursor < len(m.projects) {
 					m.projectCursor++
 				}
-			} else if m.mode == modeReport {
-				m.moveReportProjectCursor(1)
 			} else if m.timelineView == timelineViewDay {
 				if m.dayFocusKind == "entry" && m.cursor >= 0 && m.cursor < len(m.entries) {
 					m.slotAfterEntry(m.entries[m.cursor])
@@ -381,8 +374,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.projectCursor < len(m.projects) {
 					m.projectCursor++
 				}
-			} else if m.mode == modeReport {
-				m.moveReportProjectCursor(1)
 			} else if m.timelineView == timelineViewDay {
 				m.jumpDayItem(1)
 			} else if m.cursor < len(m.entries)-1 {
@@ -457,12 +448,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(runSyncCmd(m.syncFn), syncPulseCmd(40*time.Millisecond))
 			}
 		case "r":
-			if m.mode == modeReport {
-				if err := m.loadReportPreset(m.reportPreset); err != nil {
-					m.err = err
-				}
-				return m, nil
-			}
 			if m.mode == modeTimeline {
 				m.reportPreset = reportPresetWeek
 				if err := m.loadReportPreset(m.reportPreset); err != nil {
@@ -470,30 +455,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				m.mode = modeReport
-				return m, nil
-			}
-		case "w":
-			if m.mode == modeReport {
-				m.reportPreset = reportPresetWeek
-				if err := m.loadReportPreset(m.reportPreset); err != nil {
-					m.err = err
-				}
-				return m, nil
-			}
-		case "m":
-			if m.mode == modeReport {
-				m.reportPreset = reportPresetMonth
-				if err := m.loadReportPreset(m.reportPreset); err != nil {
-					m.err = err
-				}
-				return m, nil
-			}
-		case "y":
-			if m.mode == modeReport {
-				m.reportPreset = reportPresetYear
-				if err := m.loadReportPreset(m.reportPreset); err != nil {
-					m.err = err
-				}
 				return m, nil
 			}
 		case "d":
@@ -541,6 +502,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastSyncedAt = &now
 		m.syncStatusErr = nil
 		m.restoreStateAfterReload()
+		if m.mode == modeReport {
+			if err := m.loadReportPreset(m.reportPreset); err != nil {
+				m.syncStatusErr = err
+				return m, nil
+			}
+		}
 	case cursorBlinkMsg:
 		if m.mode != modeEntryEdit && m.mode != modeGapEntry {
 			m.caretVisible = false
@@ -550,6 +517,37 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cursorBlinkCmd()
 	}
 	m.syncInspectorViewport()
+	return m, nil
+}
+
+func (m AppModel) handleReportKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeTimeline
+	case "up", "k":
+		m.moveReportProjectCursor(-1)
+	case "down", "j":
+		m.moveReportProjectCursor(1)
+	case "r":
+		if err := m.loadReportPreset(m.reportPreset); err != nil {
+			m.err = err
+		}
+	case "w":
+		m.reportPreset = reportPresetWeek
+		if err := m.loadReportPreset(m.reportPreset); err != nil {
+			m.err = err
+		}
+	case "m":
+		m.reportPreset = reportPresetMonth
+		if err := m.loadReportPreset(m.reportPreset); err != nil {
+			m.err = err
+		}
+	case "y":
+		m.reportPreset = reportPresetYear
+		if err := m.loadReportPreset(m.reportPreset); err != nil {
+			m.err = err
+		}
+	}
 	return m, nil
 }
 

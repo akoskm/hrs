@@ -2130,6 +2130,75 @@ func TestReportViewShowsProjectSharePercentages(t *testing.T) {
 	}
 }
 
+func TestReportViewRefreshesAfterSyncDone(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Alpha", Code: "alpha", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	start := time.Date(2026, 4, 18, 9, 0, 0, 0, time.Local)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "alpha", Description: "First", StartedAt: start, EndedAt: start.Add(time.Hour)}); err != nil {
+		t.Fatalf("CreateManualEntry(first) error = %v", err)
+	}
+
+	model, err := NewAppModelWithSync(ctx, store, func() error { return nil })
+	if err != nil {
+		t.Fatalf("NewAppModelWithSync() error = %v", err)
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	app := updated.(AppModel)
+	if !strings.Contains(stripANSI(app.View()), "Total hours: 1.0") {
+		t.Fatalf("initial report total mismatch: %q", stripANSI(app.View()))
+	}
+
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "alpha", Description: "Second", StartedAt: start.Add(2 * time.Hour), EndedAt: start.Add(4 * time.Hour)}); err != nil {
+		t.Fatalf("CreateManualEntry(second) error = %v", err)
+	}
+
+	updated, _ = app.Update(syncDoneMsg{err: nil})
+	app = updated.(AppModel)
+	if !strings.Contains(stripANSI(app.View()), "Total hours: 3.0") {
+		t.Fatalf("report total was not refreshed after sync: %q", stripANSI(app.View()))
+	}
+}
+
+func TestReportViewDoesNotMutateHiddenDayState(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Alpha", Code: "alpha", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	entryStart := time.Date(2026, 4, 18, 9, 0, 0, 0, time.Local)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "alpha", Description: "Day work", StartedAt: entryStart, EndedAt: entryStart.Add(time.Hour)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.InitializeTodayTimelineView()
+	before := model.displayedDay()
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	app = updated.(AppModel)
+
+	after := app.displayedDay()
+	if !after.Equal(before) {
+		t.Fatalf("displayedDay changed in report mode: before=%s after=%s", before.Format("2006-01-02"), after.Format("2006-01-02"))
+	}
+}
+
 func firstDayOutsideRange(searchStart, searchEnd, excludedStart, excludedEnd time.Time) time.Time {
 	for day := searchStart; day.Before(searchEnd); day = day.AddDate(0, 0, 1) {
 		if day.Before(excludedStart) || !day.Before(excludedEnd) {
