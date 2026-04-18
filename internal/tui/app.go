@@ -3489,12 +3489,19 @@ func renderReportView(m AppModel, styles tuiStyles) string {
 	b.WriteString(fmt.Sprintf("Active days: %d\n", m.reportResult.Summary.ActiveDays))
 	b.WriteString(fmt.Sprintf("Average daily hours: %.1f\n\n", float64(m.reportResult.Summary.AverageDailySecs)/3600))
 	b.WriteString("By project\n")
+	maxProjectSecs := 0
+	for _, project := range m.reportResult.Projects {
+		if project.TotalSecs > maxProjectSecs {
+			maxProjectSecs = project.TotalSecs
+		}
+	}
 	for i, project := range m.reportResult.Projects {
 		prefix := "  "
 		if i == m.reportProjectCursor {
 			prefix = "> "
 		}
-		b.WriteString(fmt.Sprintf("%s%s %.1fh\n", prefix, project.ProjectName, float64(project.TotalSecs)/3600))
+		bar := reportProjectBar(project.TotalSecs, maxProjectSecs, 8)
+		b.WriteString(fmt.Sprintf("%s%s %.1fh %s\n", prefix, project.ProjectName, float64(project.TotalSecs)/3600, bar))
 	}
 	if selected := m.selectedReportProject(); selected != nil {
 		b.WriteString("\nProject detail\n")
@@ -3506,6 +3513,20 @@ func renderReportView(m AppModel, styles tuiStyles) string {
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func reportProjectBar(totalSecs, maxSecs, width int) string {
+	if totalSecs <= 0 || maxSecs <= 0 || width <= 0 {
+		return ""
+	}
+	filled := (totalSecs*width + maxSecs - 1) / maxSecs
+	if filled < 1 {
+		filled = 1
+	}
+	if filled > width {
+		filled = width
+	}
+	return strings.Repeat("█", filled)
 }
 
 func renderInlineSyncStatus(m AppModel, width int) string {

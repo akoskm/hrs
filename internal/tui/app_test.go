@@ -1873,6 +1873,54 @@ func TestReportViewCanSelectProjects(t *testing.T) {
 	}
 }
 
+func TestReportViewShowsRelativeProjectBars(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	for _, project := range []db.ProjectCreateInput{
+		{Name: "Alpha", Code: "alpha", Currency: "CHF"},
+		{Name: "Beta", Code: "beta", Currency: "USD"},
+	} {
+		if _, err := store.CreateProject(ctx, project); err != nil {
+			t.Fatalf("CreateProject(%s) error = %v", project.Name, err)
+		}
+	}
+	now := time.Now().In(time.Local)
+	start := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, time.Local)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "alpha",
+		Description:  "Alpha work",
+		StartedAt:    start,
+		EndedAt:      start.Add(4 * time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry(alpha) error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "beta",
+		Description:  "Beta work",
+		StartedAt:    start.Add(5 * time.Hour),
+		EndedAt:      start.Add(6 * time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry(beta) error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	app := updated.(AppModel)
+	view := stripANSI(app.View())
+	if !strings.Contains(view, "Alpha 4.0h") || !strings.Contains(view, "Beta 1.0h") {
+		t.Fatalf("report view missing project totals: %q", view)
+	}
+	if !strings.Contains(view, "████") || !strings.Contains(view, "█") {
+		t.Fatalf("report view missing relative bars: %q", view)
+	}
+}
+
 func firstDayOutsideRange(searchStart, searchEnd, excludedStart, excludedEnd time.Time) time.Time {
 	for day := searchStart; day.Before(searchEnd); day = day.AddDate(0, 0, 1) {
 		if day.Before(excludedStart) || !day.Before(excludedEnd) {
