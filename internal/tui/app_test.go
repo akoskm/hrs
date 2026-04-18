@@ -2199,6 +2199,36 @@ func TestReportViewDoesNotMutateHiddenDayState(t *testing.T) {
 	}
 }
 
+func TestReportViewQuitsOnQ(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Alpha", Code: "alpha", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	start := time.Date(2026, 4, 18, 9, 0, 0, 0, time.Local)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "alpha", Description: "Work", StartedAt: start, EndedAt: start.Add(time.Hour)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	app := updated.(AppModel)
+
+	updated, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	app = updated.(AppModel)
+	if !app.quitting {
+		t.Fatal("quitting = false after q in report mode, want true")
+	}
+	if cmd == nil {
+		t.Fatal("cmd = nil after q in report mode, want quit command")
+	}
+}
+
 func firstDayOutsideRange(searchStart, searchEnd, excludedStart, excludedEnd time.Time) time.Time {
 	for day := searchStart; day.Before(searchEnd); day = day.AddDate(0, 0, 1) {
 		if day.Before(excludedStart) || !day.Before(excludedEnd) {
