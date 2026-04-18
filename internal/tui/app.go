@@ -23,9 +23,11 @@ type projectDialogMode string
 type timelineViewMode string
 
 type inspectorTab string
+type reportPreset string
 
 const (
 	modeTimeline      mode = "timeline"
+	modeReport        mode = "report"
 	modeAssign        mode = "assign"
 	modeEntryEdit     mode = "entry-edit"
 	modeGapEntry      mode = "gap-entry"
@@ -41,62 +43,69 @@ const (
 
 	inspectorOverview inspectorTab = "overview"
 	inspectorActions  inspectorTab = "actions"
+
+	reportPresetWeek  reportPreset = "week"
+	reportPresetMonth reportPreset = "month"
+	reportPresetYear  reportPreset = "year"
 )
 
 type AppModel struct {
-	ctx                context.Context
-	store              *db.Store
-	syncFn             func() error
-	allEntries         []model.TimeEntryDetail
-	entries            []model.TimeEntryDetail
-	projects           []model.Project
-	selected           map[string]bool
-	searchQuery        string
-	lastSearch         string
-	width              int
-	height             int
-	offset             int
-	cursor             int
-	projectCursor      int
-	gapProjectCursor   int
-	entryProjectCursor int
-	dialogMode         projectDialogMode
-	projectInput       string
-	gapInput           string
-	gapStartInput      string
-	gapEndInput        string
-	gapInputField      string
-	gapInputCursor     int
-	entryInput         string
-	entryStartInput    string
-	entryEndInput      string
-	entryInputField    string
-	entryInputCursor   int
-	entryProjectOnly   bool
-	dayFocusKind       string
-	dayGapFocus        int
-	daySlotStart       time.Time
-	daySlotSpan        time.Duration
-	dayDate            time.Time
-	dayWindowStart     time.Time
-	syncing            bool
-	syncFrame          int
-	caretVisible       bool
-	lastSyncedAt       *time.Time
-	syncStatusErr      error
-	timelineView       timelineViewMode
-	inspectorTab       inspectorTab
-	inspectorOffset    int
-	inspectorViewKey   string
-	slotMarkStart      time.Time
-	slotMarkSpan       time.Duration
-	confirmDeleteID    string
-	activitySlots      []model.ActivitySlot
-	styles             tuiStyles
-	stylesWidth        int
-	mode               mode
-	err                error
-	quitting           bool
+	ctx                 context.Context
+	store               *db.Store
+	syncFn              func() error
+	allEntries          []model.TimeEntryDetail
+	entries             []model.TimeEntryDetail
+	projects            []model.Project
+	selected            map[string]bool
+	searchQuery         string
+	lastSearch          string
+	width               int
+	height              int
+	offset              int
+	cursor              int
+	projectCursor       int
+	gapProjectCursor    int
+	entryProjectCursor  int
+	dialogMode          projectDialogMode
+	projectInput        string
+	gapInput            string
+	gapStartInput       string
+	gapEndInput         string
+	gapInputField       string
+	gapInputCursor      int
+	entryInput          string
+	entryStartInput     string
+	entryEndInput       string
+	entryInputField     string
+	entryInputCursor    int
+	entryProjectOnly    bool
+	dayFocusKind        string
+	dayGapFocus         int
+	daySlotStart        time.Time
+	daySlotSpan         time.Duration
+	dayDate             time.Time
+	dayWindowStart      time.Time
+	syncing             bool
+	syncFrame           int
+	caretVisible        bool
+	lastSyncedAt        *time.Time
+	syncStatusErr       error
+	timelineView        timelineViewMode
+	inspectorTab        inspectorTab
+	inspectorOffset     int
+	inspectorViewKey    string
+	slotMarkStart       time.Time
+	slotMarkSpan        time.Duration
+	confirmDeleteID     string
+	reportPreset        reportPreset
+	reportProjectCursor int
+	reportResult        db.ReportResult
+	activitySlots       []model.ActivitySlot
+	styles              tuiStyles
+	stylesWidth         int
+	mode                mode
+	err                 error
+	quitting            bool
 }
 
 type syncPulseMsg struct{}
@@ -220,6 +229,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.mode == modeDeleteConfirm {
 			return m, m.handleDeleteConfirmKey(msg)
+		}
+		if m.mode == modeReport {
+			return m.handleReportKey(msg)
 		}
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -428,12 +440,22 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.mode == modeTimeline && m.lastSearch != "" {
 				m.jumpToSearchMatch(m.cursor, -1, false)
 			}
-		case "r":
+		case "s":
 			if m.mode == modeTimeline && m.syncFn != nil && !m.syncing {
 				m.syncing = true
 				m.syncFrame = 0
 				m.syncStatusErr = nil
 				return m, tea.Batch(runSyncCmd(m.syncFn), syncPulseCmd(40*time.Millisecond))
+			}
+		case "r":
+			if m.mode == modeTimeline {
+				m.reportPreset = reportPresetWeek
+				if err := m.loadReportPreset(m.reportPreset); err != nil {
+					m.err = err
+					return m, nil
+				}
+				m.mode = modeReport
+				return m, nil
 			}
 		case "d":
 			if m.mode == modeTimeline && len(m.entries) > 0 {
@@ -480,6 +502,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastSyncedAt = &now
 		m.syncStatusErr = nil
 		m.restoreStateAfterReload()
+		if m.mode == modeReport {
+			if err := m.loadReportPreset(m.reportPreset); err != nil {
+				m.syncStatusErr = err
+				return m, nil
+			}
+		}
 	case cursorBlinkMsg:
 		if m.mode != modeEntryEdit && m.mode != modeGapEntry {
 			m.caretVisible = false
@@ -489,6 +517,40 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cursorBlinkCmd()
 	}
 	m.syncInspectorViewport()
+	return m, nil
+}
+
+func (m AppModel) handleReportKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		m.quitting = true
+		return m, tea.Quit
+	case "esc":
+		m.mode = modeTimeline
+	case "up", "k":
+		m.moveReportProjectCursor(-1)
+	case "down", "j":
+		m.moveReportProjectCursor(1)
+	case "r":
+		if err := m.loadReportPreset(m.reportPreset); err != nil {
+			m.err = err
+		}
+	case "w":
+		m.reportPreset = reportPresetWeek
+		if err := m.loadReportPreset(m.reportPreset); err != nil {
+			m.err = err
+		}
+	case "m":
+		m.reportPreset = reportPresetMonth
+		if err := m.loadReportPreset(m.reportPreset); err != nil {
+			m.err = err
+		}
+	case "y":
+		m.reportPreset = reportPresetYear
+		if err := m.loadReportPreset(m.reportPreset); err != nil {
+			m.err = err
+		}
+	}
 	return m, nil
 }
 
@@ -509,7 +571,9 @@ func (m AppModel) View() string {
 		sections = append(sections, styles.error.Render("error: "+m.err.Error()))
 	}
 	var b strings.Builder
-	if m.timelineView == timelineViewDay {
+	if m.mode == modeReport {
+		b.WriteString(renderReportView(m, styles))
+	} else if m.timelineView == timelineViewDay {
 		inspectorWidth := max(20, m.width/2)
 		timelineWidth := max(40, m.width-inspectorWidth-2)
 		b.WriteString(renderDayTimelinePane(m, styles, timelineWidth, dayPaneHeight(m.height)))
@@ -2659,7 +2723,7 @@ func actionInspectorLines(m AppModel) []string {
 		"Tab: next inspector tab",
 		"Left/Right: prev/next day",
 		"P: manage projects",
-		"R: sync now",
+		"S: sync now",
 	}
 	if len(m.selected) > 0 {
 		lines = append(lines, "p: assign selected entries")
@@ -3304,6 +3368,9 @@ func renderBaseStatusBar(m AppModel, width int) string {
 	if m.mode == modeSearch {
 		return truncateForWidth("/"+m.searchQuery+" | enter search | esc cancel", width)
 	}
+	if m.mode == modeReport {
+		return truncateForWidth(fmt.Sprintf("report %s | w week | m month | y year | r refresh | esc back", m.reportPreset), width)
+	}
 	if m.timelineView == timelineViewDay {
 		text := fmt.Sprintf("entries %d | day %s | up/down 15m | shift+up/down 1h | j/k items | left/right day | wheel/pgup/pgdn inspector | enter create/edit | tab inspector", len(m.entries), m.displayedDay().Format("2006-01-02"))
 		return truncateForWidth(text, width)
@@ -3322,7 +3389,7 @@ func renderBaseStatusBar(m AppModel, width int) string {
 	if m.lastSearch != "" {
 		searchHint = " | / search n/N next"
 	}
-	text := fmt.Sprintf("entries %d | drafts %d | pos %s | r sync | up/down home/end pgup/pgdn space p assign P projects enter q%s", len(m.entries), drafts, position, searchHint)
+	text := fmt.Sprintf("entries %d | drafts %d | pos %s | s sync | up/down home/end pgup/pgdn space p assign P projects enter q%s", len(m.entries), drafts, position, searchHint)
 	return truncateForWidth(text, width)
 }
 
@@ -3335,6 +3402,231 @@ func mergeSyncIntoStatusBar(base string, m AppModel, width int) string {
 		right = strings.Repeat(" ", rightWidth-lipgloss.Width(right)) + right
 	}
 	return left + " " + right
+}
+
+func (m *AppModel) loadReportPreset(preset reportPreset) error {
+	start, end := reportRangeForPreset(preset, time.Now().In(time.Local))
+	result, err := m.store.RangeReport(m.ctx, start, end)
+	if err != nil {
+		return err
+	}
+	m.reportPreset = preset
+	m.reportResult = result
+	m.clampReportProjectCursor()
+	return nil
+}
+
+func (m *AppModel) moveReportProjectCursor(delta int) {
+	if len(m.reportResult.Projects) == 0 || delta == 0 {
+		return
+	}
+	m.reportProjectCursor += delta
+	m.clampReportProjectCursor()
+}
+
+func (m *AppModel) clampReportProjectCursor() {
+	if len(m.reportResult.Projects) == 0 {
+		m.reportProjectCursor = 0
+		return
+	}
+	if m.reportProjectCursor < 0 {
+		m.reportProjectCursor = 0
+	}
+	if m.reportProjectCursor >= len(m.reportResult.Projects) {
+		m.reportProjectCursor = len(m.reportResult.Projects) - 1
+	}
+}
+
+func (m AppModel) selectedReportProject() *db.ReportProjectRow {
+	if len(m.reportResult.Projects) == 0 {
+		return nil
+	}
+	idx := m.reportProjectCursor
+	if idx < 0 || idx >= len(m.reportResult.Projects) {
+		idx = 0
+	}
+	return &m.reportResult.Projects[idx]
+}
+
+func reportRangeForPreset(preset reportPreset, now time.Time) (time.Time, time.Time) {
+	switch preset {
+	case reportPresetMonth:
+		return reportMonthRange(now)
+	case reportPresetYear:
+		return reportYearRange(now)
+	default:
+		return reportWeekRange(now)
+	}
+}
+
+func reportWeekRange(now time.Time) (time.Time, time.Time) {
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	weekday := int(day.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	start := day.AddDate(0, 0, -(weekday - 1))
+	return start, start.AddDate(0, 0, 7)
+}
+
+func reportMonthRange(now time.Time) (time.Time, time.Time) {
+	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	return start, start.AddDate(0, 1, 0)
+}
+
+func reportYearRange(now time.Time) (time.Time, time.Time) {
+	start := time.Date(now.Year(), time.January, 1, 0, 0, 0, 0, now.Location())
+	return start, start.AddDate(1, 0, 0)
+}
+
+func renderReportView(m AppModel, styles tuiStyles) string {
+	contentWidth := timelineWidth(m.width)
+	if contentWidth >= 80 {
+		leftWidth := max(28, contentWidth/3)
+		rightWidth := max(32, contentWidth-leftWidth-1)
+		left := styles.inspectorBox.Width(max(20, leftWidth-2)).Render(renderReportSummaryPane(m, leftWidth-4, styles))
+		right := styles.inspectorBox.Width(max(20, rightWidth-2)).Render(renderReportProjectsPane(m, rightWidth-4))
+		return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	}
+
+	var b strings.Builder
+	b.WriteString(styles.title.Render("Report") + "\n")
+	b.WriteString(fmt.Sprintf("Range: %s..%s\n\n", m.reportResult.Range.From, m.reportResult.Range.To))
+	b.WriteString("Summary\n")
+	b.WriteString(renderReportSummaryBody(m))
+	b.WriteString("\n\n")
+	b.WriteString(renderReportDaysPane(m, contentWidth))
+	b.WriteString("\n\n")
+	b.WriteString(renderReportProjectsPane(m, contentWidth))
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderReportSummaryPane(m AppModel, width int, styles tuiStyles) string {
+	var b strings.Builder
+	b.WriteString(styles.title.Render("Summary") + "\n")
+	b.WriteString(styles.muted.Render(truncateForWidth(fmt.Sprintf("Range: %s..%s", m.reportResult.Range.From, m.reportResult.Range.To), width)) + "\n\n")
+	b.WriteString(renderReportSummaryBody(m))
+	b.WriteString("\n\n")
+	b.WriteString(renderReportDaysPane(m, width))
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderReportSummaryBody(m AppModel) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Total hours: %.1f\n", float64(m.reportResult.Summary.TotalSecs)/3600))
+	b.WriteString(fmt.Sprintf("Billable hours: %.1f\n", float64(m.reportResult.Summary.BillableSecs)/3600))
+	b.WriteString(fmt.Sprintf("Non-billable hours: %.1f\n", float64(m.reportResult.Summary.NonBillableSecs)/3600))
+	b.WriteString(fmt.Sprintf("Active days: %d\n", m.reportResult.Summary.ActiveDays))
+	b.WriteString(fmt.Sprintf("Average daily hours: %.1f\n", float64(m.reportResult.Summary.AverageDailySecs)/3600))
+	if earned := reportSummaryEarnedAmount(m.reportResult.Projects); earned != "" {
+		b.WriteString("Earned total: " + earned + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderReportProjectsPane(m AppModel, width int) string {
+	var b strings.Builder
+	b.WriteString("By project\n")
+	maxProjectSecs := 0
+	for _, project := range m.reportResult.Projects {
+		if project.TotalSecs > maxProjectSecs {
+			maxProjectSecs = project.TotalSecs
+		}
+	}
+	for i, project := range m.reportResult.Projects {
+		prefix := "  "
+		if i == m.reportProjectCursor {
+			prefix = "> "
+		}
+		bar := reportProjectBar(project.TotalSecs, maxProjectSecs, 8)
+		line := fmt.Sprintf("%s%s %.1fh %s %s", prefix, project.ProjectName, float64(project.TotalSecs)/3600, reportSharePercent(project.TotalSecs, m.reportResult.Summary.TotalSecs), bar)
+		b.WriteString(truncateForWidth(line, width) + "\n")
+	}
+	if selected := m.selectedReportProject(); selected != nil {
+		b.WriteString("\nProject detail\n")
+		b.WriteString(truncateForWidth(fmt.Sprintf("Selected project: %s", selected.ProjectName), width) + "\n")
+		b.WriteString(truncateForWidth(fmt.Sprintf("Billable hours: %.1f", float64(selected.BillableSecs)/3600), width) + "\n")
+		b.WriteString(truncateForWidth(fmt.Sprintf("Non-billable hours: %.1f", float64(selected.NonBillableSecs)/3600), width) + "\n")
+		if earned := reportEarnedAmount(*selected); earned != "" {
+			b.WriteString(truncateForWidth("Earned: "+earned, width) + "\n")
+		}
+		if selected.Currency != "" {
+			b.WriteString(truncateForWidth(fmt.Sprintf("Currency: %s", selected.Currency), width) + "\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func reportEarnedAmount(project db.ReportProjectRow) string {
+	if project.HourlyRate <= 0 || project.BillableSecs <= 0 || project.Currency == "" {
+		return ""
+	}
+	amount := float64(project.BillableSecs) / 3600 * float64(project.HourlyRate) / 100
+	return fmt.Sprintf("%.2f %s", amount, project.Currency)
+}
+
+func reportSummaryEarnedAmount(projects []db.ReportProjectRow) string {
+	if len(projects) == 0 {
+		return ""
+	}
+	totals := map[string]float64{}
+	order := []string{}
+	for _, project := range projects {
+		if project.HourlyRate <= 0 || project.BillableSecs <= 0 || project.Currency == "" {
+			continue
+		}
+		if _, ok := totals[project.Currency]; !ok {
+			order = append(order, project.Currency)
+		}
+		totals[project.Currency] += float64(project.BillableSecs) / 3600 * float64(project.HourlyRate) / 100
+	}
+	if len(order) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(order))
+	for _, currency := range order {
+		parts = append(parts, fmt.Sprintf("%.2f %s", totals[currency], currency))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func renderReportDaysPane(m AppModel, width int) string {
+	var b strings.Builder
+	b.WriteString("By day\n")
+	maxDaySecs := 0
+	for _, day := range m.reportResult.Days {
+		if day.TotalSecs > maxDaySecs {
+			maxDaySecs = day.TotalSecs
+		}
+	}
+	for _, day := range m.reportResult.Days {
+		bar := reportProjectBar(day.TotalSecs, maxDaySecs, 8)
+		line := fmt.Sprintf("%s %.1fh %s", day.Date, float64(day.TotalSecs)/3600, bar)
+		b.WriteString(truncateForWidth(line, width) + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func reportProjectBar(totalSecs, maxSecs, width int) string {
+	if totalSecs <= 0 || maxSecs <= 0 || width <= 0 {
+		return ""
+	}
+	filled := (totalSecs*width + maxSecs - 1) / maxSecs
+	if filled < 1 {
+		filled = 1
+	}
+	if filled > width {
+		filled = width
+	}
+	return strings.Repeat("█", filled)
+}
+
+func reportSharePercent(totalSecs, totalRangeSecs int) string {
+	if totalSecs <= 0 || totalRangeSecs <= 0 {
+		return "0%"
+	}
+	percent := int((float64(totalSecs)/float64(totalRangeSecs))*100 + 0.5)
+	return fmt.Sprintf("%d%%", percent)
 }
 
 func renderInlineSyncStatus(m AppModel, width int) string {
