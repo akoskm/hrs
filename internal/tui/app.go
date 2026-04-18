@@ -3517,6 +3517,9 @@ func renderReportSummaryBody(m AppModel) string {
 	b.WriteString(fmt.Sprintf("Non-billable hours: %.1f\n", float64(m.reportResult.Summary.NonBillableSecs)/3600))
 	b.WriteString(fmt.Sprintf("Active days: %d\n", m.reportResult.Summary.ActiveDays))
 	b.WriteString(fmt.Sprintf("Average daily hours: %.1f\n", float64(m.reportResult.Summary.AverageDailySecs)/3600))
+	if earned := reportSummaryEarnedAmount(m.reportResult.Projects); earned != "" {
+		b.WriteString("Earned total: " + earned + "\n")
+	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -3535,7 +3538,7 @@ func renderReportProjectsPane(m AppModel, width int) string {
 			prefix = "> "
 		}
 		bar := reportProjectBar(project.TotalSecs, maxProjectSecs, 8)
-		line := fmt.Sprintf("%s%s %.1fh %s", prefix, project.ProjectName, float64(project.TotalSecs)/3600, bar)
+		line := fmt.Sprintf("%s%s %.1fh %s %s", prefix, project.ProjectName, float64(project.TotalSecs)/3600, reportSharePercent(project.TotalSecs, m.reportResult.Summary.TotalSecs), bar)
 		b.WriteString(truncateForWidth(line, width) + "\n")
 	}
 	if selected := m.selectedReportProject(); selected != nil {
@@ -3559,6 +3562,31 @@ func reportEarnedAmount(project db.ReportProjectRow) string {
 	}
 	amount := float64(project.BillableSecs) / 3600 * float64(project.HourlyRate) / 100
 	return fmt.Sprintf("%.2f %s", amount, project.Currency)
+}
+
+func reportSummaryEarnedAmount(projects []db.ReportProjectRow) string {
+	if len(projects) == 0 {
+		return ""
+	}
+	totals := map[string]float64{}
+	order := []string{}
+	for _, project := range projects {
+		if project.HourlyRate <= 0 || project.BillableSecs <= 0 || project.Currency == "" {
+			continue
+		}
+		if _, ok := totals[project.Currency]; !ok {
+			order = append(order, project.Currency)
+		}
+		totals[project.Currency] += float64(project.BillableSecs) / 3600 * float64(project.HourlyRate) / 100
+	}
+	if len(order) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(order))
+	for _, currency := range order {
+		parts = append(parts, fmt.Sprintf("%.2f %s", totals[currency], currency))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func renderReportDaysPane(m AppModel, width int) string {
@@ -3590,6 +3618,14 @@ func reportProjectBar(totalSecs, maxSecs, width int) string {
 		filled = width
 	}
 	return strings.Repeat("█", filled)
+}
+
+func reportSharePercent(totalSecs, totalRangeSecs int) string {
+	if totalSecs <= 0 || totalRangeSecs <= 0 {
+		return "0%"
+	}
+	percent := int((float64(totalSecs)/float64(totalRangeSecs))*100 + 0.5)
+	return fmt.Sprintf("%d%%", percent)
 }
 
 func renderInlineSyncStatus(m AppModel, width int) string {
