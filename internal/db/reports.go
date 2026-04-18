@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"sort"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 )
 
 const unassignedProjectName = "unassigned"
+const unassignedProjectKey = "__unassigned__"
 
 type ReportRange struct {
 	From string `json:"from"`
@@ -52,14 +54,7 @@ func (s *Store) RangeReport(ctx context.Context, start, end time.Time) (ReportRe
 	if err != nil {
 		return ReportResult{}, err
 	}
-	projectItems, err := s.ListProjects(ctx)
-	if err != nil {
-		return ReportResult{}, err
-	}
-	projectByID := make(map[string]model.Project, len(projectItems))
-	for _, item := range projectItems {
-		projectByID[item.ID] = item
-	}
+	projectByID := map[string]model.Project{}
 
 	result := ReportResult{
 		Range: ReportRange{
@@ -82,20 +77,34 @@ func (s *Store) RangeReport(ctx context.Context, start, end time.Time) (ReportRe
 		}
 
 		projectName := entry.ProjectName
+		projectKey := unassignedProjectKey
+		if entry.ProjectID != nil {
+			projectKey = *entry.ProjectID
+		}
 		if projectName == "" {
 			projectName = unassignedProjectName
 		}
-		project, ok := projects[projectName]
+		project, ok := projects[projectKey]
 		if !ok {
 			project = &ReportProjectRow{ProjectName: projectName, ProjectCode: entry.ProjectCode, Currency: string(model.CurrencyEUR)}
 			if entry.ProjectID != nil {
-				if item, ok := projectByID[*entry.ProjectID]; ok {
+				item, ok := projectByID[*entry.ProjectID]
+				if !ok {
+					item, err = s.ProjectByID(ctx, *entry.ProjectID)
+					if err != nil && err != sql.ErrNoRows {
+						return ReportResult{}, err
+					}
+					if err == nil {
+						projectByID[*entry.ProjectID] = item
+					}
+				}
+				if err == nil {
 					project.ProjectCode = item.Code
 					project.Currency = string(item.Currency)
 					project.HourlyRate = item.HourlyRate
 				}
 			}
-			projects[projectName] = project
+			projects[projectKey] = project
 		}
 		if entry.ProjectCode != nil {
 			project.ProjectCode = entry.ProjectCode
