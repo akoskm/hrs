@@ -23,6 +23,7 @@ type projectDialogMode string
 type timelineViewMode string
 
 type inspectorTab string
+type reportPreset string
 
 const (
 	modeTimeline      mode = "timeline"
@@ -42,63 +43,69 @@ const (
 
 	inspectorOverview inspectorTab = "overview"
 	inspectorActions  inspectorTab = "actions"
+
+	reportPresetWeek  reportPreset = "week"
+	reportPresetMonth reportPreset = "month"
+	reportPresetYear  reportPreset = "year"
 )
 
 type AppModel struct {
-	ctx                context.Context
-	store              *db.Store
-	syncFn             func() error
-	allEntries         []model.TimeEntryDetail
-	entries            []model.TimeEntryDetail
-	projects           []model.Project
-	selected           map[string]bool
-	searchQuery        string
-	lastSearch         string
-	width              int
-	height             int
-	offset             int
-	cursor             int
-	projectCursor      int
-	gapProjectCursor   int
-	entryProjectCursor int
-	dialogMode         projectDialogMode
-	projectInput       string
-	gapInput           string
-	gapStartInput      string
-	gapEndInput        string
-	gapInputField      string
-	gapInputCursor     int
-	entryInput         string
-	entryStartInput    string
-	entryEndInput      string
-	entryInputField    string
-	entryInputCursor   int
-	entryProjectOnly   bool
-	dayFocusKind       string
-	dayGapFocus        int
-	daySlotStart       time.Time
-	daySlotSpan        time.Duration
-	dayDate            time.Time
-	dayWindowStart     time.Time
-	syncing            bool
-	syncFrame          int
-	caretVisible       bool
-	lastSyncedAt       *time.Time
-	syncStatusErr      error
-	timelineView       timelineViewMode
-	inspectorTab       inspectorTab
-	inspectorOffset    int
-	inspectorViewKey   string
-	slotMarkStart      time.Time
-	slotMarkSpan       time.Duration
-	confirmDeleteID    string
-	reportResult       db.ReportResult
-	activitySlots      []model.ActivitySlot
-	styles             tuiStyles
-	stylesWidth        int
-	mode               mode
-	err                error
-	quitting           bool
+	ctx                 context.Context
+	store               *db.Store
+	syncFn              func() error
+	allEntries          []model.TimeEntryDetail
+	entries             []model.TimeEntryDetail
+	projects            []model.Project
+	selected            map[string]bool
+	searchQuery         string
+	lastSearch          string
+	width               int
+	height              int
+	offset              int
+	cursor              int
+	projectCursor       int
+	gapProjectCursor    int
+	entryProjectCursor  int
+	dialogMode          projectDialogMode
+	projectInput        string
+	gapInput            string
+	gapStartInput       string
+	gapEndInput         string
+	gapInputField       string
+	gapInputCursor      int
+	entryInput          string
+	entryStartInput     string
+	entryEndInput       string
+	entryInputField     string
+	entryInputCursor    int
+	entryProjectOnly    bool
+	dayFocusKind        string
+	dayGapFocus         int
+	daySlotStart        time.Time
+	daySlotSpan         time.Duration
+	dayDate             time.Time
+	dayWindowStart      time.Time
+	syncing             bool
+	syncFrame           int
+	caretVisible        bool
+	lastSyncedAt        *time.Time
+	syncStatusErr       error
+	timelineView        timelineViewMode
+	inspectorTab        inspectorTab
+	inspectorOffset     int
+	inspectorViewKey    string
+	slotMarkStart       time.Time
+	slotMarkSpan        time.Duration
+	confirmDeleteID     string
+	reportPreset        reportPreset
+	reportProjectCursor int
+	reportResult        db.ReportResult
+	activitySlots       []model.ActivitySlot
+	styles              tuiStyles
+	stylesWidth         int
+	mode                mode
+	err                 error
+	quitting            bool
 }
 
 type syncPulseMsg struct{}
@@ -258,7 +265,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.inspectorOffset = 0
 			}
 		case "up":
-			if m.timelineView == timelineViewDay {
+			if m.mode == modeReport {
+				m.moveReportProjectCursor(-1)
+			} else if m.timelineView == timelineViewDay {
 				if m.dayFocusKind == "entry" && m.cursor >= 0 && m.cursor < len(m.entries) {
 					m.slotBeforeEntry(m.entries[m.cursor])
 				} else {
@@ -270,7 +279,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ensureVisible()
 			}
 		case "k":
-			if m.timelineView == timelineViewDay {
+			if m.mode == modeReport {
+				m.moveReportProjectCursor(-1)
+			} else if m.timelineView == timelineViewDay {
 				m.jumpDayItem(-1)
 			} else if m.cursor > 0 {
 				m.cursor--
@@ -352,6 +363,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.projectCursor < len(m.projects) {
 					m.projectCursor++
 				}
+			} else if m.mode == modeReport {
+				m.moveReportProjectCursor(1)
 			} else if m.timelineView == timelineViewDay {
 				if m.dayFocusKind == "entry" && m.cursor >= 0 && m.cursor < len(m.entries) {
 					m.slotAfterEntry(m.entries[m.cursor])
@@ -368,6 +381,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.projectCursor < len(m.projects) {
 					m.projectCursor++
 				}
+			} else if m.mode == modeReport {
+				m.moveReportProjectCursor(1)
 			} else if m.timelineView == timelineViewDay {
 				m.jumpDayItem(1)
 			} else if m.cursor < len(m.entries)-1 {
@@ -442,12 +457,43 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(runSyncCmd(m.syncFn), syncPulseCmd(40*time.Millisecond))
 			}
 		case "r":
+			if m.mode == modeReport {
+				if err := m.loadReportPreset(m.reportPreset); err != nil {
+					m.err = err
+				}
+				return m, nil
+			}
 			if m.mode == modeTimeline {
-				if err := m.loadCurrentWeekReport(); err != nil {
+				m.reportPreset = reportPresetWeek
+				if err := m.loadReportPreset(m.reportPreset); err != nil {
 					m.err = err
 					return m, nil
 				}
 				m.mode = modeReport
+				return m, nil
+			}
+		case "w":
+			if m.mode == modeReport {
+				m.reportPreset = reportPresetWeek
+				if err := m.loadReportPreset(m.reportPreset); err != nil {
+					m.err = err
+				}
+				return m, nil
+			}
+		case "m":
+			if m.mode == modeReport {
+				m.reportPreset = reportPresetMonth
+				if err := m.loadReportPreset(m.reportPreset); err != nil {
+					m.err = err
+				}
+				return m, nil
+			}
+		case "y":
+			if m.mode == modeReport {
+				m.reportPreset = reportPresetYear
+				if err := m.loadReportPreset(m.reportPreset); err != nil {
+					m.err = err
+				}
 				return m, nil
 			}
 		case "d":
@@ -3322,7 +3368,7 @@ func renderBaseStatusBar(m AppModel, width int) string {
 		return truncateForWidth("/"+m.searchQuery+" | enter search | esc cancel", width)
 	}
 	if m.mode == modeReport {
-		return truncateForWidth("report | r refresh | esc back", width)
+		return truncateForWidth(fmt.Sprintf("report %s | w week | m month | y year | r refresh | esc back", m.reportPreset), width)
 	}
 	if m.timelineView == timelineViewDay {
 		text := fmt.Sprintf("entries %d | day %s | up/down 15m | shift+up/down 1h | j/k items | left/right day | wheel/pgup/pgdn inspector | enter create/edit | tab inspector", len(m.entries), m.displayedDay().Format("2006-01-02"))
@@ -3357,14 +3403,59 @@ func mergeSyncIntoStatusBar(base string, m AppModel, width int) string {
 	return left + " " + right
 }
 
-func (m *AppModel) loadCurrentWeekReport() error {
-	start, end := reportWeekRange(time.Now().In(time.Local))
+func (m *AppModel) loadReportPreset(preset reportPreset) error {
+	start, end := reportRangeForPreset(preset, time.Now().In(time.Local))
 	result, err := m.store.RangeReport(m.ctx, start, end)
 	if err != nil {
 		return err
 	}
+	m.reportPreset = preset
 	m.reportResult = result
+	m.clampReportProjectCursor()
 	return nil
+}
+
+func (m *AppModel) moveReportProjectCursor(delta int) {
+	if len(m.reportResult.Projects) == 0 || delta == 0 {
+		return
+	}
+	m.reportProjectCursor += delta
+	m.clampReportProjectCursor()
+}
+
+func (m *AppModel) clampReportProjectCursor() {
+	if len(m.reportResult.Projects) == 0 {
+		m.reportProjectCursor = 0
+		return
+	}
+	if m.reportProjectCursor < 0 {
+		m.reportProjectCursor = 0
+	}
+	if m.reportProjectCursor >= len(m.reportResult.Projects) {
+		m.reportProjectCursor = len(m.reportResult.Projects) - 1
+	}
+}
+
+func (m AppModel) selectedReportProject() *db.ReportProjectRow {
+	if len(m.reportResult.Projects) == 0 {
+		return nil
+	}
+	idx := m.reportProjectCursor
+	if idx < 0 || idx >= len(m.reportResult.Projects) {
+		idx = 0
+	}
+	return &m.reportResult.Projects[idx]
+}
+
+func reportRangeForPreset(preset reportPreset, now time.Time) (time.Time, time.Time) {
+	switch preset {
+	case reportPresetMonth:
+		return reportMonthRange(now)
+	case reportPresetYear:
+		return reportYearRange(now)
+	default:
+		return reportWeekRange(now)
+	}
 }
 
 func reportWeekRange(now time.Time) (time.Time, time.Time) {
@@ -3375,6 +3466,16 @@ func reportWeekRange(now time.Time) (time.Time, time.Time) {
 	}
 	start := day.AddDate(0, 0, -(weekday - 1))
 	return start, start.AddDate(0, 0, 7)
+}
+
+func reportMonthRange(now time.Time) (time.Time, time.Time) {
+	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	return start, start.AddDate(0, 1, 0)
+}
+
+func reportYearRange(now time.Time) (time.Time, time.Time) {
+	start := time.Date(now.Year(), time.January, 1, 0, 0, 0, 0, now.Location())
+	return start, start.AddDate(1, 0, 0)
 }
 
 func renderReportView(m AppModel, styles tuiStyles) string {
@@ -3388,8 +3489,21 @@ func renderReportView(m AppModel, styles tuiStyles) string {
 	b.WriteString(fmt.Sprintf("Active days: %d\n", m.reportResult.Summary.ActiveDays))
 	b.WriteString(fmt.Sprintf("Average daily hours: %.1f\n\n", float64(m.reportResult.Summary.AverageDailySecs)/3600))
 	b.WriteString("By project\n")
-	for _, project := range m.reportResult.Projects {
-		b.WriteString(fmt.Sprintf("%s %.1fh\n", project.ProjectName, float64(project.TotalSecs)/3600))
+	for i, project := range m.reportResult.Projects {
+		prefix := "  "
+		if i == m.reportProjectCursor {
+			prefix = "> "
+		}
+		b.WriteString(fmt.Sprintf("%s%s %.1fh\n", prefix, project.ProjectName, float64(project.TotalSecs)/3600))
+	}
+	if selected := m.selectedReportProject(); selected != nil {
+		b.WriteString("\nProject detail\n")
+		b.WriteString(fmt.Sprintf("Selected project: %s\n", selected.ProjectName))
+		b.WriteString(fmt.Sprintf("Billable hours: %.1f\n", float64(selected.BillableSecs)/3600))
+		b.WriteString(fmt.Sprintf("Non-billable hours: %.1f\n", float64(selected.NonBillableSecs)/3600))
+		if selected.Currency != "" {
+			b.WriteString(fmt.Sprintf("Currency: %s\n", selected.Currency))
+		}
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
