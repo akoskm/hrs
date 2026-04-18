@@ -1979,6 +1979,88 @@ func TestReportViewUsesCompactTwoColumnLayout(t *testing.T) {
 	}
 }
 
+func TestReportViewShowsDailyBreakdownBars(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Alpha", Code: "alpha", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	now := time.Now().In(time.Local)
+	weekStart, _ := reportWeekRange(now)
+	dayOne := time.Date(weekStart.Year(), weekStart.Month(), weekStart.Day(), 9, 0, 0, 0, time.Local)
+	dayTwo := dayOne.AddDate(0, 0, 1)
+	for _, tc := range []struct {
+		start time.Time
+		end   time.Time
+	}{
+		{start: dayOne, end: dayOne.Add(4 * time.Hour)},
+		{start: dayTwo, end: dayTwo.Add(2 * time.Hour)},
+	} {
+		if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+			ProjectIdent: "alpha",
+			Description:  "Daily work",
+			StartedAt:    tc.start,
+			EndedAt:      tc.end,
+		}); err != nil {
+			t.Fatalf("CreateManualEntry() error = %v", err)
+		}
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.width = 100
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	app := updated.(AppModel)
+	view := stripANSI(app.View())
+	if !strings.Contains(view, "By day") {
+		t.Fatalf("report view missing daily section: %q", view)
+	}
+	if !strings.Contains(view, "4.0h") || !strings.Contains(view, "2.0h") {
+		t.Fatalf("report view missing daily totals: %q", view)
+	}
+	if !strings.Contains(view, "████") {
+		t.Fatalf("report view missing daily bars: %q", view)
+	}
+}
+
+func TestReportViewShowsEarnedEstimate(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Alpha", Code: "alpha", Currency: "CHF", HourlyRate: 15000}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	now := time.Now().In(time.Local)
+	start := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, time.Local)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "alpha",
+		Description:  "Billable work",
+		StartedAt:    start,
+		EndedAt:      start.Add(2 * time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.width = 100
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	app := updated.(AppModel)
+	view := stripANSI(app.View())
+	if !strings.Contains(view, "Earned: 300.00 CHF") {
+		t.Fatalf("report view missing earned estimate: %q", view)
+	}
+}
+
 func firstDayOutsideRange(searchStart, searchEnd, excludedStart, excludedEnd time.Time) time.Time {
 	for day := searchStart; day.Before(searchEnd); day = day.AddDate(0, 0, 1) {
 		if day.Before(excludedStart) || !day.Before(excludedEnd) {

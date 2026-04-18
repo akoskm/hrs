@@ -3494,6 +3494,8 @@ func renderReportView(m AppModel, styles tuiStyles) string {
 	b.WriteString("Summary\n")
 	b.WriteString(renderReportSummaryBody(m))
 	b.WriteString("\n\n")
+	b.WriteString(renderReportDaysPane(m, contentWidth))
+	b.WriteString("\n\n")
 	b.WriteString(renderReportProjectsPane(m, contentWidth))
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -3503,6 +3505,8 @@ func renderReportSummaryPane(m AppModel, width int, styles tuiStyles) string {
 	b.WriteString(styles.title.Render("Summary") + "\n")
 	b.WriteString(styles.muted.Render(truncateForWidth(fmt.Sprintf("Range: %s..%s", m.reportResult.Range.From, m.reportResult.Range.To), width)) + "\n\n")
 	b.WriteString(renderReportSummaryBody(m))
+	b.WriteString("\n\n")
+	b.WriteString(renderReportDaysPane(m, width))
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -3539,9 +3543,37 @@ func renderReportProjectsPane(m AppModel, width int) string {
 		b.WriteString(truncateForWidth(fmt.Sprintf("Selected project: %s", selected.ProjectName), width) + "\n")
 		b.WriteString(truncateForWidth(fmt.Sprintf("Billable hours: %.1f", float64(selected.BillableSecs)/3600), width) + "\n")
 		b.WriteString(truncateForWidth(fmt.Sprintf("Non-billable hours: %.1f", float64(selected.NonBillableSecs)/3600), width) + "\n")
+		if earned := reportEarnedAmount(*selected); earned != "" {
+			b.WriteString(truncateForWidth("Earned: "+earned, width) + "\n")
+		}
 		if selected.Currency != "" {
 			b.WriteString(truncateForWidth(fmt.Sprintf("Currency: %s", selected.Currency), width) + "\n")
 		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func reportEarnedAmount(project db.ReportProjectRow) string {
+	if project.HourlyRate <= 0 || project.BillableSecs <= 0 || project.Currency == "" {
+		return ""
+	}
+	amount := float64(project.BillableSecs) / 3600 * float64(project.HourlyRate) / 100
+	return fmt.Sprintf("%.2f %s", amount, project.Currency)
+}
+
+func renderReportDaysPane(m AppModel, width int) string {
+	var b strings.Builder
+	b.WriteString("By day\n")
+	maxDaySecs := 0
+	for _, day := range m.reportResult.Days {
+		if day.TotalSecs > maxDaySecs {
+			maxDaySecs = day.TotalSecs
+		}
+	}
+	for _, day := range m.reportResult.Days {
+		bar := reportProjectBar(day.TotalSecs, maxDaySecs, 8)
+		line := fmt.Sprintf("%s %.1fh %s", day.Date, float64(day.TotalSecs)/3600, bar)
+		b.WriteString(truncateForWidth(line, width) + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
