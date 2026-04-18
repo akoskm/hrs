@@ -2,12 +2,14 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/exp/teatest"
@@ -1668,19 +1670,24 @@ func TestSyncStatusBarAnimatesWhileSyncing(t *testing.T) {
 	model.width = 120
 	model.height = 20
 	model.syncing = true
-	model.syncFrame = 2
 	first := renderStatusBar(model, 120)
-	firstSpinner := syncSpinnerFrame(model.syncFrame)
-	model.syncFrame = 3
-	secondSpinner := syncSpinnerFrame(model.syncFrame)
+	updated, cmd := model.Update(spinner.TickMsg{ID: model.syncSpinner.ID()})
+	model = updated.(AppModel)
+	second := renderStatusBar(model, 120)
 	if !strings.Contains(first, "Syncing") {
 		t.Fatalf("first status missing sync bar: %q", first)
 	}
-	if firstSpinner == secondSpinner {
-		t.Fatalf("sync bar did not animate: %q", first)
+	if !strings.Contains(second, "Syncing") {
+		t.Fatalf("second status missing sync bar: %q", second)
+	}
+	if first == second {
+		t.Fatalf("sync bar did not animate: first=%q second=%q", first, second)
+	}
+	if cmd == nil {
+		t.Fatal("cmd = nil after sync pulse, want follow-up tick")
 	}
 	model.syncing = false
-	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
 	app := updated.(AppModel)
 	if !app.syncing {
 		t.Fatal("syncing = false after s, want true")
@@ -1692,6 +1699,59 @@ func TestSyncStatusBarAnimatesWhileSyncing(t *testing.T) {
 	app = updated.(AppModel)
 	if app.syncing {
 		t.Fatal("syncing = true, want false")
+	}
+}
+
+func TestSyncStatusBarShowsErrorsWithoutSpinner(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	model, err := NewAppModelWithSync(ctx, store, func() error { return nil })
+	if err != nil {
+		t.Fatalf("NewAppModelWithSync() error = %v", err)
+	}
+	model.width = 120
+	model.height = 20
+
+	updated, _ := model.Update(syncDoneMsg{err: errors.New("boom")})
+	app := updated.(AppModel)
+	status := renderStatusBar(app, 120)
+	if !strings.Contains(status, "Sync Error") {
+		t.Fatalf("status missing sync error label: %q", status)
+	}
+	if !strings.Contains(status, "boom") {
+		t.Fatalf("status missing sync error text: %q", status)
+	}
+	if app.syncing {
+		t.Fatal("syncing = true after sync error, want false")
+	}
+}
+
+func TestSyncingViewDoesNotShowTrailingEllipsis(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	model, err := NewAppModelWithSync(ctx, store, func() error { return nil })
+	if err != nil {
+		t.Fatalf("NewAppModelWithSync() error = %v", err)
+	}
+	model.width = 120
+	model.height = 20
+	model.syncing = true
+
+	view := stripANSI(model.View())
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	if len(lines) == 0 {
+		t.Fatal("view has no lines")
+	}
+	status := lines[len(lines)-1]
+	if !strings.Contains(status, "Syncing") {
+		t.Fatalf("status missing Syncing: %q", status)
+	}
+	if strings.HasSuffix(status, "...") {
+		t.Fatalf("status has trailing ellipsis: %q", status)
 	}
 }
 

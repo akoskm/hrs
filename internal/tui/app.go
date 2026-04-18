@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -86,7 +87,7 @@ type AppModel struct {
 	dayDate             time.Time
 	dayWindowStart      time.Time
 	syncing             bool
-	syncFrame           int
+	syncSpinner         spinner.Model
 	caretVisible        bool
 	lastSyncedAt        *time.Time
 	syncStatusErr       error
@@ -108,7 +109,6 @@ type AppModel struct {
 	quitting            bool
 }
 
-type syncPulseMsg struct{}
 type cursorBlinkMsg struct{}
 
 type syncDoneMsg struct {
@@ -135,7 +135,7 @@ func NewAppModelWithSync(ctx context.Context, store *db.Store, syncFn func() err
 		return AppModel{}, err
 	}
 	sorted := sortEntries(entries)
-	model := AppModel{ctx: ctx, store: store, syncFn: syncFn, allEntries: sorted, projects: projects, selected: map[string]bool{}, mode: modeTimeline, dialogMode: projectDialogAssign, timelineView: timelineViewList, inspectorTab: inspectorOverview, styles: newStyles(80), stylesWidth: 80}
+	model := AppModel{ctx: ctx, store: store, syncFn: syncFn, allEntries: sorted, projects: projects, selected: map[string]bool{}, mode: modeTimeline, dialogMode: projectDialogAssign, timelineView: timelineViewList, inspectorTab: inspectorOverview, styles: newStyles(80), stylesWidth: 80, syncing: syncFn != nil, syncSpinner: newSyncSpinner()}
 	model.entries = model.allEntries
 	return model, nil
 }
@@ -186,8 +186,7 @@ func (m *AppModel) cycleInspectorTab(step int) {
 
 func (m AppModel) Init() tea.Cmd {
 	if m.syncFn != nil {
-		m.syncing = true
-		return tea.Batch(runSyncCmd(m.syncFn), syncPulseCmd(40*time.Millisecond))
+		return tea.Batch(runSyncCmd(m.syncFn), m.syncSpinner.Tick)
 	}
 	return nil
 }
@@ -443,9 +442,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "s":
 			if m.mode == modeTimeline && m.syncFn != nil && !m.syncing {
 				m.syncing = true
-				m.syncFrame = 0
+				m.syncSpinner = newSyncSpinner()
 				m.syncStatusErr = nil
-				return m, tea.Batch(runSyncCmd(m.syncFn), syncPulseCmd(40*time.Millisecond))
+				return m, tea.Batch(runSyncCmd(m.syncFn), m.syncSpinner.Tick)
 			}
 		case "r":
 			if m.mode == modeTimeline {
@@ -486,12 +485,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-	case syncPulseMsg:
+	case spinner.TickMsg:
 		if !m.syncing {
 			return m, nil
 		}
-		m.syncFrame++
-		return m, syncPulseCmd(40 * time.Millisecond)
+		var cmd tea.Cmd
+		m.syncSpinner, cmd = m.syncSpinner.Update(msg)
+		return m, cmd
 	case syncDoneMsg:
 		m.syncing = false
 		if msg.err != nil {
@@ -501,6 +501,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		now := time.Now().UTC()
 		m.lastSyncedAt = &now
 		m.syncStatusErr = nil
+		m.syncSpinner = newSyncSpinner()
 		m.restoreStateAfterReload()
 		if m.mode == modeReport {
 			if err := m.loadReportPreset(m.reportPreset); err != nil {
@@ -624,7 +625,10 @@ func (m AppModel) View() string {
 		sections = append(sections, styles.title.Render("Search")+"\n"+styles.activePicker.Render("/"+m.searchQuery))
 	}
 	statusWidth := max(0, timelineWidth(m.width)-3)
-	statusText := padRight(renderStatusBar(m, statusWidth), statusWidth)
+	statusText := renderStatusBar(m, statusWidth)
+	if lipgloss.Width(statusText) < statusWidth {
+		statusText += strings.Repeat(" ", statusWidth-lipgloss.Width(statusText))
+	}
 	sections = append(sections, styles.statusBar.Render(statusText))
 	view := strings.Join(sections, "\n")
 	if m.mode == modeAssign {
@@ -2207,12 +2211,12 @@ func (m *AppModel) restoreStateAfterReload() {
 	m.syncFocusForDisplayedDay()
 }
 
-func syncPulseCmd(delay time.Duration) tea.Cmd {
-	return tea.Tick(delay, func(time.Time) tea.Msg { return syncPulseMsg{} })
-}
-
 func cursorBlinkCmd() tea.Cmd {
 	return tea.Tick(530*time.Millisecond, func(time.Time) tea.Msg { return cursorBlinkMsg{} })
+}
+
+func newSyncSpinner() spinner.Model {
+	return spinner.New(spinner.WithSpinner(spinner.Dot))
 }
 
 func runSyncCmd(syncFn func() error) tea.Cmd {
@@ -3635,15 +3639,11 @@ func renderInlineSyncStatus(m AppModel, width int) string {
 		label = "Sync Error"
 		return padRight(label+" "+truncateForWidth(m.syncStatusErr.Error(), max(8, width-lipgloss.Width(label)-1)), width)
 	}
-	spinner := syncSpinnerFrame(m.syncFrame)
-	text := spinner + " " + label
-	return padRight(text, width)
-}
-
-func syncSpinnerFrame(frame int) string {
-	frames := []string{"|", "/", "-", "\\"}
-	idx := frame % len(frames)
-	return frames[idx]
+	text := m.syncSpinner.View() + " " + label
+	if lipgloss.Width(text) >= width {
+		return text
+	}
+	return text + strings.Repeat(" ", width-lipgloss.Width(text))
 }
 
 func (m *AppModel) jumpToSearchMatch(start, direction int, includeCurrent bool) {
