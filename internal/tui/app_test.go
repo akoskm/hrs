@@ -1295,14 +1295,15 @@ func TestTimelineDayViewCreateManualEntryFromGap(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
 	defer store.Close()
+	day := time.Date(2026, 4, 3, 0, 0, 0, 0, time.Local)
 
 	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
-	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Morning", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)}); err != nil {
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Morning", StartedAt: day.Add(9 * time.Hour), EndedAt: day.Add(10 * time.Hour)}); err != nil {
 		t.Fatalf("CreateManualEntry() error = %v", err)
 	}
-	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Noon", StartedAt: time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 13, 0, 0, 0, time.UTC)}); err != nil {
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Noon", StartedAt: day.Add(12 * time.Hour), EndedAt: day.Add(13 * time.Hour)}); err != nil {
 		t.Fatalf("CreateManualEntry() error = %v", err)
 	}
 
@@ -1313,9 +1314,9 @@ func TestTimelineDayViewCreateManualEntryFromGap(t *testing.T) {
 	model.SetDefaultTimelineView("day")
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 20})
 	app := updated.(AppModel)
-	// position slot in the gap between entries (12:00-14:00 local = after first entry, before second)
-	app.daySlotStart = time.Date(2026, 4, 3, 12, 0, 0, 0, time.Local)
-	app.daySlotSpan = 2 * time.Hour
+	// Position slot in a guaranteed gap between the seeded entries.
+	app.daySlotStart = day.Add(10*time.Hour + 30*time.Minute)
+	app.daySlotSpan = time.Hour
 	app.dayFocusKind = "slot"
 
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1344,8 +1345,8 @@ func TestTimelineDayViewCreateManualEntryFromGap(t *testing.T) {
 	found := false
 	for _, entry := range entries {
 		if entry.Description != nil && *entry.Description == "Deep work" {
-			if formatRange(entry.StartedAt, entry.EndedAt) != "12:00-14:00" {
-				t.Fatalf("created range = %s, want 12:00-14:00", formatRange(entry.StartedAt, entry.EndedAt))
+			if formatRange(entry.StartedAt, entry.EndedAt) != "10:30-11:30" {
+				t.Fatalf("created range = %s, want 10:30-11:30", formatRange(entry.StartedAt, entry.EndedAt))
 			}
 			found = true
 		}
