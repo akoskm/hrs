@@ -3479,15 +3479,45 @@ func reportYearRange(now time.Time) (time.Time, time.Time) {
 }
 
 func renderReportView(m AppModel, styles tuiStyles) string {
+	contentWidth := timelineWidth(m.width)
+	if contentWidth >= 80 {
+		leftWidth := max(28, contentWidth/3)
+		rightWidth := max(32, contentWidth-leftWidth-1)
+		left := styles.inspectorBox.Width(max(20, leftWidth-2)).Render(renderReportSummaryPane(m, leftWidth-4, styles))
+		right := styles.inspectorBox.Width(max(20, rightWidth-2)).Render(renderReportProjectsPane(m, rightWidth-4))
+		return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	}
+
 	var b strings.Builder
 	b.WriteString(styles.title.Render("Report") + "\n")
 	b.WriteString(fmt.Sprintf("Range: %s..%s\n\n", m.reportResult.Range.From, m.reportResult.Range.To))
 	b.WriteString("Summary\n")
+	b.WriteString(renderReportSummaryBody(m))
+	b.WriteString("\n\n")
+	b.WriteString(renderReportProjectsPane(m, contentWidth))
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderReportSummaryPane(m AppModel, width int, styles tuiStyles) string {
+	var b strings.Builder
+	b.WriteString(styles.title.Render("Summary") + "\n")
+	b.WriteString(styles.muted.Render(truncateForWidth(fmt.Sprintf("Range: %s..%s", m.reportResult.Range.From, m.reportResult.Range.To), width)) + "\n\n")
+	b.WriteString(renderReportSummaryBody(m))
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderReportSummaryBody(m AppModel) string {
+	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Total hours: %.1f\n", float64(m.reportResult.Summary.TotalSecs)/3600))
 	b.WriteString(fmt.Sprintf("Billable hours: %.1f\n", float64(m.reportResult.Summary.BillableSecs)/3600))
 	b.WriteString(fmt.Sprintf("Non-billable hours: %.1f\n", float64(m.reportResult.Summary.NonBillableSecs)/3600))
 	b.WriteString(fmt.Sprintf("Active days: %d\n", m.reportResult.Summary.ActiveDays))
-	b.WriteString(fmt.Sprintf("Average daily hours: %.1f\n\n", float64(m.reportResult.Summary.AverageDailySecs)/3600))
+	b.WriteString(fmt.Sprintf("Average daily hours: %.1f\n", float64(m.reportResult.Summary.AverageDailySecs)/3600))
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderReportProjectsPane(m AppModel, width int) string {
+	var b strings.Builder
 	b.WriteString("By project\n")
 	maxProjectSecs := 0
 	for _, project := range m.reportResult.Projects {
@@ -3501,15 +3531,16 @@ func renderReportView(m AppModel, styles tuiStyles) string {
 			prefix = "> "
 		}
 		bar := reportProjectBar(project.TotalSecs, maxProjectSecs, 8)
-		b.WriteString(fmt.Sprintf("%s%s %.1fh %s\n", prefix, project.ProjectName, float64(project.TotalSecs)/3600, bar))
+		line := fmt.Sprintf("%s%s %.1fh %s", prefix, project.ProjectName, float64(project.TotalSecs)/3600, bar)
+		b.WriteString(truncateForWidth(line, width) + "\n")
 	}
 	if selected := m.selectedReportProject(); selected != nil {
 		b.WriteString("\nProject detail\n")
-		b.WriteString(fmt.Sprintf("Selected project: %s\n", selected.ProjectName))
-		b.WriteString(fmt.Sprintf("Billable hours: %.1f\n", float64(selected.BillableSecs)/3600))
-		b.WriteString(fmt.Sprintf("Non-billable hours: %.1f\n", float64(selected.NonBillableSecs)/3600))
+		b.WriteString(truncateForWidth(fmt.Sprintf("Selected project: %s", selected.ProjectName), width) + "\n")
+		b.WriteString(truncateForWidth(fmt.Sprintf("Billable hours: %.1f", float64(selected.BillableSecs)/3600), width) + "\n")
+		b.WriteString(truncateForWidth(fmt.Sprintf("Non-billable hours: %.1f", float64(selected.NonBillableSecs)/3600), width) + "\n")
 		if selected.Currency != "" {
-			b.WriteString(fmt.Sprintf("Currency: %s\n", selected.Currency))
+			b.WriteString(truncateForWidth(fmt.Sprintf("Currency: %s", selected.Currency), width) + "\n")
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")

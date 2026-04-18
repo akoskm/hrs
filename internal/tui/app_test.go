@@ -1753,7 +1753,7 @@ func TestTimelineCanOpenReportView(t *testing.T) {
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
 	app := updated.(AppModel)
 	view := stripANSI(app.View())
-	if !strings.Contains(view, "Report") || !strings.Contains(view, "Summary") {
+	if !strings.Contains(view, "Summary") || !strings.Contains(view, "By project") {
 		t.Fatalf("report view missing summary sections: %q", view)
 	}
 	if !strings.Contains(view, "Elaiia") {
@@ -1918,6 +1918,64 @@ func TestReportViewShowsRelativeProjectBars(t *testing.T) {
 	}
 	if !strings.Contains(view, "████") || !strings.Contains(view, "█") {
 		t.Fatalf("report view missing relative bars: %q", view)
+	}
+}
+
+func TestReportViewUsesCompactTwoColumnLayout(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	for _, project := range []db.ProjectCreateInput{
+		{Name: "Alpha", Code: "alpha", Currency: "CHF"},
+		{Name: "Beta", Code: "beta", Currency: "USD"},
+	} {
+		if _, err := store.CreateProject(ctx, project); err != nil {
+			t.Fatalf("CreateProject(%s) error = %v", project.Name, err)
+		}
+	}
+	now := time.Now().In(time.Local)
+	start := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, time.Local)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "alpha",
+		Description:  "Alpha work",
+		StartedAt:    start,
+		EndedAt:      start.Add(4 * time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry(alpha) error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "beta",
+		Description:  "Beta work",
+		StartedAt:    start.Add(5 * time.Hour),
+		EndedAt:      start.Add(6 * time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry(beta) error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.width = 100
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	app := updated.(AppModel)
+	view := stripANSI(app.View())
+	lines := strings.Split(view, "\n")
+
+	foundCompactRow := false
+	for _, line := range lines {
+		if strings.Contains(line, "Summary") && strings.Contains(line, "By project") {
+			foundCompactRow = true
+			break
+		}
+	}
+	if !foundCompactRow {
+		t.Fatalf("report view did not render summary and project sections side-by-side: %q", view)
+	}
+	if !strings.Contains(view, "Selected project: Alpha") {
+		t.Fatalf("report detail missing in compact layout: %q", view)
 	}
 }
 
