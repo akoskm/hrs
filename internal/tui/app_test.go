@@ -859,6 +859,43 @@ func TestOutlinedBlockCellTouchingShortBlockWithoutInteriorRowUsesSharedBoundary
 	}
 }
 
+func TestRenderActivityCellKeepsBorderBetweenDifferentProjects(t *testing.T) {
+	projectA := "alpha"
+	projectB := "beta"
+	boundary := time.Date(2026, 4, 7, 14, 30, 0, 0, time.Local)
+	upperEnd := boundary
+	lowerEnd := boundary.Add(45 * time.Minute)
+	entries := []model.TimeEntryDetail{
+		{
+			TimeEntry: model.TimeEntry{
+				ID:        "upper",
+				ProjectID: &projectA,
+				StartedAt: boundary.Add(-45 * time.Minute),
+				EndedAt:   &upperEnd,
+				Status:    model.StatusConfirmed,
+			},
+			ProjectName: "Alpha",
+		},
+		{
+			TimeEntry: model.TimeEntry{
+				ID:        "lower",
+				ProjectID: &projectB,
+				StartedAt: boundary,
+				EndedAt:   &lowerEnd,
+				Status:    model.StatusConfirmed,
+			},
+			ProjectName: "Beta",
+		},
+	}
+
+	app := AppModel{entries: entries}
+	styles := newStyles(80)
+	got := stripANSI(renderActivityCell(app, time.Time{}, boundary, boundary.Add(15*time.Minute), entries, 24, styles))
+	if !strings.Contains(got, "┌") || strings.Contains(got, "├") {
+		t.Fatalf("lower cross-project cell = %q, want fresh top border", got)
+	}
+}
+
 func TestTimelineTruncatesLongDescriptionToWidth(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)

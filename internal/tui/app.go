@@ -2968,10 +2968,10 @@ func renderActivityCell(m AppModel, viewportStart, slotStart, slotEnd time.Time,
 				continue
 			}
 			otherEnd := timelineBlockEnd(other)
-			if otherEnd.Equal(entry.StartedAt) {
+			if otherEnd.Equal(entry.StartedAt) && sharesProjectBoundary(entry, other) {
 				touchesAbove = true
 			}
-			if other.StartedAt.Equal(entryEnd) {
+			if other.StartedAt.Equal(entryEnd) && sharesProjectBoundary(entry, other) {
 				touchesBelow = true
 			}
 			if touchesAbove && touchesBelow {
@@ -3002,6 +3002,13 @@ func renderActivityCell(m AppModel, viewportStart, slotStart, slotEnd time.Time,
 		return styles.muted.Render(padRight(truncateForWidth(" "+text, width), width))
 	}
 	return padRight("", width)
+}
+
+func sharesProjectBoundary(a, b model.TimeEntryDetail) bool {
+	if a.ProjectID == nil || b.ProjectID == nil {
+		return a.ProjectID == nil && b.ProjectID == nil
+	}
+	return *a.ProjectID == *b.ProjectID
 }
 
 func renderVerticalEntryCell(viewportStart, slotStart, slotEnd, itemStart, itemEnd time.Time, touchesAbove, touchesBelow, focused bool, width int, label string, baseStyle lipgloss.Style, styles tuiStyles) string {
