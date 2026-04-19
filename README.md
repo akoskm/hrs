@@ -76,3 +76,18 @@ go test ./...
 ## License
 
 MIT
+
+## Screenshots
+
+### Timeline / Agent Inspector view
+
+<img width="3192" height="2002" alt="image" src="https://github.com/user-attachments/assets/522a6208-24a2-4005-b88a-cf2fe82c253f" />
+
+
+### Assign work view
+
+<img width="3192" height="2002" alt="image" src="https://github.com/user-attachments/assets/ab4e51b2-5ab9-428b-be90-399d98018947" />
+
+### Reports
+
+<img width="3192" height="2002" alt="image" src="https://github.com/user-attachments/assets/a45a48a7-e259-43fe-8f51-41fe96e3ec02" />
