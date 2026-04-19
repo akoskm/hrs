@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -93,8 +94,8 @@ type AppModel struct {
 	syncStatusErr       error
 	timelineView        timelineViewMode
 	inspectorTab        inspectorTab
-	inspectorOffset     int
 	inspectorViewKey    string
+	inspectorViewport   viewport.Model
 	slotMarkStart       time.Time
 	slotMarkSpan        time.Duration
 	confirmDeleteID     string
@@ -135,7 +136,7 @@ func NewAppModelWithSync(ctx context.Context, store *db.Store, syncFn func() err
 		return AppModel{}, err
 	}
 	sorted := sortEntries(entries)
-	model := AppModel{ctx: ctx, store: store, syncFn: syncFn, allEntries: sorted, projects: projects, selected: map[string]bool{}, mode: modeTimeline, dialogMode: projectDialogAssign, timelineView: timelineViewList, inspectorTab: inspectorOverview, styles: newStyles(80), stylesWidth: 80, syncing: syncFn != nil, syncSpinner: newSyncSpinner()}
+	model := AppModel{ctx: ctx, store: store, syncFn: syncFn, allEntries: sorted, projects: projects, selected: map[string]bool{}, mode: modeTimeline, dialogMode: projectDialogAssign, timelineView: timelineViewList, inspectorTab: inspectorOverview, styles: newStyles(80), stylesWidth: 80, syncing: syncFn != nil, syncSpinner: newSyncSpinner(), inspectorViewport: newInspectorViewport(20, 1)}
 	model.entries = model.allEntries
 	return model, nil
 }
@@ -255,12 +256,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "tab":
 			if m.mode == modeTimeline {
 				m.cycleInspectorTab(1)
-				m.inspectorOffset = 0
 			}
 		case "shift+tab":
 			if m.mode == modeTimeline {
 				m.cycleInspectorTab(-1)
-				m.inspectorOffset = 0
 			}
 		case "up":
 			if m.timelineView == timelineViewDay {
@@ -473,13 +472,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.Button {
 			case tea.MouseButtonWheelUp:
 				if m.mouseInInspector(msg.X) {
-					m.scrollInspectorLines(-3)
+					m.scrollInspectorLines(-5)
 				} else {
 					m.scrollWindow(-time.Hour)
 				}
 			case tea.MouseButtonWheelDown:
 				if m.mouseInInspector(msg.X) {
-					m.scrollInspectorLines(3)
+					m.scrollInspectorLines(5)
 				} else {
 					m.scrollWindow(time.Hour)
 				}
@@ -2479,7 +2478,19 @@ func renderDayTimelinePane(m AppModel, styles tuiStyles, width int, height int) 
 func renderInspectorPane(m AppModel, styles tuiStyles, width int, height int) string {
 	innerWidth := max(20, width-4)
 	tabs := renderInspectorTabs(m, styles)
-	body := renderInspectorBody(m, innerWidth, inspectorBodyHeight(height))
+	bodyHeight := inspectorBodyHeight(height)
+	bodyWidth := innerWidth
+	scrollbar := ""
+	viewport := buildInspectorViewport(m, innerWidth, bodyHeight)
+	if inspectorNeedsScrollbar(viewport) {
+		bodyWidth = max(1, innerWidth-1)
+		viewport = buildInspectorViewport(m, bodyWidth, bodyHeight)
+		scrollbar = renderInspectorScrollbar(viewport, bodyHeight, styles)
+	}
+	body := viewport.View()
+	if scrollbar != "" {
+		body = lipgloss.JoinHorizontal(lipgloss.Top, body, scrollbar)
+	}
 	content := tabs + "\n" + body
 	return styles.inspectorBox.Width(max(20, width-2)).Height(max(1, height-2)).Render(content)
 }
@@ -2512,20 +2523,7 @@ func renderInspectorTabs(m AppModel, styles tuiStyles) string {
 }
 
 func renderInspectorBody(m AppModel, width int, height int) string {
-	lines := inspectorLines(m)
-	for i, line := range lines {
-		lines[i] = truncateForWidth(line, width)
-	}
-	offset := max(0, min(m.inspectorOffset, max(0, len(lines)-height)))
-	end := min(len(lines), offset+height)
-	if end < offset {
-		end = offset
-	}
-	visible := append([]string(nil), lines[offset:end]...)
-	for len(visible) < height {
-		visible = append(visible, "")
-	}
-	return strings.Join(visible, "\n")
+	return buildInspectorViewport(m, width, height).View()
 }
 
 func inspectorLines(m AppModel) []string {
@@ -2635,16 +2633,24 @@ func (m *AppModel) scrollInspectorPage(direction int) {
 	if direction == 0 {
 		return
 	}
-	page := max(1, inspectorBodyHeight(dayPaneHeight(m.height))-1)
-	m.scrollInspectorLines(direction * page)
+	m.syncInspectorViewport()
+	if direction > 0 {
+		m.inspectorViewport.PageDown()
+		return
+	}
+	m.inspectorViewport.PageUp()
 }
 
 func (m *AppModel) scrollInspectorLines(delta int) {
 	if delta == 0 {
 		return
 	}
-	m.inspectorOffset += delta
 	m.syncInspectorViewport()
+	if delta > 0 {
+		m.inspectorViewport.ScrollDown(delta)
+		return
+	}
+	m.inspectorViewport.ScrollUp(-delta)
 }
 
 func (m AppModel) mouseInInspector(x int) bool {
@@ -2655,13 +2661,77 @@ func (m AppModel) mouseInInspector(x int) bool {
 }
 
 func (m *AppModel) syncInspectorViewport() {
+	width := max(20, dayInspectorWidth(m.width)-4)
+	height := inspectorBodyHeight(dayPaneHeight(m.height))
 	key := m.inspectorContentKey()
-	if key != m.inspectorViewKey {
-		m.inspectorViewKey = key
-		m.inspectorOffset = 0
+	m.inspectorViewport = buildInspectorViewport(*m, width, height)
+	m.inspectorViewKey = key
+}
+
+func newInspectorViewport(width int, height int) viewport.Model {
+	if width < 0 {
+		width = 0
 	}
-	maxOffset := max(0, len(inspectorLines(*m))-inspectorBodyHeight(dayPaneHeight(m.height)))
-	m.inspectorOffset = max(0, min(m.inspectorOffset, maxOffset))
+	if height < 1 {
+		height = 1
+	}
+	vp := viewport.New(width, height)
+	vp.MouseWheelEnabled = false
+	return vp
+}
+
+func buildInspectorViewport(m AppModel, width int, height int) viewport.Model {
+	vp := m.inspectorViewport
+	if vp.Width != width || vp.Height != height || vp.Height == 0 {
+		next := newInspectorViewport(width, height)
+		next.YOffset = vp.YOffset
+		vp = next
+	}
+	if m.inspectorContentKey() != m.inspectorViewKey {
+		vp.GotoTop()
+	}
+	lines := inspectorLines(m)
+	for i, line := range lines {
+		lines[i] = truncateForWidth(line, width)
+	}
+	vp.SetContent(strings.Join(lines, "\n"))
+	return vp
+}
+
+func inspectorNeedsScrollbar(vp viewport.Model) bool {
+	return vp.TotalLineCount() > vp.Height
+}
+
+func inspectorScrollbar(totalLines, visibleLines, offset int) (thumbStart, thumbEnd int) {
+	if totalLines <= 0 || visibleLines <= 0 || totalLines <= visibleLines {
+		return 0, 0
+	}
+	maxOffset := max(1, totalLines-visibleLines)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > maxOffset {
+		offset = maxOffset
+	}
+	thumbSize := min(3, visibleLines)
+	if thumbSize > visibleLines {
+		thumbSize = visibleLines
+	}
+	maxThumbStart := max(0, visibleLines-thumbSize)
+	ratio := float64(offset) / float64(maxOffset)
+	thumbStart = int(ratio * float64(maxThumbStart))
+	thumbEnd = thumbStart + thumbSize
+	if thumbEnd > visibleLines {
+		thumbEnd = visibleLines
+	}
+	return thumbStart, thumbEnd
+}
+
+func renderInspectorScrollbar(vp viewport.Model, height int, styles tuiStyles) string {
+	thumbStart, thumbEnd := inspectorScrollbar(vp.TotalLineCount(), vp.Height, vp.YOffset)
+	trackStyle := lipgloss.NewStyle().Background(lipgloss.Color("236"))
+	thumbStyle := lipgloss.NewStyle().Background(lipgloss.Color("4"))
+	return renderScrollbarColumn(height, thumbStart, thumbEnd, trackStyle, thumbStyle)
 }
 
 func (m AppModel) inspectorContentKey() string {
@@ -2797,16 +2867,18 @@ func dayScrollbar(totalRows int, windowStart time.Time, day time.Time) (thumbSta
 	if offset < 0 {
 		offset = 0
 	}
-	ratio := float64(offset) / float64(24*time.Hour)
-	windowRatio := float64(10*time.Hour) / float64(24*time.Hour)
-	thumbStart = int(ratio * float64(totalRows))
-	thumbEnd = thumbStart + max(1, int(windowRatio*float64(totalRows)))
-	if thumbEnd > totalRows {
-		thumbEnd = totalRows
+	maxOffset := 24*time.Hour - 10*time.Hour
+	if maxOffset <= 0 {
+		maxOffset = time.Hour
 	}
-	if thumbStart >= totalRows {
-		thumbStart = totalRows - 1
+	if offset > maxOffset {
+		offset = maxOffset
 	}
+	thumbSize := min(3, totalRows)
+	maxThumbStart := max(0, totalRows-thumbSize)
+	ratio := float64(offset) / float64(maxOffset)
+	thumbStart = int(ratio * float64(maxThumbStart))
+	thumbEnd = min(totalRows, thumbStart+thumbSize)
 	return thumbStart, thumbEnd
 }
 
@@ -2818,16 +2890,20 @@ func renderDayScrollbar(m AppModel, styles tuiStyles) string {
 
 	// 4 header lines (date, subheader, column header, separator) + row lines + 1 footer
 	totalLines := 4 + len(rows) + 1
-	thumbStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
+	trackStyle := lipgloss.NewStyle().Background(lipgloss.Color("236"))
+	thumbStyle := lipgloss.NewStyle().Background(lipgloss.Color("4"))
+	return renderScrollbarColumn(totalLines, 4+thumbStart, 4+thumbEnd, trackStyle, thumbStyle)
+}
+
+func renderScrollbarColumn(height, thumbStart, thumbEnd int, trackStyle, thumbStyle lipgloss.Style) string {
 	var sb strings.Builder
-	for i := 0; i < totalLines; i++ {
-		rowIdx := i - 4 // offset for header lines
-		if rowIdx >= 0 && rowIdx < len(rows) && rowIdx >= thumbStart && rowIdx < thumbEnd {
-			sb.WriteString(thumbStyle.Render("▐"))
+	for i := 0; i < height; i++ {
+		if i >= thumbStart && i < thumbEnd {
+			sb.WriteString(thumbStyle.Render(" "))
 		} else {
-			sb.WriteString(styles.muted.Render("│"))
+			sb.WriteString(trackStyle.Render(" "))
 		}
-		if i < totalLines-1 {
+		if i < height-1 {
 			sb.WriteString("\n")
 		}
 	}
@@ -4100,13 +4176,28 @@ func timelineWidth(width int) int {
 }
 
 func truncateForWidth(text string, width int) string {
-	if width <= 0 || len(text) <= width {
+	if width <= 0 || lipgloss.Width(text) <= width {
 		return text
 	}
 	if width <= 3 {
-		return text[:width]
+		runes := []rune(text)
+		if len(runes) <= width {
+			return text
+		}
+		return string(runes[:width])
 	}
-	return text[:width-3] + "..."
+	target := width - 3
+	var b strings.Builder
+	current := 0
+	for _, r := range text {
+		rw := lipgloss.Width(string(r))
+		if current+rw > target {
+			break
+		}
+		b.WriteRune(r)
+		current += rw
+	}
+	return b.String() + "..."
 }
 
 func padRight(text string, width int) string {

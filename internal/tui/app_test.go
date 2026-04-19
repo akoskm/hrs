@@ -801,6 +801,13 @@ func TestCenteredBlockLabelUsesFullWidth(t *testing.T) {
 	}
 }
 
+func TestTruncateForWidthUsesDisplayWidth(t *testing.T) {
+	got := truncateForWidth("│   │", 5)
+	if got != "│   │" {
+		t.Fatalf("truncateForWidth() = %q, want %q", got, "│   │")
+	}
+}
+
 func TestOutlinedBlockCellAnchorsViewportTopLabel(t *testing.T) {
 	viewportStart := time.Date(2026, 4, 7, 7, 0, 0, 0, time.Local)
 	itemStart := viewportStart
@@ -3705,8 +3712,8 @@ func TestDayViewInspectorScrollsWithoutStretchingLayout(t *testing.T) {
 
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 	app = updated.(AppModel)
-	if app.inspectorOffset == 0 {
-		t.Fatal("inspectorOffset = 0 after pgdown, want > 0")
+	if app.inspectorViewport.YOffset == 0 {
+		t.Fatal("inspector viewport did not scroll after pgdown")
 	}
 	view = stripANSI(app.View())
 	if !strings.Contains(view, "prompt 4") {
@@ -3754,24 +3761,336 @@ func TestDayViewMouseWheelScrollsInspectorWhenHovered(t *testing.T) {
 	m.loadActivitySlots()
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 18})
 	app := updated.(AppModel)
+	initialView := stripANSI(app.View())
+	if !strings.Contains(initialView, "prompt 1") {
+		t.Fatalf("initial inspector missing first prompt, got:\n%s", initialView)
+	}
+	if strings.Contains(initialView, "prompt 6") {
+		t.Fatalf("initial inspector should be clipped before prompt 6, got:\n%s", initialView)
+	}
 
 	startWindow := app.dayWindowStart
 	inspectorX := app.width - dayInspectorWidth(app.width) + 1
 	updated, _ = app.Update(tea.MouseMsg{X: inspectorX, Button: tea.MouseButtonWheelDown})
 	app = updated.(AppModel)
-	if app.inspectorOffset == 0 {
-		t.Fatal("inspectorOffset = 0 after wheel down over inspector, want > 0")
-	}
+	updated, _ = app.Update(tea.MouseMsg{X: inspectorX, Button: tea.MouseButtonWheelDown})
+	app = updated.(AppModel)
 	if !app.dayWindowStart.Equal(startWindow) {
 		t.Fatalf("dayWindowStart changed from %s to %s while scrolling inspector", clock(startWindow), clock(app.dayWindowStart))
 	}
 
 	view := stripANSI(app.View())
-	if !strings.Contains(view, "prompt 2") {
+	if !strings.Contains(view, "prompt 4") {
 		t.Fatalf("wheel-scrolled inspector missing later prompt, got:\n%s", view)
 	}
+	if strings.Contains(view, "prompt 1") {
+		t.Fatalf("wheel-scrolled inspector still shows first prompt, got:\n%s", view)
+	}
+}
+
+func TestDayViewInspectorResetsToTopWhenTabChanges(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	day := time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local)
+	slots := make([]model.ActivitySlot, 0, 6)
+	for i := 0; i < 6; i++ {
+		slots = append(slots, model.ActivitySlot{
+			SlotTime:  time.Date(2026, 4, 7, 8, i*15, 0, 0, time.Local).UTC(),
+			Operator:  "claude-code",
+			MsgCount:  10 + i,
+			UserTexts: []string{"prompt " + strconv.Itoa(i+1)},
+		})
+	}
+	if err := store.UpsertActivitySlots(ctx, slots); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(day)
+	m.dayFocusKind = "slot"
+	m.daySlotStart = time.Date(2026, 4, 7, 9, 15, 0, 0, time.Local)
+	m.daySlotSpan = 15 * time.Minute
+	m.slotMarkStart = time.Date(2026, 4, 7, 8, 0, 0, 0, time.Local)
+	m.slotMarkSpan = 15 * time.Minute
+	m.loadActivitySlots()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 18})
+	app := updated.(AppModel)
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	app = updated.(AppModel)
+	view := stripANSI(app.View())
+	if !strings.Contains(view, "prompt 4") {
+		t.Fatalf("scrolled overview missing later prompt, got:\n%s", view)
+	}
+	if strings.Contains(view, "prompt 1") {
+		t.Fatalf("scrolled overview still shows first prompt, got:\n%s", view)
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	view = stripANSI(app.View())
+	if !strings.Contains(view, "Enter/c: create entry or edit overlap") {
+		t.Fatalf("actions tab missing top actions, got:\n%s", view)
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	view = stripANSI(app.View())
 	if !strings.Contains(view, "prompt 1") {
-		t.Fatalf("wheel-scrolled inspector unexpectedly skipped first prompt, got:\n%s", view)
+		t.Fatalf("overview did not reset to top after tab cycle, got:\n%s", view)
+	}
+}
+
+func TestRenderInspectorPaneDoesNotWrapIntoBorder(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	entry, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "elaiia",
+		Description:  "test prod baseline study, fix for likert counts",
+		StartedAt:    time.Date(2026, 4, 7, 10, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 7, 12, 40, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if err := store.UpsertActivitySlots(ctx, []model.ActivitySlot{{
+		SlotTime:    time.Date(2026, 4, 7, 10, 0, 0, 0, time.Local).UTC(),
+		Operator:    "claude-code",
+		MsgCount:    24,
+		GitBranch:   "dev",
+		Cwd:         "/Users/akoskm/Projects/delta-one-nextjs",
+		TokenInput:  36,
+		TokenOutput: 12000,
+		UserTexts: []string{
+			"i have d61c89a36a99d09b899f4da6e102d5567aac3968 and c2fd8bc0ba349f357a432c773f2c2ad81f8f76b8 in main that aren't matching",
+			"i marked some discrepancy on the screenshot. this is from study d9588c93-8c9f-4f63-b52c-5b4d0ee43ab2 in dev and it still looks off",
+		},
+	}}); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.width = 200
+	m.height = 30
+	m.dayDate = dayStart(time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local))
+	m.cursor = 0
+	m.dayFocusKind = "entry"
+	m.focusEntryByID(entry.ID)
+	m.loadActivitySlots()
+	m.syncInspectorViewport()
+
+	paneWidth := dayInspectorWidth(m.width)
+	pane := renderInspectorPane(m, newStyles(m.width), paneWidth, dayPaneHeight(m.height))
+	lines := strings.Split(pane, "\n")
+	for _, line := range lines[1 : len(lines)-1] {
+		if strings.Count(line, "│") > 2 {
+			t.Fatalf("inspector line wrapped into border: %q", line)
+		}
+	}
+}
+
+func TestRenderInspectorPaneMatchesRequestedWidth(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.width = 180
+	m.height = 20
+	m.SetDefaultTimelineView("day")
+	m.syncInspectorViewport()
+
+	requested := 90
+	pane := renderInspectorPane(m, newStyles(m.width), requested, dayPaneHeight(m.height))
+	if lipgloss.Width(pane) != requested {
+		t.Fatalf("inspector pane width = %d, want %d\n%s", lipgloss.Width(pane), requested, pane)
+	}
+}
+
+func TestRenderInspectorPaneShowsScrollbarWhenOverflowing(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	day := time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local)
+	slots := make([]model.ActivitySlot, 0, 6)
+	for i := 0; i < 6; i++ {
+		slots = append(slots, model.ActivitySlot{
+			SlotTime:  time.Date(2026, 4, 7, 8, i*15, 0, 0, time.Local).UTC(),
+			Operator:  "claude-code",
+			MsgCount:  10 + i,
+			UserTexts: []string{"prompt " + strconv.Itoa(i+1)},
+		})
+	}
+	if err := store.UpsertActivitySlots(ctx, slots); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(day)
+	m.dayFocusKind = "slot"
+	m.daySlotStart = time.Date(2026, 4, 7, 9, 15, 0, 0, time.Local)
+	m.daySlotSpan = 15 * time.Minute
+	m.slotMarkStart = time.Date(2026, 4, 7, 8, 0, 0, 0, time.Local)
+	m.slotMarkSpan = 15 * time.Minute
+	m.loadActivitySlots()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 18})
+	app := updated.(AppModel)
+
+	viewport := buildInspectorViewport(app, max(20, dayInspectorWidth(app.width)-5), inspectorBodyHeight(dayPaneHeight(app.height)))
+	if !inspectorNeedsScrollbar(viewport) {
+		t.Fatal("overflowing inspector should require scrollbar")
+	}
+}
+
+func TestRenderInspectorPaneScrollbarMovesAfterScroll(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	day := time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local)
+	slots := make([]model.ActivitySlot, 0, 6)
+	for i := 0; i < 6; i++ {
+		slots = append(slots, model.ActivitySlot{
+			SlotTime:  time.Date(2026, 4, 7, 8, i*15, 0, 0, time.Local).UTC(),
+			Operator:  "claude-code",
+			MsgCount:  10 + i,
+			UserTexts: []string{"prompt " + strconv.Itoa(i+1)},
+		})
+	}
+	if err := store.UpsertActivitySlots(ctx, slots); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(day)
+	m.dayFocusKind = "slot"
+	m.daySlotStart = time.Date(2026, 4, 7, 9, 15, 0, 0, time.Local)
+	m.daySlotSpan = 15 * time.Minute
+	m.slotMarkStart = time.Date(2026, 4, 7, 8, 0, 0, 0, time.Local)
+	m.slotMarkSpan = 15 * time.Minute
+	m.loadActivitySlots()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 18})
+	app := updated.(AppModel)
+
+	beforeOffset := app.inspectorViewport.YOffset
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	app = updated.(AppModel)
+	afterOffset := app.inspectorViewport.YOffset
+	if afterOffset <= beforeOffset {
+		t.Fatalf("inspector viewport offset = %d after pgdown, want > %d", afterOffset, beforeOffset)
+	}
+	thumbStart, thumbEnd := inspectorScrollbar(app.inspectorViewport.TotalLineCount(), app.inspectorViewport.Height, app.inspectorViewport.YOffset)
+	if thumbEnd <= thumbStart {
+		t.Fatalf("invalid inspector thumb range: %d..%d", thumbStart, thumbEnd)
+	}
+}
+
+func TestRenderInspectorPaneScrollbarDoesNotRenderTrackGlyphs(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	day := time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local)
+	slots := make([]model.ActivitySlot, 0, 6)
+	for i := 0; i < 6; i++ {
+		slots = append(slots, model.ActivitySlot{
+			SlotTime:  time.Date(2026, 4, 7, 8, i*15, 0, 0, time.Local).UTC(),
+			Operator:  "claude-code",
+			MsgCount:  10 + i,
+			UserTexts: []string{"prompt " + strconv.Itoa(i+1)},
+		})
+	}
+	if err := store.UpsertActivitySlots(ctx, slots); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(day)
+	m.dayFocusKind = "slot"
+	m.daySlotStart = time.Date(2026, 4, 7, 9, 15, 0, 0, time.Local)
+	m.daySlotSpan = 15 * time.Minute
+	m.slotMarkStart = time.Date(2026, 4, 7, 8, 0, 0, 0, time.Local)
+	m.slotMarkSpan = 15 * time.Minute
+	m.loadActivitySlots()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 18})
+	app := updated.(AppModel)
+
+	pane := renderInspectorPane(app, app.styles, dayInspectorWidth(app.width), dayPaneHeight(app.height))
+	plain := stripANSI(pane)
+	if strings.Contains(plain, "▐") || strings.Contains(plain, "││") {
+		t.Fatalf("inspector pane contains scrollbar glyph clutter:\n%s", plain)
+	}
+}
+
+func TestRenderDayScrollbarDoesNotRenderTrackGlyphs(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "p",
+		Description:  "focused block",
+		StartedAt:    time.Date(2026, 4, 14, 10, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 14, 12, 40, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 14, 0, 0, 0, 0, time.Local))
+	m.width = 120
+	m.height = 24
+	m.focusCurrentEntryInDayView()
+
+	bar := renderDayScrollbar(m, newStyles(m.width))
+	plain := stripANSI(bar)
+	if strings.Contains(plain, "│") || strings.Contains(plain, "▐") {
+		t.Fatalf("day scrollbar contains glyphs:\n%s", plain)
+	}
+	dayEntries := dayEntriesForDate(m.entries, m.displayedDay().Format("2006-01-02"))
+	window := dayTimelineWindow(dayEntries, m.displayedDay(), m.dayWindowStart)
+	rows := dayTimelineRows(window, dayPaneHeight(m.height))
+	thumbStart, thumbEnd := dayScrollbar(len(rows), window.start, m.displayedDay())
+	if thumbEnd <= thumbStart {
+		t.Fatalf("invalid day thumb range: %d..%d", thumbStart, thumbEnd)
 	}
 }
 
@@ -4150,7 +4469,7 @@ func TestDayViewShortFocusedEntryTouchingAboveShowsTitleInsideBlock(t *testing.T
 	}
 }
 
-func TestDayViewScrollbarRendersTrackAndThumb(t *testing.T) {
+func TestDayViewScrollbarUsesStyledGutter(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
 	defer store.Close()
@@ -4163,12 +4482,193 @@ func TestDayViewScrollbarRendersTrackAndThumb(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	app := updated.(AppModel)
 	view := stripANSI(app.View())
-
-	if !strings.Contains(view, "▐") {
-		t.Fatalf("scrollbar thumb (▐) not found in view:\n%s", view)
+	if strings.Contains(view, "▐") {
+		t.Fatalf("styled gutter scrollbar should not leak glyph clutter:\n%s", view)
 	}
-	if !strings.Contains(view, "│") {
-		t.Fatalf("scrollbar track (│) not found in view:\n%s", view)
+}
+
+func TestFocusedAssignedEntryDoesNotAlignScrollbarThumbWithEntryRows(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "test prod baseline study, fix for likert counts", StartedAt: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 14, 12, 50, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	entry, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "run validation protocol on baseline study, analyze results", StartedAt: time.Date(2026, 4, 14, 16, 15, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 14, 18, 15, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "prepare for interview", StartedAt: time.Date(2026, 4, 14, 14, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 14, 14, 45, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "magnus interview", StartedAt: time.Date(2026, 4, 14, 15, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 14, 15, 30, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "restore & verify user in prod", StartedAt: time.Date(2026, 4, 14, 15, 30, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 14, 15, 50, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	slots := make([]model.ActivitySlot, 0, 7)
+	for i := 0; i < 7; i++ {
+		slots = append(slots, model.ActivitySlot{
+			SlotTime:    time.Date(2026, 4, 14, 16, i*15, 0, 0, time.Local).UTC(),
+			Operator:    "claude-code",
+			MsgCount:    40 + i,
+			GitBranch:   "dev",
+			Cwd:         "/Users/akoskm/Projects/delta-one-nextjs",
+			TokenInput:  50 + i,
+			TokenOutput: 16000 + i,
+			UserTexts: []string{
+				"looking at ~/Downloads/statistic_id439557_leading-womens-underwear-brands-in-france-2023-by-number-of-users.xlsx",
+				"saved Validation Criteria Protocol 10042026 into tmp, check that one",
+				"okay, now if I'd tell you we have a study in dev d9588c93-8c9f-4f63-b52c-5b4d0ee43ab2, could you figure out what's wrong",
+			},
+		})
+	}
+	if err := store.UpsertActivitySlots(ctx, slots); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 14, 0, 0, 0, 0, time.Local))
+	m.width = 160
+	m.height = 30
+	m.focusEntryByID(entry.ID)
+	m.dayFocusKind = "entry"
+	m.loadActivitySlots()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	app := updated.(AppModel)
+
+	dayEntries := dayEntriesForDate(app.entries, app.displayedDay().Format("2006-01-02"))
+	window := dayTimelineWindow(dayEntries, app.displayedDay(), app.dayWindowStart)
+	rows := dayTimelineRows(window, dayPaneHeight(app.height))
+	selected := app.entries[app.cursor]
+	entryEnd := timelineBlockEnd(selected)
+	firstRow := -1
+	lastRow := -1
+	for i, row := range rows {
+		if rangesOverlap(row.start, row.end, selected.StartedAt, entryEnd) {
+			if firstRow == -1 {
+				firstRow = i
+			}
+			lastRow = i
+		}
+	}
+	if firstRow == -1 {
+		t.Fatal("selected entry did not map to any visible day rows")
+	}
+
+	dayThumbStart, dayThumbEnd := dayScrollbar(len(rows), window.start, app.displayedDay())
+	inspectorViewport := buildInspectorViewport(app, max(20, dayInspectorWidth(app.width)-5), inspectorBodyHeight(dayPaneHeight(app.height)))
+	inspectorThumbStart, inspectorThumbEnd := inspectorScrollbar(inspectorViewport.TotalLineCount(), inspectorViewport.Height, inspectorViewport.YOffset)
+	entryRowStart := firstRow + 4
+	entryRowEnd := lastRow + 4
+	dayRowStart := 4 + dayThumbStart
+	dayRowEnd := 4 + dayThumbEnd - 1
+	if dayRowStart <= entryRowEnd && entryRowStart <= dayRowEnd {
+		t.Fatalf("day scrollbar thumb overlaps selected entry rows %d..%d with thumb %d..%d", entryRowStart, entryRowEnd, dayRowStart, dayRowEnd)
+	}
+	inspectorRowStart := 1 + inspectorThumbStart
+	inspectorRowEnd := 1 + inspectorThumbEnd - 1
+	if inspectorRowStart <= entryRowEnd && entryRowStart <= inspectorRowEnd {
+		t.Fatalf("inspector scrollbar thumb overlaps selected entry rows %d..%d with thumb %d..%d", entryRowStart, entryRowEnd, inspectorRowStart, inspectorRowEnd)
+	}
+}
+
+func TestFocusedAssignedEntryDoesNotBleedBackgroundIntoScrollbarGutters(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "test prod baseline study, fix for likert counts", StartedAt: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 14, 12, 50, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	entry, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "run validation protocol on baseline study, analyze results", StartedAt: time.Date(2026, 4, 14, 16, 15, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 14, 18, 15, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	for _, input := range []db.ManualEntryInput{
+		{ProjectIdent: "elaiia", Description: "prepare for interview", StartedAt: time.Date(2026, 4, 14, 14, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 14, 14, 45, 0, 0, time.UTC)},
+		{ProjectIdent: "elaiia", Description: "magnus interview", StartedAt: time.Date(2026, 4, 14, 15, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 14, 15, 30, 0, 0, time.UTC)},
+		{ProjectIdent: "elaiia", Description: "restore & verify user in prod", StartedAt: time.Date(2026, 4, 14, 15, 30, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 14, 15, 50, 0, 0, time.UTC)},
+	} {
+		if _, err := store.CreateManualEntry(ctx, input); err != nil {
+			t.Fatalf("CreateManualEntry() error = %v", err)
+		}
+	}
+
+	slots := make([]model.ActivitySlot, 0, 7)
+	for i := 0; i < 7; i++ {
+		slots = append(slots, model.ActivitySlot{
+			SlotTime:    time.Date(2026, 4, 14, 16, i*15, 0, 0, time.Local).UTC(),
+			Operator:    "claude-code",
+			MsgCount:    40 + i,
+			GitBranch:   "dev",
+			Cwd:         "/Users/akoskm/Projects/delta-one-nextjs",
+			TokenInput:  50 + i,
+			TokenOutput: 16000 + i,
+			UserTexts: []string{
+				"looking at ~/Downloads/statistic_id439557_leading-womens-underwear-brands-in-france-2023-by-number-of-users.xlsx",
+				"saved Validation Criteria Protocol 10042026 into tmp, check that one",
+				"okay, now if I'd tell you we have a study in dev d9588c93-8c9f-4f63-b52c-5b4d0ee43ab2, could you figure out what's wrong",
+			},
+		})
+	}
+	if err := store.UpsertActivitySlots(ctx, slots); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 14, 0, 0, 0, 0, time.Local))
+	m.width = 160
+	m.height = 30
+	m.focusEntryByID(entry.ID)
+	m.dayFocusKind = "entry"
+	m.loadActivitySlots()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	app := updated.(AppModel)
+
+	dayEntries := dayEntriesForDate(app.entries, app.displayedDay().Format("2006-01-02"))
+	window := dayTimelineWindow(dayEntries, app.displayedDay(), app.dayWindowStart)
+	rows := dayTimelineRows(window, dayPaneHeight(app.height))
+	selected := app.entries[app.cursor]
+	entryEnd := timelineBlockEnd(selected)
+	firstRow := -1
+	lastRow := -1
+	for i, row := range rows {
+		if rangesOverlap(row.start, row.end, selected.StartedAt, entryEnd) {
+			if firstRow == -1 {
+				firstRow = i
+			}
+			lastRow = i
+		}
+	}
+	if firstRow == -1 {
+		t.Fatal("selected entry did not map to any visible day rows")
+	}
+
+	view := app.View()
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	selectedBG := "\x1b[48;5;153m"
+	for i := firstRow + 4; i <= lastRow+4 && i < len(lines); i++ {
+		if strings.Count(lines[i], selectedBG) > 1 {
+			t.Fatalf("selected background bleeds outside entry cell on line %d: %q", i, lines[i])
+		}
 	}
 }
 
@@ -4218,10 +4718,11 @@ func TestJumpToNowScrollsViewportToShowNow(t *testing.T) {
 		t.Fatalf("after n: now %s is outside window %s-%s",
 			clock(now), clock(app.dayWindowStart), clock(windowEnd))
 	}
-	// now should be centered: ~5h from both edges (within 1h tolerance)
+	// now should be centered when possible; near day-end clamping may prevent
+	// symmetric margins while still keeping now visible.
 	marginFromStart := now.Sub(app.dayWindowStart)
 	marginFromEnd := windowEnd.Sub(now)
-	if marginFromStart < 4*time.Hour || marginFromEnd < 4*time.Hour {
+	if dayStart(now).Add(20*time.Hour).After(now) && (marginFromStart < 4*time.Hour || marginFromEnd < 4*time.Hour) {
 		t.Fatalf("after n: now not centered — %s from start, %s from end (window %s-%s)",
 			marginFromStart, marginFromEnd, clock(app.dayWindowStart), clock(windowEnd))
 	}
@@ -4262,10 +4763,11 @@ func TestJumpToTodayScrollsViewportToShowNow(t *testing.T) {
 		t.Fatalf("after t: now %s is outside window %s-%s",
 			clock(now), clock(app.dayWindowStart), clock(windowEnd))
 	}
-	// now should be centered: ~5h from both edges (within 1h tolerance)
+	// now should be centered when possible; near day-end clamping may prevent
+	// symmetric margins while still keeping now visible.
 	marginFromStart := now.Sub(app.dayWindowStart)
 	marginFromEnd := windowEnd.Sub(now)
-	if marginFromStart < 4*time.Hour || marginFromEnd < 4*time.Hour {
+	if dayStart(now).Add(20*time.Hour).After(now) && (marginFromStart < 4*time.Hour || marginFromEnd < 4*time.Hour) {
 		t.Fatalf("after t: now not centered — %s from start, %s from end (window %s-%s)",
 			marginFromStart, marginFromEnd, clock(app.dayWindowStart), clock(windowEnd))
 	}
