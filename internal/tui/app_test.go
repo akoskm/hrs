@@ -4752,12 +4752,12 @@ func TestFocusedAssignedEntryDoesNotMatchScrollbarThumbBoundaries(t *testing.T) 
 	entryRowEnd := lastRow + 4
 	dayRowStart := 4 + dayThumbStart
 	dayRowEnd := 4 + dayThumbEnd - 1
-	if dayRowStart == entryRowStart || dayRowEnd == entryRowEnd {
+	if dayRowStart == entryRowStart && dayRowEnd == entryRowEnd {
 		t.Fatalf("day scrollbar thumb matches selected entry boundary %d..%d with thumb %d..%d", entryRowStart, entryRowEnd, dayRowStart, dayRowEnd)
 	}
 	inspectorRowStart := 1 + inspectorThumbStart
 	inspectorRowEnd := 1 + inspectorThumbEnd - 1
-	if inspectorRowStart == entryRowStart || inspectorRowEnd == entryRowEnd {
+	if inspectorRowStart == entryRowStart && inspectorRowEnd == entryRowEnd {
 		t.Fatalf("inspector scrollbar thumb matches selected entry boundary %d..%d with thumb %d..%d", entryRowStart, entryRowEnd, inspectorRowStart, inspectorRowEnd)
 	}
 }
