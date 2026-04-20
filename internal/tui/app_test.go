@@ -808,6 +808,27 @@ func TestTruncateForWidthUsesDisplayWidth(t *testing.T) {
 	}
 }
 
+func TestTruncateForWidthClipsWideRunesAtNarrowWidths(t *testing.T) {
+	tests := []struct {
+		name  string
+		text  string
+		width int
+	}{
+		{name: "single wide width one", text: "界", width: 1},
+		{name: "single wide width two", text: "界", width: 2},
+		{name: "two wide width three", text: "界界", width: 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncateForWidth(tt.text, tt.width)
+			if lipgloss.Width(got) > tt.width {
+				t.Fatalf("truncateForWidth(%q, %d) width = %d, want <= %d; got %q", tt.text, tt.width, lipgloss.Width(got), tt.width, got)
+			}
+		})
+	}
+}
+
 func TestOutlinedBlockCellAnchorsViewportTopLabel(t *testing.T) {
 	viewportStart := time.Date(2026, 4, 7, 7, 0, 0, 0, time.Local)
 	itemStart := viewportStart
@@ -4050,6 +4071,12 @@ func TestRenderInspectorPaneScrollbarMovesAfterScroll(t *testing.T) {
 }
 
 func TestRenderInspectorPaneScrollbarDoesNotRenderTrackGlyphs(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(prev)
+	})
+
 	ctx := context.Background()
 	store := openTestStore(t)
 	defer store.Close()
@@ -4090,7 +4117,75 @@ func TestRenderInspectorPaneScrollbarDoesNotRenderTrackGlyphs(t *testing.T) {
 	}
 }
 
+func TestRenderInspectorPaneScrollbarFallsBackToVisibleGlyphsWithoutColor(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.Ascii)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(prev)
+	})
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	day := time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local)
+	slots := make([]model.ActivitySlot, 0, 6)
+	for i := 0; i < 6; i++ {
+		slots = append(slots, model.ActivitySlot{
+			SlotTime:  time.Date(2026, 4, 7, 8, i*15, 0, 0, time.Local).UTC(),
+			Operator:  "claude-code",
+			MsgCount:  10 + i,
+			UserTexts: []string{"prompt " + strconv.Itoa(i+1)},
+		})
+	}
+	if err := store.UpsertActivitySlots(ctx, slots); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(day)
+	m.dayFocusKind = "slot"
+	m.daySlotStart = time.Date(2026, 4, 7, 9, 15, 0, 0, time.Local)
+	m.daySlotSpan = 15 * time.Minute
+	m.slotMarkStart = time.Date(2026, 4, 7, 8, 0, 0, 0, time.Local)
+	m.slotMarkSpan = 15 * time.Minute
+	m.loadActivitySlots()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 18})
+	app := updated.(AppModel)
+
+	pane := renderInspectorPane(app, app.styles, dayInspectorWidth(app.width), dayPaneHeight(app.height))
+	plain := stripANSI(pane)
+	if !strings.Contains(plain, "│") {
+		t.Fatalf("inspector pane missing visible scrollbar fallback:\n%s", plain)
+	}
+}
+
+func TestRenderScrollbarColumnFallsBackToGlyphsWithoutColor(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.Ascii)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(prev)
+	})
+
+	trackStyle := lipgloss.NewStyle().Background(lipgloss.Color("236"))
+	thumbStyle := lipgloss.NewStyle().Background(lipgloss.Color("4"))
+	got := stripANSI(renderScrollbarColumn(4, 1, 3, trackStyle, thumbStyle))
+	if got != "│\n█\n█\n│" {
+		t.Fatalf("renderScrollbarColumn() = %q, want visible glyph fallback", got)
+	}
+}
+
 func TestRenderDayScrollbarDoesNotRenderTrackGlyphs(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(prev)
+	})
+
 	ctx := context.Background()
 	store := openTestStore(t)
 	defer store.Close()
@@ -4128,6 +4223,46 @@ func TestRenderDayScrollbarDoesNotRenderTrackGlyphs(t *testing.T) {
 	thumbStart, thumbEnd := dayScrollbar(len(rows), window.start, m.displayedDay())
 	if thumbEnd <= thumbStart {
 		t.Fatalf("invalid day thumb range: %d..%d", thumbStart, thumbEnd)
+	}
+}
+
+func TestRenderDayScrollbarFallsBackToVisibleGlyphsWithoutColor(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.Ascii)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(prev)
+	})
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "p",
+		Description:  "focused block",
+		StartedAt:    time.Date(2026, 4, 14, 10, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 14, 12, 40, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 14, 0, 0, 0, 0, time.Local))
+	m.width = 120
+	m.height = 24
+	m.focusCurrentEntryInDayView()
+
+	bar := renderDayScrollbar(m, newStyles(m.width))
+	plain := stripANSI(bar)
+	if !strings.Contains(plain, "│") {
+		t.Fatalf("day scrollbar missing visible fallback glyphs:\n%s", plain)
 	}
 }
 
@@ -4507,6 +4642,12 @@ func TestDayViewShortFocusedEntryTouchingAboveShowsTitleInsideBlock(t *testing.T
 }
 
 func TestDayViewScrollbarUsesStyledGutter(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(prev)
+	})
+
 	ctx := context.Background()
 	store := openTestStore(t)
 	defer store.Close()

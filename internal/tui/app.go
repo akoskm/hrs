@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/akoskm/hrs/internal/db"
 	"github.com/akoskm/hrs/internal/model"
@@ -2899,15 +2900,25 @@ func renderScrollbarColumn(height, thumbStart, thumbEnd int, trackStyle, thumbSt
 	var sb strings.Builder
 	for i := 0; i < height; i++ {
 		if i >= thumbStart && i < thumbEnd {
-			sb.WriteString(thumbStyle.Render(" "))
+			sb.WriteString(renderScrollbarCell(true, thumbStyle))
 		} else {
-			sb.WriteString(trackStyle.Render(" "))
+			sb.WriteString(renderScrollbarCell(false, trackStyle))
 		}
 		if i < height-1 {
 			sb.WriteString("\n")
 		}
 	}
 	return sb.String()
+}
+
+func renderScrollbarCell(thumb bool, style lipgloss.Style) string {
+	if lipgloss.ColorProfile() == termenv.Ascii {
+		if thumb {
+			return "█"
+		}
+		return "│"
+	}
+	return style.Render(" ")
 }
 
 func timeCellIsSlotHighlighted(m AppModel, row dayTimelineRow) bool {
@@ -4187,24 +4198,26 @@ func truncateForWidth(text string, width int) string {
 		return text
 	}
 	if width <= 3 {
-		runes := []rune(text)
-		if len(runes) <= width {
-			return text
-		}
-		return string(runes[:width])
+		return clipToDisplayWidth(text, width)
 	}
-	target := width - 3
+	return clipToDisplayWidth(text, width-3) + "..."
+}
+
+func clipToDisplayWidth(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
 	var b strings.Builder
 	current := 0
 	for _, r := range text {
 		rw := lipgloss.Width(string(r))
-		if current+rw > target {
+		if current+rw > width {
 			break
 		}
 		b.WriteRune(r)
 		current += rw
 	}
-	return b.String() + "..."
+	return b.String()
 }
 
 func padRight(text string, width int) string {
