@@ -41,8 +41,9 @@ const (
 	projectDialogManage projectDialogMode = "manage"
 	projectDialogCreate projectDialogMode = "create"
 
-	timelineViewList timelineViewMode = "list"
-	timelineViewDay  timelineViewMode = "day"
+	timelineViewList  timelineViewMode = "list"
+	timelineViewDay   timelineViewMode = "day"
+	timelineViewMonth timelineViewMode = "month"
 
 	inspectorOverview inspectorTab = "overview"
 	inspectorActions  inspectorTab = "actions"
@@ -53,62 +54,63 @@ const (
 )
 
 type AppModel struct {
-	ctx                 context.Context
-	store               *db.Store
-	syncFn              func() error
-	allEntries          []model.TimeEntryDetail
-	entries             []model.TimeEntryDetail
-	projects            []model.Project
-	selected            map[string]bool
-	searchQuery         string
-	lastSearch          string
-	width               int
-	height              int
-	offset              int
-	cursor              int
-	projectCursor       int
-	gapProjectCursor    int
-	entryProjectCursor  int
-	dialogMode          projectDialogMode
-	projectInput        string
-	gapInput            string
-	gapStartInput       string
-	gapEndInput         string
-	gapInputField       string
-	gapInputCursor      int
-	entryInput          string
-	entryStartInput     string
-	entryEndInput       string
-	entryInputField     string
-	entryInputCursor    int
-	entryProjectOnly    bool
-	dayFocusKind        string
-	dayGapFocus         int
-	daySlotStart        time.Time
-	daySlotSpan         time.Duration
-	dayDate             time.Time
-	dayWindowStart      time.Time
-	syncing             bool
-	syncSpinner         spinner.Model
-	caretVisible        bool
-	lastSyncedAt        *time.Time
-	syncStatusErr       error
-	timelineView        timelineViewMode
-	inspectorTab        inspectorTab
-	inspectorViewKey    string
-	inspectorViewport   viewport.Model
-	slotMarkStart       time.Time
-	slotMarkSpan        time.Duration
-	confirmDeleteID     string
-	reportPreset        reportPreset
-	reportProjectCursor int
-	reportResult        db.ReportResult
-	activitySlots       []model.ActivitySlot
-	styles              tuiStyles
-	stylesWidth         int
-	mode                mode
-	err                 error
-	quitting            bool
+	ctx                  context.Context
+	store                *db.Store
+	syncFn               func() error
+	allEntries           []model.TimeEntryDetail
+	entries              []model.TimeEntryDetail
+	projects             []model.Project
+	selected             map[string]bool
+	searchQuery          string
+	lastSearch           string
+	width                int
+	height               int
+	offset               int
+	cursor               int
+	projectCursor        int
+	gapProjectCursor     int
+	entryProjectCursor   int
+	dialogMode           projectDialogMode
+	projectInput         string
+	gapInput             string
+	gapStartInput        string
+	gapEndInput          string
+	gapInputField        string
+	gapInputCursor       int
+	entryInput           string
+	entryStartInput      string
+	entryEndInput        string
+	entryInputField      string
+	entryInputCursor     int
+	entryProjectOnly     bool
+	dayFocusKind         string
+	dayGapFocus          int
+	daySlotStart         time.Time
+	daySlotSpan          time.Duration
+	dayDate              time.Time
+	dayWindowStart       time.Time
+	syncing              bool
+	syncSpinner          spinner.Model
+	caretVisible         bool
+	lastSyncedAt         *time.Time
+	syncStatusErr        error
+	timelineView         timelineViewMode
+	previousTimelineView timelineViewMode
+	inspectorTab         inspectorTab
+	inspectorViewKey     string
+	inspectorViewport    viewport.Model
+	slotMarkStart        time.Time
+	slotMarkSpan         time.Duration
+	confirmDeleteID      string
+	reportPreset         reportPreset
+	reportProjectCursor  int
+	reportResult         db.ReportResult
+	activitySlots        []model.ActivitySlot
+	styles               tuiStyles
+	stylesWidth          int
+	mode                 mode
+	err                  error
+	quitting             bool
 }
 
 type cursorBlinkMsg struct{}
@@ -137,13 +139,16 @@ func NewAppModelWithSync(ctx context.Context, store *db.Store, syncFn func() err
 		return AppModel{}, err
 	}
 	sorted := sortEntries(entries)
-	model := AppModel{ctx: ctx, store: store, syncFn: syncFn, allEntries: sorted, projects: projects, selected: map[string]bool{}, mode: modeTimeline, dialogMode: projectDialogAssign, timelineView: timelineViewList, inspectorTab: inspectorOverview, styles: newStyles(80), stylesWidth: 80, syncing: syncFn != nil, syncSpinner: newSyncSpinner(), inspectorViewport: newInspectorViewport(20, 1)}
+	model := AppModel{ctx: ctx, store: store, syncFn: syncFn, allEntries: sorted, projects: projects, selected: map[string]bool{}, mode: modeTimeline, dialogMode: projectDialogAssign, timelineView: timelineViewList, previousTimelineView: timelineViewList, inspectorTab: inspectorOverview, styles: newStyles(80), stylesWidth: 80, syncing: syncFn != nil, syncSpinner: newSyncSpinner(), inspectorViewport: newInspectorViewport(20, 1)}
 	model.entries = model.allEntries
 	return model, nil
 }
 
 func (m *AppModel) SetDefaultTimelineView(view timelineViewMode) {
 	m.timelineView = view
+	if view != timelineViewMonth {
+		m.previousTimelineView = view
+	}
 	if view == timelineViewDay {
 		m.focusCurrentEntryInDayView()
 		if m.daySlotSpan == 0 {
@@ -164,6 +169,7 @@ func (m *AppModel) loadActivitySlots() {
 
 func (m *AppModel) InitializeTodayTimelineView() {
 	m.timelineView = timelineViewDay
+	m.previousTimelineView = timelineViewDay
 	today := dayStart(time.Now())
 	m.dayDate = today
 	m.dayWindowStart = defaultDayWindowStart(today)
@@ -253,6 +259,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "t":
 			if m.timelineView == timelineViewDay {
 				m.jumpToToday()
+			} else if m.timelineView == timelineViewMonth {
+				m.dayDate = dayStart(time.Now())
+			}
+		case "m":
+			if m.mode == modeTimeline {
+				m.toggleMonthView()
 			}
 		case "tab":
 			if m.mode == modeTimeline {
@@ -263,7 +275,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cycleInspectorTab(-1)
 			}
 		case "up":
-			if m.timelineView == timelineViewDay {
+			if m.timelineView == timelineViewMonth {
+				m.moveMonthSelection(-7)
+			} else if m.timelineView == timelineViewDay {
 				if m.dayFocusKind == "entry" && m.cursor >= 0 && m.cursor < len(m.entries) {
 					m.slotBeforeEntry(m.entries[m.cursor])
 				} else {
@@ -275,7 +289,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ensureVisible()
 			}
 		case "k":
-			if m.timelineView == timelineViewDay {
+			if m.timelineView == timelineViewMonth {
+				m.moveMonthSelection(-7)
+			} else if m.timelineView == timelineViewDay {
 				m.jumpDayItem(-1)
 			} else if m.cursor > 0 {
 				m.cursor--
@@ -283,11 +299,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ensureVisible()
 			}
 		case "left", "h":
-			if m.timelineView == timelineViewDay {
+			if m.timelineView == timelineViewMonth {
+				m.moveMonthSelection(-1)
+			} else if m.timelineView == timelineViewDay {
 				m.shiftDisplayedDay(-1)
 			}
 		case "right", "l":
-			if m.timelineView == timelineViewDay {
+			if m.timelineView == timelineViewMonth {
+				m.moveMonthSelection(1)
+			} else if m.timelineView == timelineViewDay {
 				m.shiftDisplayedDay(1)
 			}
 		case "home":
@@ -357,6 +377,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.projectCursor < len(m.projects) {
 					m.projectCursor++
 				}
+			} else if m.timelineView == timelineViewMonth {
+				m.moveMonthSelection(7)
 			} else if m.timelineView == timelineViewDay {
 				if m.dayFocusKind == "entry" && m.cursor >= 0 && m.cursor < len(m.entries) {
 					m.slotAfterEntry(m.entries[m.cursor])
@@ -373,6 +395,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.projectCursor < len(m.projects) {
 					m.projectCursor++
 				}
+			} else if m.timelineView == timelineViewMonth {
+				m.moveMonthSelection(7)
 			} else if m.timelineView == timelineViewDay {
 				m.jumpDayItem(1)
 			} else if m.cursor < len(m.entries)-1 {
@@ -381,6 +405,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ensureVisible()
 			}
 		case "enter":
+			if m.timelineView == timelineViewMonth {
+				m.openSelectedMonthDay()
+				return m, nil
+			}
 			if m.timelineView == timelineViewDay && m.dayFocusKind == "slot" {
 				if idx := m.overlappingEntryIndexForSlot(); idx >= 0 {
 					m.cursor = idx
@@ -574,6 +602,8 @@ func (m AppModel) View() string {
 	var b strings.Builder
 	if m.mode == modeReport {
 		b.WriteString(renderReportView(m, styles))
+	} else if m.timelineView == timelineViewMonth {
+		b.WriteString(renderMonthTimeline(m, styles))
 	} else if m.timelineView == timelineViewDay {
 		inspectorWidth := max(20, m.width/2)
 		timelineWidth := max(40, m.width-inspectorWidth-2)
@@ -818,6 +848,48 @@ func (m AppModel) displayedDay() time.Time {
 		return dayStart(m.entries[m.cursor].StartedAt)
 	}
 	return dayStart(time.Now())
+}
+
+func (m *AppModel) toggleMonthView() {
+	if m.timelineView == timelineViewMonth {
+		if m.previousTimelineView == "" || m.previousTimelineView == timelineViewMonth {
+			m.previousTimelineView = timelineViewList
+		}
+		m.timelineView = m.previousTimelineView
+		return
+	}
+	if m.timelineView != "" {
+		m.previousTimelineView = m.timelineView
+	}
+	if m.dayDate.IsZero() {
+		m.dayDate = m.displayedDay()
+	}
+	m.timelineView = timelineViewMonth
+}
+
+func (m *AppModel) moveMonthSelection(days int) {
+	if days == 0 {
+		return
+	}
+	next := m.displayedDay().AddDate(0, 0, days)
+	today := dayStart(time.Now())
+	if next.After(today) {
+		next = today
+	}
+	m.dayDate = dayStart(next)
+}
+
+func (m *AppModel) openSelectedMonthDay() {
+	day := m.displayedDay()
+	m.timelineView = timelineViewDay
+	m.previousTimelineView = timelineViewDay
+	m.dayDate = day
+	m.loadActivitySlots()
+	m.dayWindowStart = defaultDayWindowStart(day)
+	m.syncFocusForDisplayedDay()
+	if m.dayFocusKind == "entry" {
+		m.ensureEntryVisible()
+	}
 }
 
 func (m *AppModel) shiftDisplayedDay(direction int) {
@@ -2451,6 +2523,175 @@ func renderDayTimeline(m AppModel, styles tuiStyles) string {
 	return b.String()
 }
 
+type monthProjectTotal struct {
+	name     string
+	duration time.Duration
+}
+
+type monthDaySummary struct {
+	total    time.Duration
+	projects []monthProjectTotal
+}
+
+func renderMonthTimeline(m AppModel, styles tuiStyles) string {
+	selectedDay := m.displayedDay()
+	monthStart := time.Date(selectedDay.Year(), selectedDay.Month(), 1, 0, 0, 0, 0, time.Local)
+	gridStart := monthGridStart(selectedDay)
+	weeks := monthGridWeeks(selectedDay)
+	columnWidths := monthColumnWidths(max(7, timelineWidth(m.width)))
+	cellHeight := 5
+	summaries := monthSummaries(m.entries)
+	weekdays := []string{"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
+
+	var b strings.Builder
+	b.WriteString(styles.title.Render("Month") + "\n")
+	b.WriteString(styles.dateHeader.Render(selectedDay.Format("Jan 2006")) + "\n")
+
+	b.WriteString(styles.tableHeader.Render(strings.Join(weekdays, " ")) + "\n")
+
+	for week := 0; week < weeks; week++ {
+		cells := make([]string, 0, 7)
+		for dayOffset := 0; dayOffset < 7; dayOffset++ {
+			day := gridStart.AddDate(0, 0, week*7+dayOffset)
+			cells = append(cells, renderMonthCell(day, monthStart, selectedDay, summaries[dayKey(day)], columnWidths[dayOffset], cellHeight, styles))
+		}
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, cells...))
+		if week < weeks-1 {
+			b.WriteString("\n")
+		}
+	}
+
+	return b.String()
+}
+
+func renderMonthCell(day, monthStart, selectedDay time.Time, summary monthDaySummary, width, height int, styles tuiStyles) string {
+	innerWidth := max(1, width-2)
+	lines := []string{strconv.Itoa(day.Day())}
+	if summary.total > 0 {
+		lines = append(lines, formatWorkDuration(summary.total))
+	}
+	available := max(0, height-len(lines))
+	if available > 0 && len(summary.projects) > 0 {
+		show := min(len(summary.projects), available)
+		if len(summary.projects) > available && available > 0 {
+			show = max(0, available-1)
+		}
+		for i := 0; i < show; i++ {
+			project := summary.projects[i]
+			lines = append(lines, fmt.Sprintf("%s %s", project.name, formatWorkDuration(project.duration)))
+		}
+		remaining := len(summary.projects) - show
+		if remaining > 0 && len(lines) < height {
+			lines = append(lines, fmt.Sprintf("+%d more", remaining))
+		}
+	}
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	for i := range lines {
+		lines[i] = padRight(truncateForWidth(lines[i], innerWidth), innerWidth)
+	}
+
+	style := lipgloss.NewStyle().Border(lipgloss.NormalBorder()).Width(width).Height(height)
+	if dayKey(day) == dayKey(selectedDay) {
+		style = style.Background(lipgloss.Color("60")).Foreground(lipgloss.Color("255")).Bold(true)
+	} else if dayKey(day) == dayKey(time.Now()) {
+		style = style.BorderForeground(lipgloss.Color("6"))
+	} else if day.Month() != monthStart.Month() {
+		style = style.Foreground(lipgloss.Color("8"))
+	}
+	return style.Render(strings.Join(lines, "\n"))
+}
+
+func monthColumnWidths(totalWidth int) []int {
+	if totalWidth <= 0 {
+		totalWidth = 7
+	}
+	borderWidth := lipgloss.NewStyle().Border(lipgloss.NormalBorder()).GetHorizontalFrameSize()
+	contentWidth := totalWidth - (7 * borderWidth)
+	if contentWidth < 7 {
+		contentWidth = 7
+	}
+	base := contentWidth / 7
+	remainder := contentWidth % 7
+	widths := make([]int, 7)
+	for i := range widths {
+		widths[i] = base
+		if i < remainder {
+			widths[i]++
+		}
+		if widths[i] < 1 {
+			widths[i] = 1
+		}
+	}
+	return widths
+}
+
+func monthSummaries(entries []model.TimeEntryDetail) map[string]monthDaySummary {
+	totals := map[string]map[string]time.Duration{}
+	for _, entry := range entries {
+		duration := timelineBlockEnd(entry).Sub(entry.StartedAt)
+		if duration <= 0 {
+			continue
+		}
+		day := dayKey(entry.StartedAt)
+		if totals[day] == nil {
+			totals[day] = map[string]time.Duration{}
+		}
+		project := "unassigned"
+		if entry.ProjectName != "" {
+			project = entry.ProjectName
+		}
+		totals[day][project] += duration
+	}
+
+	summaries := make(map[string]monthDaySummary, len(totals))
+	for day, projects := range totals {
+		summary := monthDaySummary{}
+		for name, duration := range projects {
+			summary.total += duration
+			summary.projects = append(summary.projects, monthProjectTotal{name: name, duration: duration})
+		}
+		sort.Slice(summary.projects, func(i, j int) bool {
+			if summary.projects[i].duration == summary.projects[j].duration {
+				return summary.projects[i].name < summary.projects[j].name
+			}
+			return summary.projects[i].duration > summary.projects[j].duration
+		})
+		summaries[day] = summary
+	}
+	return summaries
+}
+
+func monthGridStart(day time.Time) time.Time {
+	first := time.Date(day.Year(), day.Month(), 1, 0, 0, 0, 0, time.Local)
+	return first.AddDate(0, 0, -monthWeekdayIndex(first))
+}
+
+func monthGridWeeks(day time.Time) int {
+	first := time.Date(day.Year(), day.Month(), 1, 0, 0, 0, 0, time.Local)
+	totalDays := monthWeekdayIndex(first) + daysInMonth(day)
+	weeks := totalDays / 7
+	if totalDays%7 != 0 {
+		weeks++
+	}
+	return max(4, weeks)
+}
+
+func monthWeekdayIndex(day time.Time) int {
+	weekday := day.Weekday()
+	if weekday == time.Sunday {
+		return 6
+	}
+	return int(weekday - time.Monday)
+}
+
+func daysInMonth(day time.Time) int {
+	first := time.Date(day.Year(), day.Month(), 1, 0, 0, 0, 0, time.Local)
+	next := first.AddDate(0, 1, 0)
+	return int(next.Sub(first).Hours() / 24)
+}
+
 func inspectorHeight(height int) int {
 	if height <= 0 {
 		return 10
@@ -3468,6 +3709,10 @@ func renderBaseStatusBar(m AppModel, width int) string {
 	}
 	if m.mode == modeReport {
 		return truncateForWidth(fmt.Sprintf("report %s | w week | m month | y year | r refresh | esc back", m.reportPreset), width)
+	}
+	if m.timelineView == timelineViewMonth {
+		text := fmt.Sprintf("month %s | arrows/hjkl move | enter open day | m back | t today", m.displayedDay().Format("2006-01-02"))
+		return truncateForWidth(text, width)
 	}
 	if m.timelineView == timelineViewDay {
 		text := fmt.Sprintf("entries %d | day %s | up/down 15m | shift+up/down 1h | j/k items | left/right day | wheel/pgup/pgdn inspector | enter create/edit | tab inspector", len(m.entries), m.displayedDay().Format("2006-01-02"))

@@ -1215,6 +1215,216 @@ func TestTimelineDayViewTJumpsToToday(t *testing.T) {
 	}
 }
 
+func TestTimelineMonthViewToggleRestoresPreviousView(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Work", StartedAt: time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC), EndedAt: time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.SetDefaultTimelineView("day")
+	model.width = 125
+	model.height = 30
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	app := updated.(AppModel)
+	if app.timelineView != timelineViewMonth {
+		t.Fatalf("timelineView after m = %q, want month", app.timelineView)
+	}
+	if !strings.Contains(stripANSI(app.View()), "Mon Tue Wed Thu Fri Sat Sun") {
+		t.Fatalf("month view missing weekday header: %q", stripANSI(app.View()))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	app = updated.(AppModel)
+	if app.timelineView != timelineViewDay {
+		t.Fatalf("timelineView after second m = %q, want day", app.timelineView)
+	}
+
+	model2, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model2.width = 120
+	model2.height = 30
+	updated, _ = model2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	app = updated.(AppModel)
+	if app.timelineView != timelineViewList {
+		t.Fatalf("list toggle restore = %q, want list", app.timelineView)
+	}
+}
+
+func TestTimelineMonthViewNavigationAndEnter(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	today := dayStart(time.Now().UTC())
+	targetDay := today.AddDate(0, 0, -10)
+	weekEarlier := targetDay.AddDate(0, 0, -7)
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Chosen day", StartedAt: targetDay.Add(9 * time.Hour), EndedAt: targetDay.Add(11 * time.Hour)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: "Week earlier", StartedAt: weekEarlier.Add(9 * time.Hour), EndedAt: weekEarlier.Add(10 * time.Hour)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.SetDefaultTimelineView("day")
+	model.width = 120
+	model.height = 30
+	model.dayDate = targetDay
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	app := updated.(AppModel)
+	if !app.displayedDay().Equal(targetDay) {
+		t.Fatalf("selected month day = %s, want %s", app.displayedDay().Format("2006-01-02"), targetDay.Format("2006-01-02"))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+	app = updated.(AppModel)
+	if !app.displayedDay().Equal(targetDay.AddDate(0, 0, -1)) {
+		t.Fatalf("day after h = %s, want %s", app.displayedDay().Format("2006-01-02"), targetDay.AddDate(0, 0, -1).Format("2006-01-02"))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	app = updated.(AppModel)
+	if !app.displayedDay().Equal(targetDay.AddDate(0, 0, 6)) {
+		t.Fatalf("day after j = %s, want %s", app.displayedDay().Format("2006-01-02"), targetDay.AddDate(0, 0, 6).Format("2006-01-02"))
+	}
+
+	app.dayDate = targetDay
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.timelineView != timelineViewDay {
+		t.Fatalf("timelineView after enter = %q, want day", app.timelineView)
+	}
+	if !app.displayedDay().Equal(targetDay) {
+		t.Fatalf("displayedDay after enter = %s, want %s", app.displayedDay().Format("2006-01-02"), targetDay.Format("2006-01-02"))
+	}
+	if got := descriptionOrID(app.entries[app.cursor]); got != "Chosen day" {
+		t.Fatalf("focused entry after enter = %q, want Chosen day", got)
+	}
+}
+
+func TestTimelineMonthViewShowsProjectTotalsAndOverflow(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	targetDay := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
+	projects := []struct {
+		name string
+		code string
+		dur  time.Duration
+	}{
+		{name: "Alpha", code: "alpha", dur: 3 * time.Hour},
+		{name: "Beta", code: "beta", dur: 2 * time.Hour},
+		{name: "Gamma", code: "gamma", dur: time.Hour},
+		{name: "Delta", code: "delta", dur: 30 * time.Minute},
+	}
+	startHour := 8
+	for _, project := range projects {
+		if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: project.name, Code: project.code, HourlyRate: 15000, Currency: "CHF"}); err != nil {
+			t.Fatalf("CreateProject() error = %v", err)
+		}
+		if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: project.code, Description: project.name + " work", StartedAt: targetDay.Add(time.Duration(startHour) * time.Hour), EndedAt: targetDay.Add(time.Duration(startHour)*time.Hour + project.dur)}); err != nil {
+			t.Fatalf("CreateManualEntry() error = %v", err)
+		}
+		startHour += 3
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.width = 90
+	model.height = 30
+	model.dayDate = targetDay
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	app := updated.(AppModel)
+	view := stripANSI(app.View())
+	for _, want := range []string{"Apr 2026", "15", "6h30m", "Alpha 3h", "Beta 2h", "+2 more"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("month view missing %q: %q", want, view)
+		}
+	}
+}
+
+func TestTimelineMonthViewFitsViewportWidth(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	targetDay := time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC)
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.width = 120
+	model.height = 30
+	model.dayDate = targetDay
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	app := updated.(AppModel)
+	for _, line := range strings.Split(strings.TrimRight(stripANSI(app.View()), "\n"), "\n") {
+		if lipgloss.Width(line) > model.width {
+			t.Fatalf("month view line width = %d, want <= %d\n%s", lipgloss.Width(line), model.width, line)
+		}
+	}
+}
+
+func TestTimelineMonthViewUsesAvailableWidth(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	targetDay := time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC)
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.width = 120
+	model.height = 30
+	model.dayDate = targetDay
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	app := updated.(AppModel)
+	lines := strings.Split(strings.TrimRight(stripANSI(app.View()), "\n"), "\n")
+	maxWidth := 0
+	for _, line := range lines {
+		if !strings.Contains(line, "┌") {
+			continue
+		}
+		if w := lipgloss.Width(line); w > maxWidth {
+			maxWidth = w
+		}
+	}
+	if maxWidth == 0 {
+		t.Fatalf("month view missing bordered grid rows")
+	}
+	if maxWidth != model.width {
+		t.Fatalf("month view max line width = %d, want exact viewport width %d", maxWidth, model.width)
+	}
+}
+
 func TestDayViewUpDownMovesSlot(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
