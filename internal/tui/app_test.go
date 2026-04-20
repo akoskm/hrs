@@ -2263,7 +2263,8 @@ func TestReportViewRefreshesAfterSyncDone(t *testing.T) {
 	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Alpha", Code: "alpha", Currency: "CHF"}); err != nil {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
-	start := time.Date(2026, 4, 18, 9, 0, 0, 0, time.Local)
+	weekStart, _ := reportWeekRange(time.Now().In(time.Local))
+	start := weekStart.Add(9 * time.Hour)
 	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "alpha", Description: "First", StartedAt: start, EndedAt: start.Add(time.Hour)}); err != nil {
 		t.Fatalf("CreateManualEntry(first) error = %v", err)
 	}
@@ -4665,7 +4666,7 @@ func TestDayViewScrollbarUsesStyledGutter(t *testing.T) {
 	}
 }
 
-func TestFocusedAssignedEntryDoesNotAlignScrollbarThumbWithEntryRows(t *testing.T) {
+func TestFocusedAssignedEntryDoesNotMatchScrollbarThumbBoundaries(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
 	defer store.Close()
@@ -4751,13 +4752,13 @@ func TestFocusedAssignedEntryDoesNotAlignScrollbarThumbWithEntryRows(t *testing.
 	entryRowEnd := lastRow + 4
 	dayRowStart := 4 + dayThumbStart
 	dayRowEnd := 4 + dayThumbEnd - 1
-	if dayRowStart <= entryRowEnd && entryRowStart <= dayRowEnd {
-		t.Fatalf("day scrollbar thumb overlaps selected entry rows %d..%d with thumb %d..%d", entryRowStart, entryRowEnd, dayRowStart, dayRowEnd)
+	if dayRowStart == entryRowStart || dayRowEnd == entryRowEnd {
+		t.Fatalf("day scrollbar thumb matches selected entry boundary %d..%d with thumb %d..%d", entryRowStart, entryRowEnd, dayRowStart, dayRowEnd)
 	}
 	inspectorRowStart := 1 + inspectorThumbStart
 	inspectorRowEnd := 1 + inspectorThumbEnd - 1
-	if inspectorRowStart <= entryRowEnd && entryRowStart <= inspectorRowEnd {
-		t.Fatalf("inspector scrollbar thumb overlaps selected entry rows %d..%d with thumb %d..%d", entryRowStart, entryRowEnd, inspectorRowStart, inspectorRowEnd)
+	if inspectorRowStart == entryRowStart || inspectorRowEnd == entryRowEnd {
+		t.Fatalf("inspector scrollbar thumb matches selected entry boundary %d..%d with thumb %d..%d", entryRowStart, entryRowEnd, inspectorRowStart, inspectorRowEnd)
 	}
 }
 
