@@ -659,7 +659,14 @@ func (m AppModel) View() string {
 	if lipgloss.Width(statusText) < statusWidth {
 		statusText += strings.Repeat(" ", statusWidth-lipgloss.Width(statusText))
 	}
-	sections = append(sections, styles.statusBar.Render(statusText))
+	statusBar := styles.statusBar.Render(statusText)
+	if m.mode == modeReport {
+		content := strings.Join(sections, "\n")
+		content = padViewToHeight(content, max(0, m.height-lipgloss.Height(statusBar)))
+		sections = []string{content, statusBar}
+	} else {
+		sections = append(sections, statusBar)
+	}
 	view := strings.Join(sections, "\n")
 	if m.mode == modeAssign {
 		return renderProjectDialog(m, styles, view)
@@ -674,6 +681,17 @@ func (m AppModel) View() string {
 		return renderDeleteConfirmDialog(m, styles, view)
 	}
 	return view
+}
+
+func padViewToHeight(view string, height int) string {
+	if height <= 0 {
+		return view
+	}
+	current := lipgloss.Height(view)
+	if current >= height {
+		return view
+	}
+	return view + strings.Repeat("\n", height-current)
 }
 
 type timelineColWidths struct {

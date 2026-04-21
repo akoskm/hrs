@@ -2297,7 +2297,7 @@ func TestReportViewUsesCompactTwoColumnLayout(t *testing.T) {
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
 	app := updated.(AppModel)
 	view := stripANSI(app.View())
-	lines := strings.Split(view, "\n")
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
 
 	foundCompactRow := false
 	for _, line := range lines {
@@ -2311,6 +2311,44 @@ func TestReportViewUsesCompactTwoColumnLayout(t *testing.T) {
 	}
 	if !strings.Contains(view, "Selected project: Alpha") {
 		t.Fatalf("report detail missing in compact layout: %q", view)
+	}
+}
+
+func TestReportViewPinsStatusBarToBottom(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Alpha", Code: "alpha", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	start := time.Date(2026, 4, 18, 9, 0, 0, 0, time.Local)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "alpha", Description: "Work", StartedAt: start, EndedAt: start.Add(time.Hour)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.width = 100
+	model.height = 24
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	app := updated.(AppModel)
+	app.width = 100
+	app.height = 24
+
+	view := stripANSI(app.View())
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	if got := lipgloss.Height(app.View()); got != app.height {
+		t.Fatalf("report view height = %d, want %d\n%s", got, app.height, view)
+	}
+	if !strings.Contains(lines[len(lines)-1], "report week") {
+		t.Fatalf("report status bar not at bottom: %q", lines[len(lines)-1])
+	}
+	if strings.TrimSpace(lines[len(lines)-2]) != "" {
+		t.Fatalf("expected spacer line above bottom status bar, got %q", lines[len(lines)-2])
 	}
 }
 
