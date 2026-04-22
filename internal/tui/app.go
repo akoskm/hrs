@@ -22,6 +22,7 @@ import (
 type mode string
 
 type projectDialogMode string
+type timeOffDialogMode string
 
 type timelineViewMode string
 
@@ -32,6 +33,7 @@ const (
 	modeTimeline      mode = "timeline"
 	modeReport        mode = "report"
 	modeAssign        mode = "assign"
+	modeTimeOff       mode = "time-off"
 	modeEntryEdit     mode = "entry-edit"
 	modeGapEntry      mode = "gap-entry"
 	modeSearch        mode = "search"
@@ -40,6 +42,10 @@ const (
 	projectDialogAssign projectDialogMode = "assign"
 	projectDialogManage projectDialogMode = "manage"
 	projectDialogCreate projectDialogMode = "create"
+
+	timeOffDialogManage timeOffDialogMode = "manage"
+	timeOffDialogCreate timeOffDialogMode = "create"
+	timeOffDialogRecord timeOffDialogMode = "record"
 
 	timelineViewList  timelineViewMode = "list"
 	timelineViewDay   timelineViewMode = "day"
@@ -60,6 +66,8 @@ type AppModel struct {
 	allEntries           []model.TimeEntryDetail
 	entries              []model.TimeEntryDetail
 	projects             []model.Project
+	timeOffTypes         []model.TimeOffType
+	timeOffRecords       []model.TimeOffDayDetail
 	selected             map[string]bool
 	searchQuery          string
 	lastSearch           string
@@ -71,7 +79,16 @@ type AppModel struct {
 	gapProjectCursor     int
 	entryProjectCursor   int
 	dialogMode           projectDialogMode
+	timeOffDialogMode    timeOffDialogMode
 	projectInput         string
+	timeOffInput         string
+	timeOffFromInput     string
+	timeOffFromCursor    int
+	timeOffToInput       string
+	timeOffToCursor      int
+	timeOffProjectCursor int
+	timeOffTypeCursor    int
+	timeOffField         string
 	gapInput             string
 	gapStartInput        string
 	gapEndInput          string
@@ -141,6 +158,9 @@ func NewAppModelWithSync(ctx context.Context, store *db.Store, syncFn func() err
 	sorted := sortEntries(entries)
 	model := AppModel{ctx: ctx, store: store, syncFn: syncFn, allEntries: sorted, projects: projects, selected: map[string]bool{}, mode: modeTimeline, dialogMode: projectDialogAssign, timelineView: timelineViewList, previousTimelineView: timelineViewList, inspectorTab: inspectorOverview, styles: newStyles(80), stylesWidth: 80, syncing: syncFn != nil, syncSpinner: newSyncSpinner(), inspectorViewport: newInspectorViewport(20, 1)}
 	model.entries = model.allEntries
+	if err := model.reloadTimeOffRecords(); err != nil {
+		return AppModel{}, err
+	}
 	return model, nil
 }
 
@@ -231,6 +251,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeGapEntry {
 			return m, m.handleGapEntryKey(msg)
 		}
+		if m.mode == modeTimeOff {
+			return m, m.handleTimeOffDialogKey(msg)
+		}
 		if m.mode == modeAssign {
 			return m, m.handleProjectDialogKey(msg)
 		}
@@ -265,6 +288,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "m":
 			if m.mode == modeTimeline {
 				m.toggleMonthView()
+			}
+		case "o":
+			if len(m.projects) == 0 {
+				return m, nil
+			}
+			if m.timelineView == timelineViewMonth {
+				m.openTimeOffRecordDialog()
+			} else {
+				m.openTimeOffManageDialog()
 			}
 		case "tab":
 			if m.mode == modeTimeline {
@@ -538,7 +570,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case cursorBlinkMsg:
-		if m.mode != modeEntryEdit && m.mode != modeGapEntry {
+		if m.mode != modeEntryEdit && m.mode != modeGapEntry && m.mode != modeTimeOff {
 			m.caretVisible = false
 			return m, nil
 		}
@@ -673,6 +705,9 @@ func (m AppModel) View() string {
 	}
 	if m.mode == modeGapEntry {
 		return renderGapEntryDialog(m, styles, view)
+	}
+	if m.mode == modeTimeOff {
+		return renderTimeOffDialog(m, styles, view)
 	}
 	if m.mode == modeEntryEdit {
 		return renderEntryEditDialog(m, styles, view)
@@ -890,10 +925,6 @@ func (m *AppModel) moveMonthSelection(days int) {
 		return
 	}
 	next := m.displayedDay().AddDate(0, 0, days)
-	today := dayStart(time.Now())
-	if next.After(today) {
-		next = today
-	}
 	m.dayDate = dayStart(next)
 }
 
@@ -1986,6 +2017,245 @@ func (m *AppModel) closeProjectDialog() {
 	m.projectCursor = 0
 }
 
+func (m *AppModel) handleTimeOffDialogKey(msg tea.KeyMsg) tea.Cmd {
+	if m.timeOffDialogMode == timeOffDialogCreate {
+		switch msg.String() {
+		case "ctrl+c", "q":
+			m.quitting = true
+			return tea.Quit
+		case "esc":
+			m.timeOffDialogMode = timeOffDialogManage
+			m.timeOffInput = ""
+		case "enter":
+			m.createTimeOffType()
+		case "backspace":
+			if len(m.timeOffInput) > 0 {
+				m.timeOffInput = m.timeOffInput[:len(m.timeOffInput)-1]
+			}
+		default:
+			if msg.Type == tea.KeyRunes {
+				m.timeOffInput += string(msg.Runes)
+			}
+		}
+		return nil
+	}
+	if m.timeOffDialogMode == timeOffDialogRecord && timeOffFieldIsDate(m.timeOffField) {
+		if msg.Type == tea.KeyRunes && !msg.Alt {
+			m.appendTimeOffDateInput(string(msg.Runes))
+			return nil
+		}
+	}
+
+	switch msg.String() {
+	case "ctrl+c", "q":
+		m.quitting = true
+		return tea.Quit
+	case "esc":
+		m.closeTimeOffDialog()
+	case "tab":
+		if m.timeOffDialogMode == timeOffDialogRecord {
+			switch m.timeOffField {
+			case "project":
+				m.timeOffField = "type"
+			case "type":
+				m.timeOffField = "from"
+			case "from":
+				m.timeOffField = "to"
+			default:
+				m.timeOffField = "project"
+			}
+		} else if m.timeOffField == "project" {
+			m.timeOffField = "type"
+		} else {
+			m.timeOffField = "project"
+		}
+	case "backspace":
+		if m.timeOffDialogMode == timeOffDialogRecord && timeOffFieldIsDate(m.timeOffField) {
+			m.backspaceTimeOffDateInput()
+		}
+	case "up", "k":
+		if m.timeOffField == "project" {
+			if m.timeOffProjectCursor > 0 {
+				m.timeOffProjectCursor--
+				m.err = m.reloadTimeOffTypesForSelectedProject()
+			}
+		} else if m.timeOffTypeCursor > 0 {
+			m.timeOffTypeCursor--
+		}
+	case "down", "j":
+		if m.timeOffField == "project" {
+			if m.timeOffProjectCursor < len(m.projects)-1 {
+				m.timeOffProjectCursor++
+				m.err = m.reloadTimeOffTypesForSelectedProject()
+			}
+		} else {
+			maxCursor := len(m.timeOffTypes) - 1
+			if m.timeOffDialogMode == timeOffDialogRecord {
+				maxCursor = len(m.timeOffTypes)
+			}
+			if m.timeOffTypeCursor < maxCursor {
+				m.timeOffTypeCursor++
+			}
+		}
+	case "a":
+		if m.timeOffDialogMode == timeOffDialogManage {
+			m.timeOffDialogMode = timeOffDialogCreate
+			m.timeOffInput = ""
+		}
+	case "enter":
+		if m.timeOffDialogMode == timeOffDialogRecord {
+			m.saveTimeOffRecord()
+		}
+	}
+	return nil
+}
+
+func (m *AppModel) createTimeOffType() {
+	project := m.selectedTimeOffProject()
+	if project == nil {
+		m.err = fmt.Errorf("project required")
+		return
+	}
+	item, err := m.store.CreateTimeOffType(m.ctx, project.ID, strings.TrimSpace(m.timeOffInput))
+	if err != nil {
+		m.err = err
+		return
+	}
+	if err := m.reloadTimeOffTypesForSelectedProject(); err != nil {
+		m.err = err
+		return
+	}
+	for i, typeItem := range m.timeOffTypes {
+		if typeItem.ID == item.ID {
+			m.timeOffTypeCursor = i
+			break
+		}
+	}
+	m.timeOffDialogMode = timeOffDialogManage
+	m.timeOffInput = ""
+}
+
+func (m *AppModel) saveTimeOffRecord() {
+	project := m.selectedTimeOffProject()
+	if project == nil {
+		m.err = fmt.Errorf("project required")
+		return
+	}
+	fromDay, toDay, err := parseDateRangeInputs(m.timeOffFromInput, m.timeOffToInput)
+	if err != nil {
+		m.err = err
+		return
+	}
+	if m.timeOffTypeCursor == 0 {
+		for _, day := range daysInRange(fromDay, toDay) {
+			if err := m.store.DeleteTimeOffDay(m.ctx, project.ID, day); err != nil {
+				m.err = err
+				return
+			}
+		}
+	} else {
+		typeItem := m.selectedTimeOffType()
+		if typeItem == nil {
+			m.err = fmt.Errorf("time off type required")
+			return
+		}
+		for _, day := range daysInRange(fromDay, toDay) {
+			if _, err := m.store.UpsertTimeOffDay(m.ctx, project.ID, typeItem.ID, day); err != nil {
+				m.err = err
+				return
+			}
+		}
+	}
+	if err := m.reloadTimeOffRecords(); err != nil {
+		m.err = err
+		return
+	}
+	if parsedDay, err := time.ParseInLocation("2006-01-02", fromDay, time.Local); err == nil {
+		m.dayDate = dayStart(parsedDay)
+	}
+	m.closeTimeOffDialog()
+}
+
+func (m *AppModel) appendTimeOffDateInput(text string) {
+	current := &m.timeOffFromInput
+	cursor := &m.timeOffFromCursor
+	if m.timeOffField == "to" {
+		current = &m.timeOffToInput
+		cursor = &m.timeOffToCursor
+	}
+	for _, r := range text {
+		if len(*current) >= 10 {
+			break
+		}
+		pos := len(*current)
+		switch pos {
+		case 0, 1, 2, 3, 5, 6, 8, 9:
+			if r < '0' || r > '9' {
+				continue
+			}
+		case 4, 7:
+			if r != '-' {
+				continue
+			}
+		}
+		*current += string(r)
+	}
+	*cursor = len([]rune(*current))
+}
+
+func (m *AppModel) backspaceTimeOffDateInput() {
+	current := &m.timeOffFromInput
+	cursor := &m.timeOffFromCursor
+	if m.timeOffField == "to" {
+		current = &m.timeOffToInput
+		cursor = &m.timeOffToCursor
+	}
+	if len(*current) == 0 {
+		return
+	}
+	*current = (*current)[:len(*current)-1]
+	*cursor = len([]rune(*current))
+}
+
+func parseDateInput(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if _, err := time.ParseInLocation("2006-01-02", trimmed, time.Local); err != nil {
+		return "", fmt.Errorf("invalid date")
+	}
+	return trimmed, nil
+}
+
+func parseDateRangeInputs(fromValue, toValue string) (string, string, error) {
+	fromDay, err := parseDateInput(fromValue)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid from date")
+	}
+	toDay, err := parseDateInput(toValue)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid to date")
+	}
+	fromTime, _ := time.ParseInLocation("2006-01-02", fromDay, time.Local)
+	toTime, _ := time.ParseInLocation("2006-01-02", toDay, time.Local)
+	if toTime.Before(fromTime) {
+		return "", "", fmt.Errorf("to date must be on or after from date")
+	}
+	return fromDay, toDay, nil
+}
+
+func daysInRange(fromDay, toDay string) []string {
+	fromTime, _ := time.ParseInLocation("2006-01-02", fromDay, time.Local)
+	toTime, _ := time.ParseInLocation("2006-01-02", toDay, time.Local)
+	var days []string
+	for day := fromTime; !day.After(toTime); day = day.AddDate(0, 0, 1) {
+		days = append(days, day.Format("2006-01-02"))
+	}
+	return days
+}
+
+func timeOffFieldIsDate(field string) bool {
+	return field == "from" || field == "to"
+}
+
 func (m *AppModel) handleProjectDialogKey(msg tea.KeyMsg) tea.Cmd {
 	if m.dialogMode == projectDialogCreate {
 		switch msg.String() {
@@ -2243,12 +2513,190 @@ func (m *AppModel) selectedProject() *model.Project {
 	return &m.projects[m.projectCursor-1]
 }
 
+func (m *AppModel) selectedTimeOffProject() *model.Project {
+	if m.timeOffProjectCursor < 0 || m.timeOffProjectCursor >= len(m.projects) {
+		return nil
+	}
+	return &m.projects[m.timeOffProjectCursor]
+}
+
+func (m *AppModel) selectedTimeOffType() *model.TimeOffType {
+	if m.timeOffTypeCursor <= 0 || m.timeOffTypeCursor > len(m.timeOffTypes) {
+		return nil
+	}
+	return &m.timeOffTypes[m.timeOffTypeCursor-1]
+}
+
+func (m *AppModel) openTimeOffManageDialog() {
+	m.mode = modeTimeOff
+	m.timeOffDialogMode = timeOffDialogManage
+	m.timeOffInput = ""
+	m.timeOffField = "project"
+	m.caretVisible = true
+	if m.timeOffProjectCursor >= len(m.projects) {
+		m.timeOffProjectCursor = 0
+	}
+	m.timeOffTypeCursor = 0
+	m.err = m.reloadTimeOffTypesForSelectedProject()
+}
+
+func (m *AppModel) openTimeOffRecordDialog() {
+	m.mode = modeTimeOff
+	m.timeOffDialogMode = timeOffDialogRecord
+	m.timeOffInput = ""
+	m.timeOffFromInput = m.displayedDay().Format("2006-01-02")
+	m.timeOffFromCursor = len([]rune(m.timeOffFromInput))
+	m.timeOffToInput = m.displayedDay().Format("2006-01-02")
+	m.timeOffToCursor = len([]rune(m.timeOffToInput))
+	m.timeOffField = "project"
+	m.caretVisible = true
+	if m.timeOffProjectCursor >= len(m.projects) {
+		m.timeOffProjectCursor = 0
+	}
+	m.timeOffTypeCursor = 0
+	if record := m.preferredTimeOffRecordForDay(m.displayedDay()); record != nil {
+		for i, project := range m.projects {
+			if project.ID == record.ProjectID {
+				m.timeOffProjectCursor = i
+				break
+			}
+		}
+	}
+	m.err = m.reloadTimeOffTypesForSelectedProject()
+	if m.err != nil {
+		return
+	}
+	if record := m.preferredTimeOffRecordForDay(m.displayedDay()); record != nil {
+		for i, item := range m.timeOffTypes {
+			if item.ID == record.TimeOffTypeID {
+				m.timeOffTypeCursor = i + 1
+				break
+			}
+		}
+		fromDay, toDay := m.timeOffContiguousRange(*record)
+		m.timeOffFromInput = fromDay
+		m.timeOffFromCursor = len([]rune(fromDay))
+		m.timeOffToInput = toDay
+		m.timeOffToCursor = len([]rune(toDay))
+	}
+}
+
+func (m *AppModel) closeTimeOffDialog() {
+	m.mode = modeTimeline
+	m.timeOffDialogMode = ""
+	m.timeOffInput = ""
+	m.timeOffFromInput = ""
+	m.timeOffFromCursor = 0
+	m.timeOffToInput = ""
+	m.timeOffToCursor = 0
+	m.timeOffField = ""
+	m.timeOffTypeCursor = 0
+	m.caretVisible = false
+}
+
+func (m AppModel) timeOffRecordsForDay(day time.Time) []model.TimeOffDayDetail {
+	key := dayStart(day).Format("2006-01-02")
+	var records []model.TimeOffDayDetail
+	for _, record := range m.timeOffRecords {
+		if record.Day == key {
+			records = append(records, record)
+		}
+	}
+	return records
+}
+
+func (m AppModel) preferredTimeOffRecordForDay(day time.Time) *model.TimeOffDayDetail {
+	records := m.timeOffRecordsForDay(day)
+	if len(records) == 0 {
+		return nil
+	}
+	if project := m.selectedTimeOffProject(); project != nil {
+		for _, record := range records {
+			if record.ProjectID == project.ID {
+				copy := record
+				return &copy
+			}
+		}
+	}
+	copy := records[0]
+	return &copy
+}
+
+func (m AppModel) timeOffContiguousRange(record model.TimeOffDayDetail) (string, string) {
+	current, err := time.ParseInLocation("2006-01-02", record.Day, time.Local)
+	if err != nil {
+		return record.Day, record.Day
+	}
+	start := current
+	for {
+		prev := start.AddDate(0, 0, -1).Format("2006-01-02")
+		if !m.hasMatchingTimeOffRecord(record.ProjectID, record.TimeOffTypeID, prev) {
+			break
+		}
+		start = start.AddDate(0, 0, -1)
+	}
+	end := current
+	for {
+		next := end.AddDate(0, 0, 1).Format("2006-01-02")
+		if !m.hasMatchingTimeOffRecord(record.ProjectID, record.TimeOffTypeID, next) {
+			break
+		}
+		end = end.AddDate(0, 0, 1)
+	}
+	return start.Format("2006-01-02"), end.Format("2006-01-02")
+}
+
+func (m AppModel) hasMatchingTimeOffRecord(projectID, typeID, day string) bool {
+	for _, record := range m.timeOffRecords {
+		if record.ProjectID == projectID && record.TimeOffTypeID == typeID && record.Day == day {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *AppModel) reloadProjects() error {
 	projects, err := m.store.ListProjects(m.ctx)
 	if err != nil {
 		return err
 	}
 	m.projects = projects
+	return nil
+}
+
+func (m *AppModel) reloadTimeOffRecords() error {
+	records, err := m.store.ListTimeOffDaysInRange(m.ctx, "0001-01-01", "9999-12-31")
+	if err != nil {
+		return err
+	}
+	m.timeOffRecords = records
+	return nil
+}
+
+func (m *AppModel) reloadTimeOffTypesForSelectedProject() error {
+	project := m.selectedTimeOffProject()
+	if project == nil {
+		m.timeOffTypes = nil
+		m.timeOffTypeCursor = 0
+		return nil
+	}
+	if err := m.store.EnsureProjectDefaultTimeOffTypes(m.ctx, project.ID); err != nil {
+		return err
+	}
+	types, err := m.store.ListTimeOffTypesByProject(m.ctx, project.ID)
+	if err != nil {
+		return err
+	}
+	m.timeOffTypes = types
+	if m.timeOffDialogMode == timeOffDialogManage {
+		if len(types) == 0 {
+			m.timeOffTypeCursor = 0
+		} else {
+			m.timeOffTypeCursor = min(m.timeOffTypeCursor, len(types)-1)
+		}
+	} else {
+		m.timeOffTypeCursor = min(m.timeOffTypeCursor, len(types))
+	}
 	return nil
 }
 
@@ -2546,9 +2994,14 @@ type monthProjectTotal struct {
 	duration time.Duration
 }
 
+type monthTimeOffLabel struct {
+	text string
+}
+
 type monthDaySummary struct {
 	total    time.Duration
 	projects []monthProjectTotal
+	timeOffs []monthTimeOffLabel
 }
 
 func renderMonthTimeline(m AppModel, styles tuiStyles) string {
@@ -2558,7 +3011,7 @@ func renderMonthTimeline(m AppModel, styles tuiStyles) string {
 	weeks := monthGridWeeks(selectedDay)
 	columnWidths := monthColumnWidths(max(7, timelineWidth(m.width)))
 	cellHeight := 5
-	summaries := monthSummaries(m.entries)
+	summaries := monthSummaries(m.entries, m.timeOffRecords)
 	weekdays := []string{"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
 
 	var b strings.Builder
@@ -2578,6 +3031,14 @@ func renderMonthTimeline(m AppModel, styles tuiStyles) string {
 			b.WriteString("\n")
 		}
 	}
+	selectedRecords := m.timeOffRecordsForDay(selectedDay)
+	if len(selectedRecords) > 0 {
+		parts := make([]string, 0, len(selectedRecords))
+		for _, record := range selectedRecords {
+			parts = append(parts, record.TimeOffType+" @ "+record.ProjectName)
+		}
+		b.WriteString("\n" + styles.muted.Render(truncateForWidth("time off | "+strings.Join(parts, " | "), timelineWidth(m.width))))
+	}
 
 	return b.String()
 }
@@ -2585,6 +3046,9 @@ func renderMonthTimeline(m AppModel, styles tuiStyles) string {
 func renderMonthCell(day, monthStart, selectedDay time.Time, summary monthDaySummary, width, height int, styles tuiStyles) string {
 	innerWidth := max(1, width-2)
 	lines := []string{strconv.Itoa(day.Day())}
+	for _, item := range summary.timeOffs {
+		lines = append(lines, item.text)
+	}
 	if summary.total > 0 {
 		lines = append(lines, formatWorkDuration(summary.total))
 	}
@@ -2645,7 +3109,7 @@ func monthColumnWidths(totalWidth int) []int {
 	return widths
 }
 
-func monthSummaries(entries []model.TimeEntryDetail) map[string]monthDaySummary {
+func monthSummaries(entries []model.TimeEntryDetail, timeOffRecords []model.TimeOffDayDetail) map[string]monthDaySummary {
 	totals := map[string]map[string]time.Duration{}
 	for _, entry := range entries {
 		duration := timelineBlockEnd(entry).Sub(entry.StartedAt)
@@ -2677,6 +3141,12 @@ func monthSummaries(entries []model.TimeEntryDetail) map[string]monthDaySummary 
 			return summary.projects[i].duration > summary.projects[j].duration
 		})
 		summaries[day] = summary
+	}
+	for _, record := range timeOffRecords {
+		summary := summaries[record.Day]
+		label := record.TimeOffType + " @ " + record.ProjectName
+		summary.timeOffs = append(summary.timeOffs, monthTimeOffLabel{text: label})
+		summaries[record.Day] = summary
 	}
 	return summaries
 }
@@ -3729,6 +4199,9 @@ func renderStatusBar(m AppModel, width int) string {
 }
 
 func renderBaseStatusBar(m AppModel, width int) string {
+	if m.mode == modeTimeOff {
+		return truncateForWidth(timeOffDialogHelp(m), width)
+	}
 	if m.mode == modeAssign {
 		return truncateForWidth(projectDialogHelp(m), width)
 	}
@@ -3745,7 +4218,7 @@ func renderBaseStatusBar(m AppModel, width int) string {
 		return truncateForWidth(fmt.Sprintf("report %s | w week | m month | y year | r refresh | esc back", m.reportPreset), width)
 	}
 	if m.timelineView == timelineViewMonth {
-		text := fmt.Sprintf("month %s | arrows/hjkl move | enter open day | m back | t today", m.displayedDay().Format("2006-01-02"))
+		text := fmt.Sprintf("month %s | arrows/hjkl move | enter open day | o time off | m back | t today", m.displayedDay().Format("2006-01-02"))
 		return truncateForWidth(text, width)
 	}
 	if m.timelineView == timelineViewDay {
@@ -3766,7 +4239,7 @@ func renderBaseStatusBar(m AppModel, width int) string {
 	if m.lastSearch != "" {
 		searchHint = " | / search n/N next"
 	}
-	text := fmt.Sprintf("entries %d | drafts %d | pos %s | s sync | up/down home/end pgup/pgdn space p assign P projects enter q%s", len(m.entries), drafts, position, searchHint)
+	text := fmt.Sprintf("entries %d | drafts %d | pos %s | s sync | up/down home/end pgup/pgdn space p assign P projects o time-off enter q%s", len(m.entries), drafts, position, searchHint)
 	return truncateForWidth(text, width)
 }
 
@@ -4126,6 +4599,64 @@ func renderProjectDialog(m AppModel, styles tuiStyles, background string) string
 	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)
 }
 
+func renderTimeOffDialog(m AppModel, styles tuiStyles, background string) string {
+	dialogWidth := projectDialogWidth(m.width)
+	innerWidth := max(20, dialogWidth-6)
+
+	var content strings.Builder
+	content.WriteString(styles.title.Render(timeOffDialogTitle(m)) + "\n")
+	content.WriteString(styles.muted.Render(timeOffDialogSummary(m)) + "\n\n")
+	if m.timeOffDialogMode == timeOffDialogRecord {
+		fromStyle := styles.muted
+		if m.timeOffField == "from" {
+			fromStyle = lipgloss.NewStyle().Bold(true)
+		}
+		toStyle := styles.muted
+		if m.timeOffField == "to" {
+			toStyle = lipgloss.NewStyle().Bold(true)
+		}
+		content.WriteString(styles.muted.Render("From") + "\n")
+		content.WriteString(renderDialogTextInputStyled(m.timeOffFromInput, m.timeOffFromCursor, m.caretVisible, m.timeOffField == "from", innerWidth, fromStyle))
+		content.WriteString("\n\n")
+		content.WriteString(styles.muted.Render("To") + "\n")
+		content.WriteString(renderDialogTextInputStyled(m.timeOffToInput, m.timeOffToCursor, m.caretVisible, m.timeOffField == "to", innerWidth, toStyle))
+		content.WriteString("\n\n")
+	}
+	if len(m.projects) > 0 {
+		content.WriteString(styles.muted.Render("Project") + "\n")
+		for i, project := range m.projects {
+			label := project.Name
+			if project.Code != nil && *project.Code != "" {
+				label += " (" + *project.Code + ")"
+			}
+			content.WriteString(renderDialogPickerLine(label, i == m.timeOffProjectCursor, m.timeOffField == "project", styles, innerWidth) + "\n")
+		}
+	}
+	if m.timeOffDialogMode == timeOffDialogCreate {
+		content.WriteString("\n" + styles.muted.Render("Type name") + "\n")
+		content.WriteString(styles.activePicker.Render(truncateForWidth("> "+m.timeOffInput, innerWidth)))
+		content.WriteString("\n\n" + styles.muted.Render("type name | enter create | esc back"))
+	} else {
+		content.WriteString("\n" + styles.muted.Render("Time Off Type") + "\n")
+		if m.timeOffDialogMode == timeOffDialogRecord {
+			content.WriteString(renderDialogPickerLine("Clear for selected project", 0 == m.timeOffTypeCursor, m.timeOffField == "type", styles, innerWidth) + "\n")
+			for i, item := range m.timeOffTypes {
+				content.WriteString(renderDialogPickerLine(item.Name, i+1 == m.timeOffTypeCursor, m.timeOffField == "type", styles, innerWidth) + "\n")
+			}
+		} else if len(m.timeOffTypes) == 0 {
+			content.WriteString(styles.muted.Render("no time off types") + "\n")
+		} else {
+			for i, item := range m.timeOffTypes {
+				content.WriteString(renderDialogPickerLine(item.Name, i == m.timeOffTypeCursor, m.timeOffField == "type", styles, innerWidth) + "\n")
+			}
+		}
+		content.WriteString("\n" + styles.muted.Render(timeOffDialogHelp(m)))
+	}
+
+	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
+	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)
+}
+
 func renderGapEntryDialog(m AppModel, styles tuiStyles, background string) string {
 	dialogWidth := projectDialogWidth(m.width)
 	innerWidth := max(20, dialogWidth-6)
@@ -4231,6 +4762,43 @@ func renderDeleteConfirmDialog(m AppModel, styles tuiStyles, background string) 
 
 	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
 	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)
+}
+
+func timeOffDialogTitle(m AppModel) string {
+	switch m.timeOffDialogMode {
+	case timeOffDialogCreate:
+		return "New Time Off Type"
+	case timeOffDialogRecord:
+		return "Record Time Off"
+	default:
+		return "Manage Time Off"
+	}
+}
+
+func timeOffDialogSummary(m AppModel) string {
+	project := m.selectedTimeOffProject()
+	projectLabel := "no project selected"
+	if project != nil {
+		projectLabel = project.Name
+	}
+	if m.timeOffDialogMode == timeOffDialogRecord {
+		return fmt.Sprintf("%s to %s | %s", m.timeOffFromInput, m.timeOffToInput, projectLabel)
+	}
+	if m.timeOffDialogMode == timeOffDialogCreate {
+		return projectLabel
+	}
+	return projectLabel + " | categories"
+}
+
+func timeOffDialogHelp(m AppModel) string {
+	switch m.timeOffDialogMode {
+	case timeOffDialogCreate:
+		return "type name | enter create | esc back"
+	case timeOffDialogRecord:
+		return "tab cycle project/type/from/to | up/down move | enter save | esc cancel"
+	default:
+		return "tab cycle fields | up/down move | a new | esc close"
+	}
 }
 
 func projectDialogSummary(m AppModel) string {
@@ -4445,6 +5013,19 @@ func renderPickerLine(label string, index, current int, styles tuiStyles, width 
 	line := lipgloss.NewStyle().MaxWidth(width).Render(cursor + " " + label)
 	style := styles.projectPicker
 	if index == current {
+		style = styles.activePicker
+	}
+	return style.Width(width).MaxWidth(width).Render(line)
+}
+
+func renderDialogPickerLine(label string, selected bool, active bool, styles tuiStyles, width int) string {
+	cursor := " "
+	if selected {
+		cursor = ">"
+	}
+	line := lipgloss.NewStyle().MaxWidth(width).Render(cursor + " " + label)
+	style := styles.projectPicker
+	if active && selected {
 		style = styles.activePicker
 	}
 	return style.Width(width).MaxWidth(width).Render(line)

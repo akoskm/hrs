@@ -166,6 +166,34 @@ type ProjectPath struct {
 	CreatedAt time.Time `json:"created_at" db:"created_at"`
 }
 
+// ── Time Off ─────────────────────────────────────────────────
+
+type TimeOffType struct {
+	ID         string     `json:"id"          db:"id"`
+	ProjectID  string     `json:"project_id"  db:"project_id"`
+	Name       string     `json:"name"        db:"name"`
+	IsSystem   bool       `json:"is_system"   db:"is_system"`
+	ArchivedAt *time.Time `json:"archived_at" db:"archived_at"`
+	CreatedAt  time.Time  `json:"created_at"  db:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"  db:"updated_at"`
+}
+
+type TimeOffDay struct {
+	ID            string    `json:"id"               db:"id"`
+	ProjectID     string    `json:"project_id"       db:"project_id"`
+	TimeOffTypeID string    `json:"time_off_type_id" db:"time_off_type_id"`
+	Day           string    `json:"day"              db:"day"`
+	CreatedAt     time.Time `json:"created_at"       db:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"       db:"updated_at"`
+}
+
+type TimeOffDayDetail struct {
+	TimeOffDay
+	ProjectName string  `json:"project_name"  db:"project_name"`
+	ProjectCode *string `json:"project_code" db:"project_code"`
+	TimeOffType string  `json:"time_off_type" db:"time_off_type"`
+}
+
 // ── Aggregation Types ───────────────────────────────────────
 
 type ProjectSummary struct {

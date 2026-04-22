@@ -476,6 +476,62 @@ func TestManageProjectsShowsProjectColorCue(t *testing.T) {
 	}
 }
 
+func TestManageTimeOffCanCreateCustomTypeForProject(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	alpha, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Alpha", Code: "alpha", Currency: "USD"})
+	if err != nil {
+		t.Fatalf("CreateProject(alpha) error = %v", err)
+	}
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Beta", Code: "beta", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject(beta) error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	app := updated.(AppModel)
+	if app.mode != modeTimeOff || app.timeOffDialogMode != timeOffDialogManage {
+		t.Fatalf("dialog state = %q/%q, want time-off/manage", app.mode, app.timeOffDialogMode)
+	}
+	if !strings.Contains(stripANSI(app.View()), "Manage Time Off") {
+		t.Fatalf("view missing manage time off dialog: %q", stripANSI(app.View()))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	app = updated.(AppModel)
+	if app.timeOffDialogMode != timeOffDialogCreate {
+		t.Fatalf("timeOffDialogMode = %q, want create", app.timeOffDialogMode)
+	}
+	for _, r := range []rune("Conference Leave") {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = updated.(AppModel)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.timeOffDialogMode != timeOffDialogManage {
+		t.Fatalf("timeOffDialogMode after create = %q, want manage", app.timeOffDialogMode)
+	}
+
+	types, err := store.ListTimeOffTypesByProject(ctx, alpha.ID)
+	if err != nil {
+		t.Fatalf("ListTimeOffTypesByProject(alpha) error = %v", err)
+	}
+	if len(types) != 4 {
+		t.Fatalf("len(types) = %d, want 4", len(types))
+	}
+	if types[len(types)-1].Name != "Vacation" {
+		t.Fatalf("types = %#v, want seeded + custom type", types)
+	}
+	if !strings.Contains(stripANSI(app.View()), "Conference Leave") {
+		t.Fatalf("view missing new custom type: %q", stripANSI(app.View()))
+	}
+}
+
 func TestProjectColorIndicatorUsesForegroundColor(t *testing.T) {
 	prev := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
@@ -1367,6 +1423,326 @@ func TestTimelineMonthViewNavigationAndEnter(t *testing.T) {
 	}
 	if got := descriptionOrID(app.entries[app.cursor]); got != "Chosen day" {
 		t.Fatalf("focused entry after enter = %q, want Chosen day", got)
+	}
+}
+
+func TestTimelineMonthViewCanRecordProjectTimeOff(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	targetDay := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
+
+	alpha, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Alpha", Code: "alpha", Currency: "USD"})
+	if err != nil {
+		t.Fatalf("CreateProject(alpha) error = %v", err)
+	}
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Beta", Code: "beta", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject(beta) error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.SetDefaultTimelineView("day")
+	model.width = 120
+	model.height = 30
+	model.dayDate = targetDay
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	app = updated.(AppModel)
+	if app.mode != modeTimeOff || app.timeOffDialogMode != timeOffDialogRecord {
+		t.Fatalf("dialog state = %q/%q, want time-off/record", app.mode, app.timeOffDialogMode)
+	}
+	if !strings.Contains(stripANSI(app.View()), "Record Time Off") {
+		t.Fatalf("view missing record time off dialog: %q", stripANSI(app.View()))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	for i := 0; i < 3; i++ {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+		app = updated.(AppModel)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.mode != modeTimeline {
+		t.Fatalf("mode after save = %q, want timeline", app.mode)
+	}
+
+	records, err := store.ListTimeOffDaysInRange(ctx, "2026-04-01", "2026-04-30")
+	if err != nil {
+		t.Fatalf("ListTimeOffDaysInRange() error = %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1", len(records))
+	}
+	if records[0].ProjectID != alpha.ID {
+		t.Fatalf("records[0].ProjectID = %q, want %q", records[0].ProjectID, alpha.ID)
+	}
+	if records[0].Day != "2026-04-15" {
+		t.Fatalf("records[0].Day = %q, want 2026-04-15", records[0].Day)
+	}
+	if records[0].TimeOffType != "Vacation" {
+		t.Fatalf("records[0].TimeOffType = %q, want Vacation", records[0].TimeOffType)
+	}
+
+	view := stripANSI(app.View())
+	if !strings.Contains(view, "Vacation @ Alpha") {
+		t.Fatalf("month view missing recorded time off: %q", view)
+	}
+}
+
+func TestTimelineMonthViewCanMoveIntoFuture(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.width = 120
+	model.height = 30
+	model.dayDate = dayStart(time.Now()).AddDate(0, 0, 1)
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	app := updated.(AppModel)
+	future := dayStart(time.Now()).AddDate(0, 0, 2)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	app = updated.(AppModel)
+	if !app.displayedDay().Equal(future) {
+		t.Fatalf("displayedDay after future move = %s, want %s", app.displayedDay().Format("2006-01-02"), future.Format("2006-01-02"))
+	}
+}
+
+func TestRecordTimeOffDialogDateRangeIsEditable(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Alpha", Code: "alpha", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject(alpha) error = %v", err)
+	}
+
+	targetDay := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.SetDefaultTimelineView("day")
+	model.width = 120
+	model.height = 30
+	model.dayDate = targetDay
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	app = updated.(AppModel)
+	view := stripANSI(app.View())
+	if !strings.Contains(view, "2026-04-15") {
+		t.Fatalf("dialog missing initial date range: %q", view)
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	for i := 0; i < len("2026-04-15"); i++ {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		app = updated.(AppModel)
+	}
+	for _, r := range []rune("2026-04-20") {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = updated.(AppModel)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	for i := 0; i < len("2026-04-15"); i++ {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		app = updated.(AppModel)
+	}
+	for _, r := range []rune("2026-04-22") {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = updated.(AppModel)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	for i := 0; i < 3; i++ {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+		app = updated.(AppModel)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+
+	records, err := store.ListTimeOffDaysInRange(ctx, "2026-04-01", "2026-04-30")
+	if err != nil {
+		t.Fatalf("ListTimeOffDaysInRange() error = %v", err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("len(records) = %d, want 3", len(records))
+	}
+	gotDays := []string{records[0].Day, records[1].Day, records[2].Day}
+	wantDays := []string{"2026-04-20", "2026-04-21", "2026-04-22"}
+	for i := range wantDays {
+		if gotDays[i] != wantDays[i] {
+			t.Fatalf("record days = %v, want %v", gotDays, wantDays)
+		}
+		if records[i].TimeOffType != "Vacation" {
+			t.Fatalf("records[%d].TimeOffType = %q, want Vacation", i, records[i].TimeOffType)
+		}
+	}
+}
+
+func TestRecordTimeOffDialogClearRemovesSelectedRangeForProject(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	alpha, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Alpha", Code: "alpha", Currency: "USD"})
+	if err != nil {
+		t.Fatalf("CreateProject(alpha) error = %v", err)
+	}
+	beta, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Beta", Code: "beta", Currency: "USD"})
+	if err != nil {
+		t.Fatalf("CreateProject(beta) error = %v", err)
+	}
+	if err := store.EnsureProjectDefaultTimeOffTypes(ctx, alpha.ID); err != nil {
+		t.Fatalf("EnsureProjectDefaultTimeOffTypes(alpha) error = %v", err)
+	}
+	if err := store.EnsureProjectDefaultTimeOffTypes(ctx, beta.ID); err != nil {
+		t.Fatalf("EnsureProjectDefaultTimeOffTypes(beta) error = %v", err)
+	}
+	alphaTypes, err := store.ListTimeOffTypesByProject(ctx, alpha.ID)
+	if err != nil {
+		t.Fatalf("ListTimeOffTypesByProject(alpha) error = %v", err)
+	}
+	betaTypes, err := store.ListTimeOffTypesByProject(ctx, beta.ID)
+	if err != nil {
+		t.Fatalf("ListTimeOffTypesByProject(beta) error = %v", err)
+	}
+	for _, day := range []string{"2026-04-20", "2026-04-21", "2026-04-22"} {
+		if _, err := store.UpsertTimeOffDay(ctx, alpha.ID, alphaTypes[2].ID, day); err != nil {
+			t.Fatalf("UpsertTimeOffDay(alpha,%s) error = %v", day, err)
+		}
+		if _, err := store.UpsertTimeOffDay(ctx, beta.ID, betaTypes[0].ID, day); err != nil {
+			t.Fatalf("UpsertTimeOffDay(beta,%s) error = %v", day, err)
+		}
+	}
+
+	targetDay := time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC)
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.SetDefaultTimelineView("day")
+	model.width = 120
+	model.height = 30
+	model.dayDate = targetDay
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	for i := 0; i < len("2026-04-20"); i++ {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		app = updated.(AppModel)
+	}
+	for _, r := range []rune("2026-04-22") {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = updated.(AppModel)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	for i := 0; i < 3; i++ {
+		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyUp})
+		app = updated.(AppModel)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+
+	records, err := store.ListTimeOffDaysInRange(ctx, "2026-04-20", "2026-04-22")
+	if err != nil {
+		t.Fatalf("ListTimeOffDaysInRange() error = %v", err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("len(records) = %d, want 3 remaining beta records", len(records))
+	}
+	for _, record := range records {
+		if record.ProjectID != beta.ID {
+			t.Fatalf("record.ProjectID = %q, want only beta %q", record.ProjectID, beta.ID)
+		}
+	}
+}
+
+func TestRecordTimeOffDialogPreloadsExistingRangeForEditing(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	alpha, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Alpha", Code: "alpha", Currency: "USD"})
+	if err != nil {
+		t.Fatalf("CreateProject(alpha) error = %v", err)
+	}
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Beta", Code: "beta", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject(beta) error = %v", err)
+	}
+	if err := store.EnsureProjectDefaultTimeOffTypes(ctx, alpha.ID); err != nil {
+		t.Fatalf("EnsureProjectDefaultTimeOffTypes(alpha) error = %v", err)
+	}
+	types, err := store.ListTimeOffTypesByProject(ctx, alpha.ID)
+	if err != nil {
+		t.Fatalf("ListTimeOffTypesByProject(alpha) error = %v", err)
+	}
+	for _, day := range []string{"2026-04-20", "2026-04-21", "2026-04-22"} {
+		if _, err := store.UpsertTimeOffDay(ctx, alpha.ID, types[2].ID, day); err != nil {
+			t.Fatalf("UpsertTimeOffDay(alpha,%s) error = %v", day, err)
+		}
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.SetDefaultTimelineView("day")
+	model.width = 120
+	model.height = 30
+	model.dayDate = time.Date(2026, 4, 21, 0, 0, 0, 0, time.UTC)
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	app = updated.(AppModel)
+
+	if project := app.selectedTimeOffProject(); project == nil || project.ID != alpha.ID {
+		t.Fatalf("selected project = %#v, want alpha", project)
+	}
+	if got := app.selectedTimeOffType(); got == nil || got.Name != "Vacation" {
+		t.Fatalf("selected time off type = %#v, want Vacation", got)
+	}
+	if app.timeOffFromInput != "2026-04-20" {
+		t.Fatalf("timeOffFromInput = %q, want 2026-04-20", app.timeOffFromInput)
+	}
+	if app.timeOffToInput != "2026-04-22" {
+		t.Fatalf("timeOffToInput = %q, want 2026-04-22", app.timeOffToInput)
+	}
+	view := stripANSI(app.View())
+	if !strings.Contains(view, "2026-04-20 to 2026-04-22 | Alpha") {
+		t.Fatalf("dialog summary not preloaded for edit: %q", view)
 	}
 }
 
