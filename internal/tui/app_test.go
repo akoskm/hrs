@@ -788,7 +788,7 @@ func TestOutlinedBlockCellShowsLabelOnStartingMidpointRow(t *testing.T) {
 	slotEnd := time.Date(2026, 4, 9, 13, 15, 0, 0, time.Local)
 
 	got := outlinedBlockCellWithViewport(slotStart, slotEnd, time.Time{}, itemStart, itemEnd, false, false, 24, "check why language")
-	want := "┌check why language────┐"
+	want := "┌─check why language───┐"
 	if got != want {
 		t.Fatalf("starting midpoint cell = %q, want %q", got, want)
 	}
@@ -838,11 +838,11 @@ func TestOutlinedBlockCellAnchorsViewportTopLabel(t *testing.T) {
 	midSlotStart := viewportStart.Add(40 * time.Minute)
 	midSlotEnd := midSlotStart.Add(20 * time.Minute)
 
-	if got := outlinedBlockCellWithViewport(firstSlotStart, firstSlotEnd, viewportStart, itemStart, itemEnd, false, false, 24, "improve TUI experience"); !strings.Contains(got, "improve TUI experience") {
-		t.Fatalf("first visible cell = %q, want anchored label", got)
+	if got := outlinedBlockCellWithViewport(firstSlotStart, firstSlotEnd, viewportStart, itemStart, itemEnd, false, false, 24, "improve TUI experience"); strings.Contains(got, "improve TUI experience") {
+		t.Fatalf("first visible cell = %q, want plain top border for multi-row viewport-top entry", got)
 	}
-	if got := outlinedBlockCellWithViewport(midSlotStart, midSlotEnd, viewportStart, itemStart, itemEnd, false, false, 24, "improve TUI experience"); strings.Contains(got, "improve TUI experience") {
-		t.Fatalf("mid cell = %q, want no duplicate label", got)
+	if got := outlinedBlockCellWithViewport(midSlotStart, midSlotEnd, viewportStart, itemStart, itemEnd, false, false, 24, "improve TUI experience"); !strings.Contains(got, "improve TUI experience") {
+		t.Fatalf("mid cell = %q, want label in body row", got)
 	}
 }
 
@@ -914,6 +914,52 @@ func TestRenderActivityCellKeepsBorderBetweenDifferentProjects(t *testing.T) {
 	got := stripANSI(renderActivityCell(app, time.Time{}, boundary, boundary.Add(15*time.Minute), entries, 24, styles))
 	if !strings.Contains(got, "┌") || strings.Contains(got, "├") {
 		t.Fatalf("lower cross-project cell = %q, want fresh top border", got)
+	}
+}
+
+func TestRenderActivityCellKeepsBorderBetweenDifferentDescriptions(t *testing.T) {
+	project := "alpha"
+	upperDesc := "migration follow up for multiple datasets"
+	lowerDesc := "michal interview"
+	boundary := time.Date(2026, 4, 7, 14, 30, 0, 0, time.Local)
+	upperEnd := boundary
+	lowerEnd := boundary.Add(45 * time.Minute)
+	entries := []model.TimeEntryDetail{
+		{
+			TimeEntry: model.TimeEntry{
+				ID:          "upper",
+				ProjectID:   &project,
+				Description: &upperDesc,
+				StartedAt:   boundary.Add(-45 * time.Minute),
+				EndedAt:     &upperEnd,
+				Status:      model.StatusConfirmed,
+			},
+			ProjectName: "Alpha",
+		},
+		{
+			TimeEntry: model.TimeEntry{
+				ID:          "lower",
+				ProjectID:   &project,
+				Description: &lowerDesc,
+				StartedAt:   boundary,
+				EndedAt:     &lowerEnd,
+				Status:      model.StatusConfirmed,
+			},
+			ProjectName: "Alpha",
+		},
+	}
+
+	app := AppModel{entries: entries}
+	styles := newStyles(80)
+
+	upper := stripANSI(renderActivityCell(app, time.Time{}, boundary.Add(-15*time.Minute), boundary, entries, 30, styles))
+	if !strings.Contains(upper, "└") {
+		t.Fatalf("upper cell = %q, want closing border when descriptions differ", upper)
+	}
+
+	lower := stripANSI(renderActivityCell(app, time.Time{}, boundary, boundary.Add(15*time.Minute), entries, 30, styles))
+	if !strings.Contains(lower, "┌") || strings.Contains(lower, "├") {
+		t.Fatalf("lower cell = %q, want fresh top border when descriptions differ", lower)
 	}
 }
 
@@ -4767,7 +4813,7 @@ func TestDayViewShowsViewportTopEntryLabelOnlyOnce(t *testing.T) {
 	}
 }
 
-func TestDayViewShortEntryRendersTitleInTopBorderRow(t *testing.T) {
+func TestDayViewThreeRowEntryRendersTitleInsideBody(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
 	defer store.Close()
@@ -4795,30 +4841,222 @@ func TestDayViewShortEntryRendersTitleInTopBorderRow(t *testing.T) {
 	app := updated.(AppModel)
 	view := stripANSI(renderDayTimeline(app, newStyles(app.width)))
 
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
 	var firstRow string
-	for _, line := range strings.Split(strings.TrimRight(view, "\n"), "\n") {
+	var secondRow string
+	for i, line := range lines {
 		if strings.HasPrefix(line, "18:00") {
 			firstRow = line
+			if i+1 < len(lines) {
+				secondRow = lines[i+1]
+			}
 			break
 		}
 	}
 	if firstRow == "" {
 		t.Fatalf("missing 18:00 row, got:\n%s", view)
 	}
-	if !strings.Contains(firstRow, "restore top border title") {
-		t.Fatalf("18:00 row = %q, want title in first row, got:\n%s", firstRow, view)
+	if strings.Contains(firstRow, "restore top border title") {
+		t.Fatalf("18:00 row = %q, want no title on top border for three-row entry, got:\n%s", firstRow, view)
 	}
-	if !strings.Contains(firstRow, "┌restore top border title") {
-		t.Fatalf("18:00 row = %q, want title embedded in top border, got:\n%s", firstRow, view)
+	if !strings.Contains(secondRow, "restore top border title") {
+		t.Fatalf("row after 18:00 = %q, want title inside body, got:\n%s", secondRow, view)
 	}
-	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
 	rowsView := strings.Join(lines[4:len(lines)-1], "\n")
 	if got := strings.Count(rowsView, "restore top border title"); got != 1 {
 		t.Fatalf("title count = %d, want 1, got:\n%s", got, view)
 	}
 }
 
-func TestDayViewShortFocusedEntryTouchingAboveShowsTitleInsideBlock(t *testing.T) {
+func TestDayViewSingleSlotEntryKeepsLeadingBorderBeforeTitle(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "hrs",
+		Description:  "prepare for Marc interview",
+		StartedAt:    time.Date(2026, 4, 7, 13, 0, 0, 0, time.Local),
+		EndedAt:      time.Date(2026, 4, 7, 13, 15, 0, 0, time.Local),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local))
+	m.dayWindowStart = time.Date(2026, 4, 7, 13, 0, 0, 0, time.Local)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 35})
+	app := updated.(AppModel)
+	view := stripANSI(renderDayTimeline(app, newStyles(app.width)))
+
+	var firstRow string
+	for _, line := range strings.Split(strings.TrimRight(view, "\n"), "\n") {
+		if strings.HasPrefix(line, "13:00") {
+			firstRow = line
+			break
+		}
+	}
+	if firstRow == "" {
+		t.Fatalf("missing 13:00 row, got:\n%s", view)
+	}
+	if !strings.Contains(firstRow, "┌─prepare for Marc interview") {
+		t.Fatalf("13:00 row = %q, want leading border segment before single-slot title, got:\n%s", firstRow, view)
+	}
+}
+
+func TestDayViewViewportTopEntryKeepsLeadingBorderBeforeTitle(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "hrs",
+		Description:  "prepare for Marc interview",
+		StartedAt:    time.Date(2026, 4, 7, 13, 0, 0, 0, time.Local),
+		EndedAt:      time.Date(2026, 4, 7, 13, 30, 0, 0, time.Local),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local))
+	m.dayWindowStart = time.Date(2026, 4, 7, 13, 0, 0, 0, time.Local)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 35})
+	app := updated.(AppModel)
+	view := stripANSI(renderDayTimeline(app, newStyles(app.width)))
+
+	var firstRow string
+	for _, line := range strings.Split(strings.TrimRight(view, "\n"), "\n") {
+		if strings.HasPrefix(line, "13:00") {
+			firstRow = line
+			break
+		}
+	}
+	if firstRow == "" {
+		t.Fatalf("missing 13:00 row, got:\n%s", view)
+	}
+	if !strings.Contains(firstRow, "┌─prepare for Marc interview") {
+		t.Fatalf("13:00 row = %q, want leading border segment before viewport-top title, got:\n%s", firstRow, view)
+	}
+}
+
+func TestDayViewMultiRowEntryShowsTitleInsideBody(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "hrs",
+		Description:  "michal interview",
+		StartedAt:    time.Date(2026, 4, 7, 10, 42, 0, 0, time.Local),
+		EndedAt:      time.Date(2026, 4, 7, 11, 58, 0, 0, time.Local),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local))
+	m.dayWindowStart = time.Date(2026, 4, 7, 10, 0, 0, 0, time.Local)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 35})
+	app := updated.(AppModel)
+	view := stripANSI(renderDayTimeline(app, newStyles(app.width)))
+
+	var topRow string
+	var bodyRow string
+	for i, line := range strings.Split(strings.TrimRight(view, "\n"), "\n") {
+		if strings.HasPrefix(line, "10:00") {
+			topRow = line
+		}
+		if strings.HasPrefix(line, "11:00") {
+			if i+1 < len(strings.Split(strings.TrimRight(view, "\n"), "\n")) {
+				bodyRow = strings.Split(strings.TrimRight(view, "\n"), "\n")[i+1]
+			}
+		}
+	}
+	if topRow == "" || bodyRow == "" {
+		t.Fatalf("missing expected rows, got:\n%s", view)
+	}
+	if strings.Contains(topRow, "michal interview") {
+		t.Fatalf("10:00 row = %q, want no title on top border for multi-row entry, got:\n%s", topRow, view)
+	}
+	if !strings.Contains(bodyRow, "michal interview") {
+		t.Fatalf("body row = %q, want title inside body for multi-row entry, got:\n%s", bodyRow, view)
+	}
+}
+
+func TestDayViewThreeRowEntryShowsTitleInsideBody(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "hrs",
+		Description:  "prepare for Marc interview",
+		StartedAt:    time.Date(2026, 4, 7, 13, 0, 0, 0, time.Local),
+		EndedAt:      time.Date(2026, 4, 7, 13, 45, 0, 0, time.Local),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local))
+	m.dayWindowStart = time.Date(2026, 4, 7, 13, 0, 0, 0, time.Local)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 35})
+	app := updated.(AppModel)
+	view := stripANSI(renderDayTimeline(app, newStyles(app.width)))
+
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	var topRow string
+	var secondRow string
+	for i, line := range lines {
+		if strings.HasPrefix(line, "13:00") {
+			topRow = line
+			if i+1 < len(lines) {
+				secondRow = lines[i+1]
+			}
+			break
+		}
+	}
+	if topRow == "" || secondRow == "" {
+		t.Fatalf("missing expected rows, got:\n%s", view)
+	}
+	if strings.Contains(topRow, "prepare for Marc interview") {
+		t.Fatalf("13:00 row = %q, want no title on top border for three-row entry, got:\n%s", topRow, view)
+	}
+	if !strings.Contains(secondRow, "prepare for Marc interview") {
+		t.Fatalf("row after 13:00 = %q, want title inside body for three-row entry, got:\n%s", secondRow, view)
+	}
+}
+
+func TestDayViewFocusedThreeRowEntryTouchingAboveShowsTitleInsideBlock(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
 	defer store.Close()
@@ -4873,16 +5111,13 @@ func TestDayViewShortFocusedEntryTouchingAboveShowsTitleInsideBlock(t *testing.T
 		t.Fatalf("missing 10:00 row, got:\n%s", view)
 	}
 	if strings.Contains(firstRow, "freshly created block") {
-		t.Fatalf("10:00 row = %q, want shared boundary row without title, got:\n%s", firstRow, view)
+		t.Fatalf("10:00 row = %q, want no title in top border row, got:\n%s", firstRow, view)
 	}
-	if !strings.Contains(firstRow, "10:00 ├") {
-		t.Fatalf("10:00 row = %q, want shared boundary on lower block start row, got:\n%s", firstRow, view)
+	if !strings.Contains(firstRow, "10:00 ┌") {
+		t.Fatalf("10:00 row = %q, want fresh top border on lower block start row, got:\n%s", firstRow, view)
 	}
 	if !strings.Contains(secondRow, "freshly created block") {
-		t.Fatalf("row after 10:00 = %q, want title inside lower block, got:\n%s", secondRow, view)
-	}
-	if !strings.Contains(secondRow, "│freshly created block") {
-		t.Fatalf("row after 10:00 = %q, want interior row title, got:\n%s", secondRow, view)
+		t.Fatalf("row after 10:00 = %q, want title inside body, got:\n%s", secondRow, view)
 	}
 	rowsView := strings.Join(lines[4:len(lines)-1], "\n")
 	if got := strings.Count(rowsView, "freshly created block"); got != 1 {

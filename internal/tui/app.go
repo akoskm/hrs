@@ -3238,10 +3238,10 @@ func renderActivityCell(m AppModel, viewportStart, slotStart, slotEnd time.Time,
 				continue
 			}
 			otherEnd := timelineBlockEnd(other)
-			if otherEnd.Equal(entry.StartedAt) && sharesProjectBoundary(entry, other) {
+			if otherEnd.Equal(entry.StartedAt) && sharesVisualBoundary(entry, other) {
 				touchesAbove = true
 			}
-			if other.StartedAt.Equal(entryEnd) && sharesProjectBoundary(entry, other) {
+			if other.StartedAt.Equal(entryEnd) && sharesVisualBoundary(entry, other) {
 				touchesBelow = true
 			}
 			if touchesAbove && touchesBelow {
@@ -3281,6 +3281,13 @@ func sharesProjectBoundary(a, b model.TimeEntryDetail) bool {
 	return *a.ProjectID == *b.ProjectID
 }
 
+func sharesVisualBoundary(a, b model.TimeEntryDetail) bool {
+	if !sharesProjectBoundary(a, b) {
+		return false
+	}
+	return timelineBlockLabel(a) == timelineBlockLabel(b)
+}
+
 func renderVerticalEntryCell(viewportStart, slotStart, slotEnd, itemStart, itemEnd time.Time, touchesAbove, touchesBelow, focused bool, width int, label string, baseStyle lipgloss.Style, styles tuiStyles) string {
 	if focused {
 		return renderVerticalRangeCell(viewportStart, slotStart, slotEnd, itemStart, itemEnd, touchesAbove, touchesBelow, true, width, label, baseStyle, styles)
@@ -3316,7 +3323,7 @@ func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart,
 	ends := itemEnd.After(slotStart) && !itemEnd.After(slotEnd)
 	slotDuration := slotEnd.Sub(slotStart)
 	hasInteriorRow := slotDuration > 0 && itemEnd.Sub(itemStart) > 2*slotDuration
-	preferTopBorderLabel := slotDuration > 0 && itemEnd.Sub(itemStart) <= 3*slotDuration
+	preferTopBorderLabel := !hasInteriorRow
 	preferInteriorLabel := touchesAbove && preferTopBorderLabel
 	midpoint := itemStart.Add(itemEnd.Sub(itemStart) / 2)
 	containsMid := !midpoint.Before(slotStart) && midpoint.Before(slotEnd)
@@ -3330,10 +3337,13 @@ func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart,
 		if lipgloss.Width(label) > innerWidth && lipgloss.Width(label) <= width {
 			return compactBlockLabel(label, width)
 		}
-		return "┌" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "┐"
+		return borderLabelRow('┌', '┐', label, width)
 	}
 	if topAnchorRow && starts {
-		return "┌" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "┐"
+		if !hasInteriorRow {
+			return borderLabelRow('┌', '┐', label, width)
+		}
+		return "┌" + fill + "┐"
 	}
 	if topClipped && ends {
 		return "└" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "┘"
@@ -3374,7 +3384,7 @@ func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart,
 		}
 		return "└" + fill + "┘"
 	}
-	if containsMid && !anchoredTop && (!preferTopBorderLabel || preferInteriorLabel) {
+	if containsMid && (!preferTopBorderLabel || preferInteriorLabel) {
 		return "│" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "│"
 	}
 	return "│" + space + "│"
@@ -3385,9 +3395,15 @@ func borderLabelRow(left, right rune, label string, width int) string {
 		return string(left)
 	}
 	innerWidth := max(0, width-2)
-	trimmed := truncateForWidth(label, innerWidth)
-	fill := strings.Repeat("─", max(0, innerWidth-lipgloss.Width(trimmed)))
-	return string(left) + trimmed + fill + string(right)
+	prefix := ""
+	availableWidth := innerWidth
+	if innerWidth > 1 {
+		prefix = "─"
+		availableWidth--
+	}
+	trimmed := truncateForWidth(label, availableWidth)
+	fill := strings.Repeat("─", max(0, innerWidth-lipgloss.Width(prefix)-lipgloss.Width(trimmed)))
+	return string(left) + prefix + trimmed + fill + string(right)
 }
 
 func entryAnchoredAtViewportTop(viewportStart, itemStart time.Time) bool {
