@@ -19,6 +19,9 @@ var migration002 string
 //go:embed migrations/003_activity_slot_details.sql
 var migration003 string
 
+//go:embed migrations/004_time_off.sql
+var migration004 string
+
 type Store struct {
 	db *sql.DB
 }
@@ -55,6 +58,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 	}{
 		{"002", migration002},
 		{"003", migration003},
+		{"004", migration004},
 	}
 	for _, m := range migrations {
 		var count int
