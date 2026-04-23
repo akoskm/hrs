@@ -2518,6 +2518,152 @@ func TestTimelineCanOpenReportView(t *testing.T) {
 	}
 }
 
+func TestTimelineCanOpenDashboardView(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	project, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	now := time.Now().In(time.Local)
+	start := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, time.Local)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "elaiia",
+		Description:  "Reportable work",
+		StartedAt:    start,
+		EndedAt:      start.Add(2 * time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if err := store.EnsureProjectDefaultTimeOffTypes(ctx, project.ID); err != nil {
+		t.Fatalf("EnsureProjectDefaultTimeOffTypes() error = %v", err)
+	}
+	types, err := store.ListTimeOffTypesByProject(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("ListTimeOffTypesByProject() error = %v", err)
+	}
+	var vacationID string
+	for _, item := range types {
+		if item.Name == "Vacation" {
+			vacationID = item.ID
+			break
+		}
+	}
+	if vacationID == "" {
+		t.Fatal("vacation type not found")
+	}
+	futureDay := now.AddDate(0, 0, 10).Format("2006-01-02")
+	if _, err := store.UpsertTimeOffDay(ctx, project.ID, vacationID, futureDay); err != nil {
+		t.Fatalf("UpsertTimeOffDay() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 28})
+	app := updated.(AppModel)
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	app = updated.(AppModel)
+	if app.mode != modeDashboard {
+		t.Fatalf("mode = %q, want dashboard", app.mode)
+	}
+	view := stripANSI(app.View())
+	for _, want := range []string{"Dashboard", "Year progress", "Planned time off", "Daily activity", "Vacation"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("dashboard view missing %q: %q", want, view)
+		}
+	}
+	if !strings.Contains(view, now.Format("Jan")) {
+		t.Fatalf("dashboard view missing month label: %q", view)
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	app = updated.(AppModel)
+	if app.mode != modeTimeline {
+		t.Fatalf("mode after esc = %q, want timeline", app.mode)
+	}
+}
+
+func TestDashboardNavigationUpdatesSelectedDay(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	now := dayStart(time.Now().In(time.Local))
+	for _, tc := range []struct {
+		desc  string
+		start time.Time
+		end   time.Time
+	}{
+		{desc: "Yesterday work", start: now.AddDate(0, 0, -1).Add(8 * time.Hour), end: now.AddDate(0, 0, -1).Add(9 * time.Hour)},
+		{desc: "Today work", start: now.Add(9 * time.Hour), end: now.Add(10 * time.Hour)},
+		{desc: "Tomorrow work", start: now.AddDate(0, 0, 1).Add(11 * time.Hour), end: now.AddDate(0, 0, 1).Add(12 * time.Hour)},
+		{desc: "Next week work", start: now.AddDate(0, 0, 7).Add(13 * time.Hour), end: now.AddDate(0, 0, 7).Add(14 * time.Hour)},
+	} {
+		if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: tc.desc, StartedAt: tc.start, EndedAt: tc.end}); err != nil {
+			t.Fatalf("CreateManualEntry(%s) error = %v", tc.desc, err)
+		}
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 28})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	app = updated.(AppModel)
+
+	if !app.displayedDay().Equal(now) {
+		t.Fatalf("initial dashboard day = %s, want %s", app.displayedDay().Format("2006-01-02"), now.Format("2006-01-02"))
+	}
+	if !strings.Contains(stripANSI(app.View()), "Today work") {
+		t.Fatalf("dashboard view missing today stream: %q", stripANSI(app.View()))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	app = updated.(AppModel)
+	if !app.displayedDay().Equal(now.AddDate(0, 0, 1)) {
+		t.Fatalf("dashboard day after j = %s, want %s", app.displayedDay().Format("2006-01-02"), now.AddDate(0, 0, 1).Format("2006-01-02"))
+	}
+	view := stripANSI(app.View())
+	if !strings.Contains(view, "Tomorrow work") {
+		t.Fatalf("dashboard view missing moved stream: %q", view)
+	}
+	if strings.Contains(view, "Today work") {
+		t.Fatalf("dashboard view still shows previous day stream: %q", view)
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	app = updated.(AppModel)
+	if !app.displayedDay().Equal(now) {
+		t.Fatalf("dashboard day after k = %s, want %s", app.displayedDay().Format("2006-01-02"), now.Format("2006-01-02"))
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	app = updated.(AppModel)
+	if !app.displayedDay().Equal(now.AddDate(0, 0, 7)) {
+		t.Fatalf("dashboard day after l = %s, want %s", app.displayedDay().Format("2006-01-02"), now.AddDate(0, 0, 7).Format("2006-01-02"))
+	}
+	view = stripANSI(app.View())
+	if !strings.Contains(view, "Next week work") {
+		t.Fatalf("dashboard view missing horizontal move stream: %q", view)
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+	app = updated.(AppModel)
+	if !app.displayedDay().Equal(now) {
+		t.Fatalf("dashboard day after h = %s, want %s", app.displayedDay().Format("2006-01-02"), now.Format("2006-01-02"))
+	}
+}
+
 func TestReportViewCanSwitchRangePresets(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -3423,8 +3569,8 @@ func TestDeleteConfirmDialogRenders(t *testing.T) {
 	updated, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	app = updated.(AppModel)
 
-	// Press d to open delete dialog
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	// Press x to open delete dialog
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	app = updated.(AppModel)
 	if app.mode != modeDeleteConfirm {
 		t.Fatalf("mode = %q, want delete-confirm", app.mode)
@@ -4009,8 +4155,8 @@ func TestDeleteEntryConfirmDialog(t *testing.T) {
 		t.Fatalf("NewAppModel() error = %v", err)
 	}
 
-	// press d to open confirm dialog
-	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	// press x to open confirm dialog
+	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	app = updated.(AppModel)
 	if app.mode != modeDeleteConfirm {
 		t.Fatalf("mode = %q, want %q", app.mode, modeDeleteConfirm)
@@ -4030,8 +4176,8 @@ func TestDeleteEntryConfirmDialog(t *testing.T) {
 		t.Fatalf("entry count after cancel = %d, want 1", len(entries))
 	}
 
-	// press d then y to confirm delete
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	// press x then y to confirm delete
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	app = updated.(AppModel)
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	app = updated.(AppModel)
@@ -4041,6 +4187,37 @@ func TestDeleteEntryConfirmDialog(t *testing.T) {
 	entries, _ = store.ListEntries(ctx)
 	if len(entries) != 0 {
 		t.Fatalf("entry count after delete = %d, want 0", len(entries))
+	}
+}
+
+func TestTimelineDOpensDashboardInsteadOfDelete(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "p",
+		Description:  "Keep me",
+		StartedAt:    time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	app, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	app = updated.(AppModel)
+	if app.mode != modeDashboard {
+		t.Fatalf("mode = %q, want %q", app.mode, modeDashboard)
+	}
+	if app.confirmDeleteID != "" {
+		t.Fatalf("confirmDeleteID = %q, want empty", app.confirmDeleteID)
 	}
 }
 

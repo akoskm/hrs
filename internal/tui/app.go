@@ -31,6 +31,7 @@ type reportPreset string
 
 const (
 	modeTimeline      mode = "timeline"
+	modeDashboard     mode = "dashboard"
 	modeReport        mode = "report"
 	modeAssign        mode = "assign"
 	modeTimeOff       mode = "time-off"
@@ -122,6 +123,7 @@ type AppModel struct {
 	reportPreset         reportPreset
 	reportProjectCursor  int
 	reportResult         db.ReportResult
+	dashboardResult      db.ReportResult
 	activitySlots        []model.ActivitySlot
 	styles               tuiStyles
 	stylesWidth          int
@@ -263,6 +265,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeReport {
 			return m.handleReportKey(msg)
 		}
+		if m.mode == modeDashboard {
+			return m.handleDashboardKey(msg)
+		}
 		switch msg.String() {
 		case "ctrl+c", "q":
 			m.quitting = true
@@ -284,6 +289,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.jumpToToday()
 			} else if m.timelineView == timelineViewMonth {
 				m.dayDate = dayStart(time.Now())
+			}
+		case "d":
+			if m.mode == modeTimeline {
+				m.openDashboard()
 			}
 		case "m":
 			if m.mode == modeTimeline {
@@ -516,7 +525,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = modeReport
 				return m, nil
 			}
-		case "d":
+		case "x":
 			if m.mode == modeTimeline && len(m.entries) > 0 {
 				m.confirmDeleteID = m.entries[m.cursor].ID
 				m.mode = modeDeleteConfirm
@@ -615,6 +624,28 @@ func (m AppModel) handleReportKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m AppModel) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		m.quitting = true
+		return m, tea.Quit
+	case "esc":
+		m.mode = modeTimeline
+	case "left", "h":
+		m.moveDashboardDay(-7)
+	case "right", "l":
+		m.moveDashboardDay(7)
+	case "up", "k":
+		m.moveDashboardDay(-1)
+	case "down", "j":
+		m.moveDashboardDay(1)
+	case "t":
+		m.dayDate = dayStart(time.Now())
+		m.loadDashboardForDay(m.dayDate)
+	}
+	return m, nil
+}
+
 func (m AppModel) View() string {
 	if m.quitting {
 		return ""
@@ -634,6 +665,8 @@ func (m AppModel) View() string {
 	var b strings.Builder
 	if m.mode == modeReport {
 		b.WriteString(renderReportView(m, styles))
+	} else if m.mode == modeDashboard {
+		b.WriteString(renderDashboardView(m, styles))
 	} else if m.timelineView == timelineViewMonth {
 		b.WriteString(renderMonthTimeline(m, styles))
 	} else if m.timelineView == timelineViewDay {
@@ -4202,6 +4235,10 @@ func renderBaseStatusBar(m AppModel, width int) string {
 	if m.mode == modeTimeOff {
 		return truncateForWidth(timeOffDialogHelp(m), width)
 	}
+	if m.mode == modeDashboard {
+		text := fmt.Sprintf("dashboard %s | up/down day | left/right week | t today | esc back", m.displayedDay().Format("2006-01-02"))
+		return truncateForWidth(text, width)
+	}
 	if m.mode == modeAssign {
 		return truncateForWidth(projectDialogHelp(m), width)
 	}
@@ -4239,7 +4276,7 @@ func renderBaseStatusBar(m AppModel, width int) string {
 	if m.lastSearch != "" {
 		searchHint = " | / search n/N next"
 	}
-	text := fmt.Sprintf("entries %d | drafts %d | pos %s | s sync | up/down home/end pgup/pgdn space p assign P projects o time-off enter q%s", len(m.entries), drafts, position, searchHint)
+	text := fmt.Sprintf("entries %d | drafts %d | pos %s | d dashboard | s sync | up/down home/end pgup/pgdn space p assign P projects o time-off enter q%s", len(m.entries), drafts, position, searchHint)
 	return truncateForWidth(text, width)
 }
 
@@ -4327,6 +4364,255 @@ func reportMonthRange(now time.Time) (time.Time, time.Time) {
 func reportYearRange(now time.Time) (time.Time, time.Time) {
 	start := time.Date(now.Year(), time.January, 1, 0, 0, 0, 0, now.Location())
 	return start, start.AddDate(1, 0, 0)
+}
+
+func (m *AppModel) openDashboard() {
+	if m.dayDate.IsZero() {
+		m.dayDate = dayStart(time.Now())
+	}
+	m.loadDashboardForDay(m.dayDate)
+	m.mode = modeDashboard
+}
+
+func (m *AppModel) loadDashboardForDay(day time.Time) {
+	day = dayStart(day)
+	if day.IsZero() {
+		day = dayStart(time.Now())
+	}
+	start, end := reportYearRange(day)
+	result, err := m.store.RangeReport(m.ctx, start, end)
+	if err != nil {
+		m.err = err
+		return
+	}
+	m.dashboardResult = result
+	m.dayDate = day
+	m.loadActivitySlots()
+}
+
+func (m *AppModel) moveDashboardDay(delta int) {
+	if delta == 0 {
+		return
+	}
+	day := m.displayedDay()
+	next := day.AddDate(0, 0, delta)
+	yearStart, yearEnd := reportYearRange(day)
+	if next.Before(yearStart) {
+		next = yearStart
+	}
+	lastDay := yearEnd.AddDate(0, 0, -1)
+	if next.After(lastDay) {
+		next = lastDay
+	}
+	m.loadDashboardForDay(next)
+}
+
+func renderDashboardView(m AppModel, styles tuiStyles) string {
+	contentWidth := timelineWidth(m.width)
+	if contentWidth <= 0 {
+		contentWidth = 80
+	}
+	heatmap := styles.inspectorBox.Width(max(30, contentWidth-30)).Render(renderDashboardHeatmap(m, max(26, contentWidth-34), styles))
+	sideWidth := max(24, min(36, contentWidth/3))
+	side := lipgloss.JoinVertical(lipgloss.Left,
+		styles.inspectorBox.Width(sideWidth).Render(renderDashboardProgressCard(m, sideWidth-4)),
+		styles.inspectorBox.Width(sideWidth).Render(renderDashboardTimeOffCard(m, sideWidth-4)),
+	)
+	top := heatmap
+	if contentWidth >= 90 {
+		top = lipgloss.JoinHorizontal(lipgloss.Top, heatmap, side)
+	} else {
+		top = lipgloss.JoinVertical(lipgloss.Left, heatmap, side)
+	}
+	stream := styles.inspectorBox.Width(max(30, contentWidth-2)).Render(renderDashboardActivityStream(m, contentWidth-6))
+	return strings.TrimRight(lipgloss.JoinVertical(lipgloss.Left, styles.title.Render("Dashboard"), top, stream), "\n")
+}
+
+func renderDashboardHeatmap(m AppModel, width int, styles tuiStyles) string {
+	day := m.displayedDay()
+	start, end := reportYearRange(day)
+	days := dashboardDayMap(m.dashboardResult.Days)
+	cols := dashboardHeatmapColumns(start, end)
+	var b strings.Builder
+	b.WriteString(styles.title.Render("Year heatmap") + "\n")
+	b.WriteString(styles.muted.Render(dashboardMonthLabels(start, end, cols)) + "\n")
+	for row := 0; row < 7; row++ {
+		for colDay := start; colDay.Before(end); colDay = colDay.AddDate(0, 0, 7) {
+			cellDay := colDay.AddDate(0, 0, row)
+			if !cellDay.Before(end) {
+				break
+			}
+			b.WriteString(renderDashboardHeatmapCell(cellDay, day, days[dayKey(cellDay)], m.timeOffRecordsForDay(cellDay)))
+		}
+		if row < 6 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+func renderDashboardHeatmapCell(day, selected time.Time, totalSecs int, records []model.TimeOffDayDetail) string {
+	fill := '·'
+	switch {
+	case totalSecs >= 8*3600:
+		fill = '█'
+	case totalSecs >= 6*3600:
+		fill = '▓'
+	case totalSecs >= 3*3600:
+		fill = '▒'
+	case totalSecs > 0:
+		fill = '░'
+	}
+	if len(records) > 0 && totalSecs == 0 {
+		fill = '○'
+	}
+	cell := string(fill) + " "
+	if dayKey(day) == dayKey(selected) {
+		return lipgloss.NewStyle().Background(lipgloss.Color("60")).Foreground(lipgloss.Color("255")).Bold(true).Render(cell)
+	}
+	if dayKey(day) == dayKey(time.Now()) {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true).Render(cell)
+	}
+	if len(records) > 0 {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Render(cell)
+	}
+	return cell
+}
+
+func dashboardDayMap(days []db.ReportDayRow) map[string]int {
+	result := make(map[string]int, len(days))
+	for _, day := range days {
+		result[day.Date] = day.TotalSecs
+	}
+	return result
+}
+
+func dashboardMonthLabels(start, end time.Time, cols int) string {
+	if cols <= 0 {
+		return ""
+	}
+	line := make([]rune, cols*2)
+	for i := range line {
+		line[i] = ' '
+	}
+	lastEnd := -1
+	for month := time.Date(start.Year(), time.January, 1, 0, 0, 0, 0, start.Location()); month.Before(end); month = month.AddDate(0, 1, 0) {
+		weekIdx := int(month.Sub(start).Hours()/24) / 7
+		if weekIdx < 0 || weekIdx >= cols {
+			continue
+		}
+		pos := weekIdx * 2
+		label := []rune(month.Format("Jan"))
+		if pos <= lastEnd {
+			continue
+		}
+		for i, r := range label {
+			if pos+i >= len(line) {
+				break
+			}
+			line[pos+i] = r
+		}
+		lastEnd = pos + len(label) - 1
+	}
+	return strings.TrimRight(string(line), " ")
+}
+
+func dashboardHeatmapColumns(start, end time.Time) int {
+	cols := 0
+	for day := start; day.Before(end); day = day.AddDate(0, 0, 7) {
+		cols++
+	}
+	return cols
+}
+
+func renderDashboardProgressCard(m AppModel, width int) string {
+	now := m.displayedDay()
+	yearStart, yearEnd := reportYearRange(now)
+	daysInYear := int(yearEnd.Sub(yearStart).Hours() / 24)
+	dayNumber := int(now.Sub(yearStart).Hours()/24) + 1
+	if dayNumber < 1 {
+		dayNumber = 1
+	}
+	if dayNumber > daysInYear {
+		dayNumber = daysInYear
+	}
+	percent := (dayNumber * 100) / max(1, daysInYear)
+	var b strings.Builder
+	b.WriteString("Year progress\n")
+	b.WriteString(truncateForWidth(fmt.Sprintf("%d%%", percent), width) + "\n")
+	b.WriteString(truncateForWidth(fmt.Sprintf("Day %d of %d", dayNumber, daysInYear), width) + "\n")
+	b.WriteString(truncateForWidth(fmt.Sprintf("Worked %.1fh", float64(m.dashboardResult.Summary.TotalSecs)/3600), width) + "\n")
+	b.WriteString(truncateForWidth(fmt.Sprintf("Active days %d", m.dashboardResult.Summary.ActiveDays), width))
+	return b.String()
+}
+
+func renderDashboardTimeOffCard(m AppModel, width int) string {
+	day := m.displayedDay()
+	yearStart, yearEnd := reportYearRange(day)
+	future := make([]model.TimeOffDayDetail, 0)
+	counts := map[string]int{}
+	for _, record := range m.timeOffRecords {
+		recordDay, err := time.ParseInLocation("2006-01-02", record.Day, time.Local)
+		if err != nil {
+			continue
+		}
+		if recordDay.Before(yearStart) || !recordDay.Before(yearEnd) {
+			continue
+		}
+		if recordDay.Before(dayStart(time.Now())) {
+			continue
+		}
+		future = append(future, record)
+		counts[record.TimeOffType]++
+	}
+	var b strings.Builder
+	b.WriteString("Planned time off\n")
+	if len(future) == 0 {
+		b.WriteString("No upcoming time off")
+		return b.String()
+	}
+	b.WriteString(truncateForWidth(fmt.Sprintf("Upcoming days %d", len(future)), width) + "\n")
+	b.WriteString(truncateForWidth(fmt.Sprintf("Next %s %s", future[0].TimeOffType, future[0].Day), width) + "\n")
+	types := make([]string, 0, len(counts))
+	for name, count := range counts {
+		types = append(types, fmt.Sprintf("%s %d", name, count))
+	}
+	sort.Strings(types)
+	b.WriteString(truncateForWidth(strings.Join(types, " | "), width))
+	return b.String()
+}
+
+func renderDashboardActivityStream(m AppModel, width int) string {
+	day := m.displayedDay().Format("2006-01-02")
+	entries := dayEntriesForDate(m.entries, day)
+	var b strings.Builder
+	b.WriteString("Daily activity\n")
+	b.WriteString(truncateForWidth(m.displayedDay().Format("Mon 2006-01-02"), width) + "\n")
+	if len(entries) == 0 && len(m.activitySlotsForRange(m.displayedDay(), m.displayedDay().Add(24*time.Hour))) == 0 {
+		b.WriteString("No activity")
+		return b.String()
+	}
+	for _, entry := range entries {
+		label := dashboardEntryLabel(entry)
+		line := fmt.Sprintf("%s %s (%s)", formatRange(entry.StartedAt, entry.EndedAt), label, formatWorkDuration(timelineBlockEnd(entry).Sub(entry.StartedAt)))
+		b.WriteString(truncateForWidth(line, width) + "\n")
+	}
+	slots := m.activitySlotsForRange(m.displayedDay(), m.displayedDay().Add(24*time.Hour))
+	for _, slot := range slots {
+		line := fmt.Sprintf("%s %s (%d msgs)", clock(slot.SlotTime.In(time.Local)), slot.Operator, slot.MsgCount)
+		if slot.FirstText != "" {
+			line = fmt.Sprintf("%s %s", clock(slot.SlotTime.In(time.Local)), slot.FirstText)
+		}
+		b.WriteString(truncateForWidth(line, width) + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func dashboardEntryLabel(entry model.TimeEntryDetail) string {
+	if entry.Description != nil && *entry.Description != "" {
+		return *entry.Description
+	}
+	return entry.ID
 }
 
 func renderReportView(m AppModel, styles tuiStyles) string {
