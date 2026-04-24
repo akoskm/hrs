@@ -4758,12 +4758,12 @@ func renderDashboardActivityStream(m AppModel, width int) string {
 		items = append(items, dashboardEntryCard(entry, m.activitySlotsForRange(entry.StartedAt, timelineBlockEnd(entry))))
 	}
 	columns := dashboardActivityColumns(width)
-	cardWidth := max(24, (width-(columns-1))/columns)
 	rows := make([]string, 0, (len(items)+columns-1)/columns)
 	for i := 0; i < len(items); i += columns {
+		cardWidths := dashboardCardWidths(width, min(columns, len(items)-i))
 		cards := make([]string, 0, columns)
 		for j := i; j < min(len(items), i+columns); j++ {
-			cards = append(cards, renderDashboardActivityCard(items[j], cardWidth))
+			cards = append(cards, renderDashboardActivityCard(items[j], cardWidths[j-i]))
 		}
 		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, cards...))
 	}
@@ -4832,38 +4832,85 @@ func dashboardActivityCategory(title, operator string) string {
 
 func dashboardActivityColumns(width int) int {
 	switch {
-	case width >= 96:
+	case width >= 132:
 		return 3
-	case width >= 64:
+	case width >= 84:
 		return 2
 	default:
 		return 1
 	}
 }
 
+func dashboardCardWidths(totalWidth int, columns int) []int {
+	if columns <= 0 {
+		return nil
+	}
+	gapWidth := max(0, columns-1)
+	available := max(columns, totalWidth-gapWidth)
+	base := available / columns
+	remainder := available % columns
+	widths := make([]int, columns)
+	for i := range widths {
+		widths[i] = base
+		if i < remainder {
+			widths[i]++
+		}
+		if widths[i] < 24 {
+			widths[i] = 24
+		}
+	}
+	return widths
+}
+
 func renderDashboardActivityCard(item dashboardActivityCard, width int) string {
-	style := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1).Width(width)
-	headerWidth := max(1, width-style.GetHorizontalFrameSize()-2)
+	style := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1)
+	headerWidth := max(1, width-style.GetHorizontalFrameSize())
 	leftWidth := max(1, headerWidth-lipgloss.Width(item.time)-1)
 	category := truncateForWidth(item.category, leftWidth)
 	header := padRight(category, leftWidth)
 	if item.time != "" {
 		header += " " + truncateForWidth(item.time, lipgloss.Width(item.time))
 	}
-	lines := []string{header, truncateForWidth(item.title, headerWidth), truncateForWidth("Duration "+item.duration, headerWidth)}
+	lines := []string{padRight(header, headerWidth)}
+	lines = append(lines, wrapTextForWidth(item.title, headerWidth)...)
+	lines = append(lines, wrapTextForWidth("Duration "+item.duration, headerWidth)...)
 	for _, detail := range item.details {
 		if strings.HasPrefix(detail, "Duration ") {
 			continue
 		}
-		lines = append(lines, truncateForWidth(detail, headerWidth))
-		if len(lines) >= 5 {
-			break
+		lines = append(lines, wrapTextForWidth(detail, headerWidth)...)
+	}
+	for i := range lines {
+		lines[i] = padRight(truncateForWidth(lines[i], headerWidth), headerWidth)
+	}
+	return style.Width(max(1, width-2)).Render(strings.Join(lines, "\n"))
+}
+
+func wrapTextForWidth(text string, width int) []string {
+	text = strings.TrimSpace(text)
+	if width <= 0 {
+		return []string{text}
+	}
+	if text == "" {
+		return []string{""}
+	}
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return []string{""}
+	}
+	lines := make([]string, 0, 2)
+	current := words[0]
+	for _, word := range words[1:] {
+		candidate := current + " " + word
+		if lipgloss.Width(candidate) <= width {
+			current = candidate
+			continue
 		}
+		lines = append(lines, current)
+		current = word
 	}
-	for len(lines) < 5 {
-		lines = append(lines, "")
-	}
-	return style.Render(strings.Join(lines, "\n"))
+	lines = append(lines, current)
+	return lines
 }
 
 func dashboardSlotsOutsideEntries(slots []model.ActivitySlot, entries []model.TimeEntryDetail) []model.ActivitySlot {

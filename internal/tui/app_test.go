@@ -2806,7 +2806,7 @@ func TestDashboardLongAgentActivityStillShowsVisibleBody(t *testing.T) {
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
 	app = updated.(AppModel)
 	out := stripANSI(app.View())
-	for _, want := range []string{"Daily activity", "Year progress", "Planned time off", "michal interview", "nick & marc sync"} {
+	for _, want := range []string{"Daily activity", "Year progress", "Planned time off", "michal interview", "multiple dataset db restrictions"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, out)
 		}
