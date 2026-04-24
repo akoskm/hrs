@@ -733,7 +733,10 @@ func (m AppModel) View() string {
 	if m.mode == modeSearch {
 		sections = append(sections, styles.title.Render("Search")+"\n"+styles.activePicker.Render("/"+m.searchQuery))
 	}
-	statusWidth := max(0, timelineWidth(m.width)-3)
+	statusWidth := max(0, m.width)
+	if statusWidth == 0 {
+		statusWidth = timelineWidth(m.width)
+	}
 	statusText := renderStatusBar(m, statusWidth)
 	if lipgloss.Width(statusText) < statusWidth {
 		statusText += strings.Repeat(" ", statusWidth-lipgloss.Width(statusText))

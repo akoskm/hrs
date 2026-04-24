@@ -2817,6 +2817,37 @@ func TestDashboardLongAgentActivityStillShowsVisibleBody(t *testing.T) {
 	}
 }
 
+func TestDashboardStatusBarSpansFullWidth(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	now := dayStart(time.Now().In(time.Local))
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "hrs", Description: "Status bar check", StartedAt: now.Add(9 * time.Hour), EndedAt: now.Add(10 * time.Hour)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	app = updated.(AppModel)
+	lines := strings.Split(strings.TrimRight(stripANSI(app.View()), "\n"), "\n")
+	if len(lines) == 0 {
+		t.Fatal("dashboard view empty")
+	}
+	last := lines[len(lines)-1]
+	if lipgloss.Width(last) != 120 {
+		t.Fatalf("status bar width = %d, want 120\n%q", lipgloss.Width(last), last)
+	}
+}
+
 func TestReportViewCanSwitchRangePresets(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
