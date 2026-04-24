@@ -117,6 +117,8 @@ type AppModel struct {
 	inspectorTab         inspectorTab
 	inspectorViewKey     string
 	inspectorViewport    viewport.Model
+	dashboardViewKey     string
+	dashboardViewport    viewport.Model
 	slotMarkStart        time.Time
 	slotMarkSpan         time.Duration
 	confirmDeleteID      string
@@ -158,7 +160,7 @@ func NewAppModelWithSync(ctx context.Context, store *db.Store, syncFn func() err
 		return AppModel{}, err
 	}
 	sorted := sortEntries(entries)
-	model := AppModel{ctx: ctx, store: store, syncFn: syncFn, allEntries: sorted, projects: projects, selected: map[string]bool{}, mode: modeTimeline, dialogMode: projectDialogAssign, timelineView: timelineViewList, previousTimelineView: timelineViewList, inspectorTab: inspectorOverview, styles: newStyles(80), stylesWidth: 80, syncing: syncFn != nil, syncSpinner: newSyncSpinner(), inspectorViewport: newInspectorViewport(20, 1)}
+	model := AppModel{ctx: ctx, store: store, syncFn: syncFn, allEntries: sorted, projects: projects, selected: map[string]bool{}, mode: modeTimeline, dialogMode: projectDialogAssign, timelineView: timelineViewList, previousTimelineView: timelineViewList, inspectorTab: inspectorOverview, styles: newStyles(80), stylesWidth: 80, syncing: syncFn != nil, syncSpinner: newSyncSpinner(), inspectorViewport: newInspectorViewport(20, 1), dashboardViewport: newInspectorViewport(20, 1)}
 	model.entries = model.allEntries
 	if err := model.reloadTimeOffRecords(); err != nil {
 		return AppModel{}, err
@@ -553,6 +555,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.scrollWindow(time.Hour)
 				}
 			}
+		} else if m.mode == modeDashboard {
+			switch msg.Button {
+			case tea.MouseButtonWheelUp:
+				m.scrollDashboardLines(-3)
+			case tea.MouseButtonWheelDown:
+				m.scrollDashboardLines(3)
+			}
 		}
 	case spinner.TickMsg:
 		if !m.syncing {
@@ -587,6 +596,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cursorBlinkCmd()
 	}
 	m.syncInspectorViewport()
+	m.syncDashboardViewport()
 	return m, nil
 }
 
@@ -631,6 +641,10 @@ func (m AppModel) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "esc":
 		m.mode = modeTimeline
+	case "pgdown", "ctrl+f", "ctrl+d":
+		m.scrollDashboardPage(1)
+	case "pgup", "ctrl+b", "ctrl+u":
+		m.scrollDashboardPage(-1)
 	case "left", "h":
 		m.moveDashboardDay(-7)
 	case "right", "l":
@@ -3416,6 +3430,30 @@ func (m *AppModel) scrollInspectorLines(delta int) {
 	m.inspectorViewport.ScrollUp(-delta)
 }
 
+func (m *AppModel) scrollDashboardPage(direction int) {
+	if direction == 0 {
+		return
+	}
+	m.syncDashboardViewport()
+	if direction > 0 {
+		m.dashboardViewport.PageDown()
+		return
+	}
+	m.dashboardViewport.PageUp()
+}
+
+func (m *AppModel) scrollDashboardLines(delta int) {
+	if delta == 0 {
+		return
+	}
+	m.syncDashboardViewport()
+	if delta > 0 {
+		m.dashboardViewport.ScrollDown(delta)
+		return
+	}
+	m.dashboardViewport.ScrollUp(-delta)
+}
+
 func (m AppModel) mouseInInspector(x int) bool {
 	if m.timelineView != timelineViewDay || m.width <= 0 {
 		return false
@@ -3429,6 +3467,37 @@ func (m *AppModel) syncInspectorViewport() {
 	key := m.inspectorContentKey()
 	m.inspectorViewport = buildInspectorViewport(*m, width, height)
 	m.inspectorViewKey = key
+}
+
+func (m *AppModel) syncDashboardViewport() {
+	contentWidth := timelineWidth(m.width)
+	if contentWidth <= 0 {
+		contentWidth = 80
+	}
+	mainWidth, sideWidth := dashboardColumnWidths(contentWidth)
+	if contentWidth < 90 {
+		width := max(20, max(30, contentWidth)-6)
+		heatmap := m.styles.inspectorBox.Width(max(20, mainWidth-2)).Render(renderDashboardHeatmap(*m, max(26, mainWidth-4), m.styles))
+		top := lipgloss.JoinVertical(lipgloss.Left,
+			heatmap,
+			m.styles.inspectorBox.Width(max(20, sideWidth-2)).Render(renderDashboardProgressCard(*m, sideWidth-4)),
+			m.styles.inspectorBox.Width(max(20, sideWidth-2)).Render(renderDashboardTimeOffCard(*m, sideWidth-4)),
+		)
+		height := max(1, dashboardActivityPaneHeight(m.height, lipgloss.Height(top))-2)
+		key := m.dashboardContentKey()
+		m.dashboardViewport = buildDashboardViewport(*m, width, height)
+		m.dashboardViewKey = key
+		return
+	}
+	heatmap := m.styles.inspectorBox.Width(max(20, mainWidth-2)).Render(renderDashboardHeatmap(*m, max(26, mainWidth-4), m.styles))
+	bodyHeight := dashboardBodyHeight(m.height)
+	heatmapHeight := lipgloss.Height(heatmap)
+	streamHeight := max(10, bodyHeight-heatmapHeight-1)
+	width := max(20, mainWidth-6)
+	height := max(1, streamHeight-2)
+	key := m.dashboardContentKey()
+	m.dashboardViewport = buildDashboardViewport(*m, width, height)
+	m.dashboardViewKey = key
 }
 
 func newInspectorViewport(width int, height int) viewport.Model {
@@ -3459,6 +3528,34 @@ func buildInspectorViewport(m AppModel, width int, height int) viewport.Model {
 	}
 	vp.SetContent(strings.Join(lines, "\n"))
 	return vp
+}
+
+func buildDashboardViewport(m AppModel, width int, height int) viewport.Model {
+	vp := m.dashboardViewport
+	if vp.Width != width || vp.Height != height || vp.Height == 0 {
+		next := newInspectorViewport(width, height)
+		next.YOffset = vp.YOffset
+		vp = next
+	}
+	if m.dashboardContentKey() != m.dashboardViewKey {
+		vp.GotoTop()
+	}
+	lines := strings.Split(renderDashboardActivityStream(m, width), "\n")
+	for i, line := range lines {
+		lines[i] = truncateForWidth(line, width)
+	}
+	vp.SetContent(strings.Join(lines, "\n"))
+	return vp
+}
+
+func (m AppModel) dashboardContentKey() string {
+	return strings.Join([]string{
+		m.displayedDay().Format("2006-01-02"),
+		strconv.Itoa(m.width),
+		strconv.Itoa(m.height),
+		strconv.Itoa(len(dayEntriesForDate(m.entries, m.displayedDay().Format("2006-01-02")))),
+		strconv.Itoa(len(m.activitySlotsForRange(m.displayedDay(), m.displayedDay().Add(24*time.Hour)))),
+	}, "|")
 }
 
 func inspectorNeedsScrollbar(vp viewport.Model) bool {
@@ -4236,7 +4333,7 @@ func renderBaseStatusBar(m AppModel, width int) string {
 		return truncateForWidth(timeOffDialogHelp(m), width)
 	}
 	if m.mode == modeDashboard {
-		text := fmt.Sprintf("dashboard %s | up/down day | left/right week | t today | esc back", m.displayedDay().Format("2006-01-02"))
+		text := fmt.Sprintf("dashboard %s | up/down day | left/right week | pgup/pgdn scroll | t today | esc back", m.displayedDay().Format("2006-01-02"))
 		return truncateForWidth(text, width)
 	}
 	if m.mode == modeAssign {
@@ -4412,20 +4509,75 @@ func renderDashboardView(m AppModel, styles tuiStyles) string {
 	if contentWidth <= 0 {
 		contentWidth = 80
 	}
-	heatmap := styles.inspectorBox.Width(max(30, contentWidth-30)).Render(renderDashboardHeatmap(m, max(26, contentWidth-34), styles))
-	sideWidth := max(24, min(36, contentWidth/3))
-	side := lipgloss.JoinVertical(lipgloss.Left,
-		styles.inspectorBox.Width(sideWidth).Render(renderDashboardProgressCard(m, sideWidth-4)),
-		styles.inspectorBox.Width(sideWidth).Render(renderDashboardTimeOffCard(m, sideWidth-4)),
-	)
-	top := heatmap
-	if contentWidth >= 90 {
-		top = lipgloss.JoinHorizontal(lipgloss.Top, heatmap, side)
-	} else {
-		top = lipgloss.JoinVertical(lipgloss.Left, heatmap, side)
+	mainWidth, sideWidth := dashboardColumnWidths(contentWidth)
+	heatmap := styles.inspectorBox.Width(max(20, mainWidth-2)).Render(renderDashboardHeatmap(m, max(26, mainWidth-4), styles))
+	if contentWidth < 90 {
+		top := lipgloss.JoinVertical(lipgloss.Left,
+			heatmap,
+			styles.inspectorBox.Width(max(20, sideWidth-2)).Render(renderDashboardProgressCard(m, sideWidth-4)),
+			styles.inspectorBox.Width(max(20, sideWidth-2)).Render(renderDashboardTimeOffCard(m, sideWidth-4)),
+		)
+		stream := renderDashboardActivityPane(m, styles, max(30, contentWidth), dashboardActivityPaneHeight(m.height, lipgloss.Height(top)))
+		return strings.TrimRight(lipgloss.JoinVertical(lipgloss.Left, styles.title.Render("Dashboard"), top, stream), "\n")
 	}
-	stream := styles.inspectorBox.Width(max(30, contentWidth-2)).Render(renderDashboardActivityStream(m, contentWidth-6))
-	return strings.TrimRight(lipgloss.JoinVertical(lipgloss.Left, styles.title.Render("Dashboard"), top, stream), "\n")
+	bodyHeight := dashboardBodyHeight(m.height)
+	heatmapHeight := lipgloss.Height(heatmap)
+	streamHeight := max(10, bodyHeight-heatmapHeight-1)
+	left := lipgloss.NewStyle().Width(mainWidth).Render(lipgloss.JoinVertical(lipgloss.Left,
+		heatmap,
+		renderDashboardActivityPane(m, styles, mainWidth, streamHeight),
+	))
+	totalHeight := lipgloss.Height(left)
+	rightContent := lipgloss.JoinVertical(lipgloss.Left,
+		styles.inspectorBox.Width(max(20, sideWidth-2)).Render(renderDashboardProgressCard(m, sideWidth-4)),
+		styles.inspectorBox.Width(max(20, sideWidth-2)).Render(renderDashboardTimeOffCard(m, sideWidth-4)),
+	)
+	right := lipgloss.NewStyle().Width(sideWidth).Render(padViewToHeight(rightContent, totalHeight))
+	gap := lipgloss.NewStyle().Width(1).Height(totalHeight).Render(" ")
+	row := lipgloss.JoinHorizontal(lipgloss.Top, left, gap, right)
+	return strings.TrimRight(lipgloss.JoinVertical(lipgloss.Left, styles.title.Render("Dashboard"), row), "\n")
+}
+
+func dashboardColumnWidths(contentWidth int) (mainWidth int, sideWidth int) {
+	if contentWidth < 90 {
+		return max(30, contentWidth), max(24, min(36, contentWidth))
+	}
+	sideWidth = max(24, min(36, contentWidth/4))
+	mainWidth = max(30, contentWidth-sideWidth-1)
+	return mainWidth, sideWidth
+}
+
+func dashboardBodyHeight(height int) int {
+	if height <= 0 {
+		return 28
+	}
+	return max(16, height-4)
+}
+
+func dashboardActivityPaneHeight(height int, topHeight int) int {
+	if height <= 0 {
+		return 14
+	}
+	remaining := height - topHeight - 5
+	return max(10, remaining)
+}
+
+func renderDashboardActivityPane(m AppModel, styles tuiStyles, width int, height int) string {
+	innerWidth := max(20, width-4)
+	bodyHeight := max(1, height-2)
+	bodyWidth := innerWidth
+	scrollbar := ""
+	viewport := buildDashboardViewport(m, innerWidth, bodyHeight)
+	if inspectorNeedsScrollbar(viewport) {
+		bodyWidth = max(1, innerWidth-1)
+		viewport = buildDashboardViewport(m, bodyWidth, bodyHeight)
+		scrollbar = renderInspectorScrollbar(viewport, bodyHeight, styles)
+	}
+	body := viewport.View()
+	if scrollbar != "" {
+		body = lipgloss.JoinHorizontal(lipgloss.Top, body, scrollbar)
+	}
+	return styles.inspectorBox.Width(max(20, width-2)).Height(max(1, height)).Render(body)
 }
 
 func renderDashboardHeatmap(m AppModel, width int, styles tuiStyles) string {
@@ -4583,27 +4735,39 @@ func renderDashboardTimeOffCard(m AppModel, width int) string {
 }
 
 func renderDashboardActivityStream(m AppModel, width int) string {
-	day := m.displayedDay().Format("2006-01-02")
+	dayStartTime := m.displayedDay()
+	day := dayStartTime.Format("2006-01-02")
 	entries := dayEntriesForDate(m.entries, day)
+	slots := m.activitySlotsForRange(dayStartTime, dayStartTime.Add(24*time.Hour))
 	var b strings.Builder
 	b.WriteString("Daily activity\n")
-	b.WriteString(truncateForWidth(m.displayedDay().Format("Mon 2006-01-02"), width) + "\n")
-	if len(entries) == 0 && len(m.activitySlotsForRange(m.displayedDay(), m.displayedDay().Add(24*time.Hour))) == 0 {
-		b.WriteString("No activity")
-		return b.String()
-	}
-	for _, entry := range entries {
-		label := dashboardEntryLabel(entry)
-		line := fmt.Sprintf("%s %s (%s)", formatRange(entry.StartedAt, entry.EndedAt), label, formatWorkDuration(timelineBlockEnd(entry).Sub(entry.StartedAt)))
-		b.WriteString(truncateForWidth(line, width) + "\n")
-	}
-	slots := m.activitySlotsForRange(m.displayedDay(), m.displayedDay().Add(24*time.Hour))
-	for _, slot := range slots {
-		line := fmt.Sprintf("%s %s (%d msgs)", clock(slot.SlotTime.In(time.Local)), slot.Operator, slot.MsgCount)
-		if slot.FirstText != "" {
-			line = fmt.Sprintf("%s %s", clock(slot.SlotTime.In(time.Local)), slot.FirstText)
+	b.WriteString(truncateForWidth(dayStartTime.Format("Mon 2006-01-02"), width) + "\n")
+	if len(entries) == 0 {
+		if len(slots) == 0 {
+			b.WriteString("No activity")
+			return b.String()
 		}
-		b.WriteString(truncateForWidth(line, width) + "\n")
+		b.WriteString(renderDashboardAgentSummary(slots, width))
+		return strings.TrimRight(b.String(), "\n")
+	}
+	items := make([]dashboardActivityCard, 0, len(entries))
+	for _, entry := range entries {
+		items = append(items, dashboardEntryCard(entry, m.activitySlotsForRange(entry.StartedAt, timelineBlockEnd(entry))))
+	}
+	columns := dashboardActivityColumns(width)
+	cardWidth := max(24, (width-(columns-1))/columns)
+	rows := make([]string, 0, (len(items)+columns-1)/columns)
+	for i := 0; i < len(items); i += columns {
+		cards := make([]string, 0, columns)
+		for j := i; j < min(len(items), i+columns); j++ {
+			cards = append(cards, renderDashboardActivityCard(items[j], cardWidth))
+		}
+		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, cards...))
+	}
+	b.WriteString(strings.Join(rows, "\n"))
+	if leftover := dashboardSlotsOutsideEntries(slots, entries); len(leftover) > 0 {
+		b.WriteString("\n\n")
+		b.WriteString(renderDashboardAgentSummary(leftover, width))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -4613,6 +4777,145 @@ func dashboardEntryLabel(entry model.TimeEntryDetail) string {
 		return *entry.Description
 	}
 	return entry.ID
+}
+
+type dashboardActivityCard struct {
+	category string
+	title    string
+	time     string
+	duration string
+	details  []string
+}
+
+func dashboardEntryCard(entry model.TimeEntryDetail, slots []model.ActivitySlot) dashboardActivityCard {
+	title := dashboardEntryLabel(entry)
+	category := dashboardActivityCategory(title, entry.Operator)
+	details := []string{fmt.Sprintf("Duration %s", formatWorkDuration(timelineBlockEnd(entry).Sub(entry.StartedAt)))}
+	if entry.ProjectName != "" {
+		details = append(details, "Project "+entry.ProjectName)
+	}
+	if entry.Operator != "" && entry.Operator != "human" {
+		details = append(details, "Operator "+entry.Operator)
+	}
+	if len(slots) > 0 {
+		details = append(details, dashboardAgentSummaryLine(slots))
+	}
+	return dashboardActivityCard{
+		category: category,
+		title:    title,
+		time:     formatRange(entry.StartedAt, entry.EndedAt),
+		duration: formatWorkDuration(timelineBlockEnd(entry).Sub(entry.StartedAt)),
+		details:  details,
+	}
+}
+
+func dashboardActivityCategory(title, operator string) string {
+	text := strings.ToLower(strings.TrimSpace(title + " " + operator))
+	switch {
+	case strings.Contains(text, "sync"), strings.Contains(text, "meeting"), strings.Contains(text, "call"), strings.Contains(text, "standup"), strings.Contains(text, "coord"):
+		return "COORDINATION"
+	case strings.Contains(text, "design"), strings.Contains(text, "figma"), strings.Contains(text, "ux"), strings.Contains(text, "ui"):
+		return "DESIGN"
+	case strings.Contains(text, "review"), strings.Contains(text, "qa"), strings.Contains(text, "test"):
+		return "REVIEW"
+	case operator != "" && operator != "human":
+		return "AGENT"
+	case strings.Contains(text, "api"), strings.Contains(text, "backend"), strings.Contains(text, "frontend"), strings.Contains(text, "refactor"), strings.Contains(text, "build"), strings.Contains(text, "fix"), strings.Contains(text, "auth"), strings.Contains(text, "impl"):
+		return "DEVELOPMENT"
+	default:
+		return "FOCUS"
+	}
+}
+
+func dashboardActivityColumns(width int) int {
+	switch {
+	case width >= 96:
+		return 3
+	case width >= 64:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func renderDashboardActivityCard(item dashboardActivityCard, width int) string {
+	style := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1).Width(width)
+	headerWidth := max(1, width-style.GetHorizontalFrameSize()-2)
+	leftWidth := max(1, headerWidth-lipgloss.Width(item.time)-1)
+	category := truncateForWidth(item.category, leftWidth)
+	header := padRight(category, leftWidth)
+	if item.time != "" {
+		header += " " + truncateForWidth(item.time, lipgloss.Width(item.time))
+	}
+	lines := []string{header, truncateForWidth(item.title, headerWidth), truncateForWidth("Duration "+item.duration, headerWidth)}
+	for _, detail := range item.details {
+		if strings.HasPrefix(detail, "Duration ") {
+			continue
+		}
+		lines = append(lines, truncateForWidth(detail, headerWidth))
+		if len(lines) >= 5 {
+			break
+		}
+	}
+	for len(lines) < 5 {
+		lines = append(lines, "")
+	}
+	return style.Render(strings.Join(lines, "\n"))
+}
+
+func dashboardSlotsOutsideEntries(slots []model.ActivitySlot, entries []model.TimeEntryDetail) []model.ActivitySlot {
+	leftover := make([]model.ActivitySlot, 0, len(slots))
+	for _, slot := range slots {
+		slotStart := slot.SlotTime.In(time.Local)
+		slotEnd := slotStart.Add(15 * time.Minute)
+		matched := false
+		for _, entry := range entries {
+			if rangesOverlap(slotStart, slotEnd, entry.StartedAt, timelineBlockEnd(entry)) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			leftover = append(leftover, slot)
+		}
+	}
+	return leftover
+}
+
+func dashboardAgentSummaryLine(slots []model.ActivitySlot) string {
+	if len(slots) == 0 {
+		return ""
+	}
+	operators := map[string]int{}
+	msgs := 0
+	for _, slot := range slots {
+		operators[slot.Operator]++
+		msgs += slot.MsgCount
+	}
+	names := make([]string, 0, len(operators))
+	for name := range operators {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return fmt.Sprintf("Agent %s | %d msgs", strings.Join(names, ", "), msgs)
+}
+
+func renderDashboardAgentSummary(slots []model.ActivitySlot, width int) string {
+	if len(slots) == 0 {
+		return ""
+	}
+	var lines []string
+	lines = append(lines, "Agent activity")
+	lines = append(lines, dashboardAgentSummaryLine(slots))
+	for _, slot := range slots {
+		label := strings.TrimSpace(slot.FirstText)
+		if label == "" {
+			label = slot.Operator
+		}
+		line := fmt.Sprintf("%s %s", clock(slot.SlotTime.In(time.Local)), label)
+		lines = append(lines, truncateForWidth(line, width))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func renderReportView(m AppModel, styles tuiStyles) string {

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -2664,6 +2665,158 @@ func TestDashboardNavigationUpdatesSelectedDay(t *testing.T) {
 	}
 }
 
+func TestDashboardActivityPaneCanScroll(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	now := dayStart(time.Now().In(time.Local))
+	for i := 0; i < 10; i++ {
+		start := now.Add(time.Duration(8+i) * time.Hour)
+		if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: fmt.Sprintf("Entry %02d", i), StartedAt: start, EndedAt: start.Add(30 * time.Minute)}); err != nil {
+			t.Fatalf("CreateManualEntry(%d) error = %v", i, err)
+		}
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 22})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	app = updated.(AppModel)
+	if app.dashboardViewport.TotalLineCount() <= app.dashboardViewport.Height {
+		t.Fatalf("dashboard viewport not scrollable: total=%d height=%d", app.dashboardViewport.TotalLineCount(), app.dashboardViewport.Height)
+	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	app = updated.(AppModel)
+	if app.dashboardViewport.YOffset == 0 {
+		t.Fatalf("dashboard viewport did not scroll: %#v", app.dashboardViewport)
+	}
+	if app.dashboardViewport.TotalLineCount() <= app.dashboardViewport.Height {
+		t.Fatalf("dashboard viewport unexpectedly lost overflow after scroll: total=%d height=%d", app.dashboardViewport.TotalLineCount(), app.dashboardViewport.Height)
+	}
+}
+
+func TestDashboardWideLayoutStaysWithinViewportAndShowsBothColumns(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	project, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "USD"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	now := dayStart(time.Now().In(time.Local))
+	for i := 0; i < 8; i++ {
+		start := now.Add(time.Duration(8+i) * time.Hour)
+		if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "hrs", Description: fmt.Sprintf("Dashboard entry %02d", i), StartedAt: start, EndedAt: start.Add(45 * time.Minute)}); err != nil {
+			t.Fatalf("CreateManualEntry(%d) error = %v", i, err)
+		}
+	}
+	if err := store.EnsureProjectDefaultTimeOffTypes(ctx, project.ID); err != nil {
+		t.Fatalf("EnsureProjectDefaultTimeOffTypes() error = %v", err)
+	}
+	types, err := store.ListTimeOffTypesByProject(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("ListTimeOffTypesByProject() error = %v", err)
+	}
+	var vacationID string
+	for _, item := range types {
+		if item.Name == "Vacation" {
+			vacationID = item.ID
+			break
+		}
+	}
+	if vacationID == "" {
+		t.Fatal("vacation type not found")
+	}
+	if _, err := store.UpsertTimeOffDay(ctx, project.ID, vacationID, now.AddDate(0, 0, 5).Format("2006-01-02")); err != nil {
+		t.Fatalf("UpsertTimeOffDay() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 180, Height: 40})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	app = updated.(AppModel)
+	out := stripANSI(app.View())
+	for _, want := range []string{"Year heatmap", "Daily activity", "Year progress", "Planned time off", "Dashboard entry 00"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, out)
+		}
+	}
+	assertViewLinesFitWidth(t, out, 180)
+	if blank := longestBlankRun(out); blank > 6 {
+		t.Fatalf("dashboard contains suspicious blank run of %d lines:\n%s", blank, out)
+	}
+	if nonSpaceAfter(out, "Daily activity") < 120 {
+		t.Fatalf("dashboard body too empty after daily activity:\n%s", out)
+	}
+}
+
+func TestDashboardLongAgentActivityStillShowsVisibleBody(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	now := dayStart(time.Now().In(time.Local))
+	for i, desc := range []string{
+		"migration follow up for multiple datasets",
+		"michal interview",
+		"multiple dataset db restrictions",
+		"prepare for Marc interview",
+		"nick & marc sync",
+	} {
+		start := now.Add(time.Duration(10+i) * time.Hour)
+		if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "elaiia", Description: desc, StartedAt: start, EndedAt: start.Add(time.Hour)}); err != nil {
+			t.Fatalf("CreateManualEntry(%d) error = %v", i, err)
+		}
+	}
+	slots := make([]model.ActivitySlot, 0, 20)
+	for i := 0; i < 20; i++ {
+		slots = append(slots, model.ActivitySlot{
+			SlotTime:   now.Add(time.Duration(8+i) * 15 * time.Minute).UTC(),
+			Operator:   "claude-code",
+			MsgCount:   40 + i,
+			FirstText:  fmt.Sprintf("very long prompt %02d inside the review flow with enough text to stress wrapping and viewport rendering", i),
+			TokenInput: 1000 + i,
+		})
+	}
+	if err := store.UpsertActivitySlots(ctx, slots); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 220, Height: 45})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	app = updated.(AppModel)
+	out := stripANSI(app.View())
+	for _, want := range []string{"Daily activity", "Year progress", "Planned time off", "michal interview", "nick & marc sync"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, out)
+		}
+	}
+	assertViewLinesFitWidth(t, out, 220)
+	if nonSpaceAfter(out, "Daily activity") < 200 {
+		t.Fatalf("dashboard activity area too empty under heavy agent data:\n%s", out)
+	}
+}
+
 func TestReportViewCanSwitchRangePresets(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -3679,6 +3832,45 @@ func openTestStore(t *testing.T) *db.Store {
 		t.Fatalf("db.Open() error = %v", err)
 	}
 	return store
+}
+
+func assertViewLinesFitWidth(t *testing.T, view string, width int) {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimRight(view, "\n"), "\n") {
+		if lipgloss.Width(line) > width {
+			t.Fatalf("line width = %d, want <= %d\n%s", lipgloss.Width(line), width, line)
+		}
+	}
+}
+
+func longestBlankRun(view string) int {
+	maxRun := 0
+	run := 0
+	for _, line := range strings.Split(strings.TrimRight(view, "\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			run++
+			if run > maxRun {
+				maxRun = run
+			}
+			continue
+		}
+		run = 0
+	}
+	return maxRun
+}
+
+func nonSpaceAfter(view string, marker string) int {
+	idx := strings.Index(view, marker)
+	if idx < 0 {
+		return 0
+	}
+	count := 0
+	for _, r := range view[idx+len(marker):] {
+		if r != ' ' && r != '\n' && r != '\t' && r != '\r' {
+			count++
+		}
+	}
+	return count
 }
 
 func TestDayViewJKNeverStaysOnSameEntry(t *testing.T) {
