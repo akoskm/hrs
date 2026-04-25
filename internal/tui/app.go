@@ -641,6 +641,10 @@ func (m AppModel) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "esc":
 		m.mode = modeTimeline
+	case "enter":
+		m.mode = modeTimeline
+		m.openSelectedMonthDay()
+		return m, nil
 	case "pgdown", "ctrl+f", "ctrl+d":
 		m.scrollDashboardPage(1)
 	case "pgup", "ctrl+b", "ctrl+u":

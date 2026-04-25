@@ -2665,6 +2665,47 @@ func TestDashboardNavigationUpdatesSelectedDay(t *testing.T) {
 	}
 }
 
+func TestDashboardEnterOpensSelectedDayInDayView(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	base := dayStart(time.Now().In(time.Local))
+	target := base.AddDate(0, 0, -3)
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{ProjectIdent: "p", Description: "Chosen day", StartedAt: target.Add(9 * time.Hour), EndedAt: target.Add(10 * time.Hour)}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 28})
+	app := updated.(AppModel)
+	app.dayDate = target
+	app.loadDashboardForDay(target)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	app = updated.(AppModel)
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.mode != modeTimeline {
+		t.Fatalf("mode after enter = %q, want timeline", app.mode)
+	}
+	if app.timelineView != timelineViewDay {
+		t.Fatalf("timelineView after enter = %q, want day", app.timelineView)
+	}
+	if !app.displayedDay().Equal(target) {
+		t.Fatalf("displayedDay after enter = %s, want %s", app.displayedDay().Format("2006-01-02"), target.Format("2006-01-02"))
+	}
+	if !strings.Contains(stripANSI(app.View()), "Chosen day") {
+		t.Fatalf("day view missing selected day entry: %q", stripANSI(app.View()))
+	}
+}
+
 func TestDashboardActivityPaneCanScroll(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
