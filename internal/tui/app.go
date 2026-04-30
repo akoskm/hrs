@@ -139,7 +139,9 @@ type AppModel struct {
 	inboxSearchActive    bool
 	inboxSearchQuery     string
 	inboxLastSearch      string
-	inboxPendingEntryID  string
+	inboxPendingEntryID      string
+	inboxPendingItemStart    time.Time
+	inboxPendingItemOperator string
 	reportPreset         reportPreset
 	reportProjectCursor  int
 	reportResult         db.ReportResult
@@ -1928,10 +1930,8 @@ func (m *AppModel) closeEntryEditDialog() {
 		_ = m.store.SoftDeleteEntry(m.ctx, m.inboxPendingEntryID)
 		m.inboxPendingEntryID = ""
 		_ = m.reloadEntries()
-		m.buildInboxItems()
-		if m.inboxLastSearch != "" {
-			m.applyInboxSearch()
-		}
+		m.applyInboxFilter(m.inboxLastSearch)
+		m.restoreInboxCursorAfterFilter()
 	}
 	if m.previousMode != "" {
 		m.mode = m.previousMode
@@ -2118,6 +2118,8 @@ func (m *AppModel) saveEntryEdit() {
 	m.focusEntryByID(entry.ID)
 	if m.inboxPendingEntryID != "" {
 		m.inboxPendingEntryID = ""
+		m.inboxPendingItemStart = time.Time{}
+		m.inboxPendingItemOperator = ""
 		for i, item := range m.inboxItems {
 			if item.Start.Equal(entry.StartedAt) && item.Operator == entry.Operator {
 				m.inboxItems = append(m.inboxItems[:i], m.inboxItems[i+1:]...)
@@ -2251,7 +2253,8 @@ func (m *AppModel) closeProjectDialog() {
 		_ = m.store.SoftDeleteEntry(m.ctx, m.inboxPendingEntryID)
 		m.inboxPendingEntryID = ""
 		_ = m.reloadEntries()
-		m.buildInboxItems()
+		m.applyInboxFilter(m.inboxLastSearch)
+		m.restoreInboxCursorAfterFilter()
 	}
 	if m.previousMode != "" {
 		m.mode = m.previousMode
@@ -2651,6 +2654,8 @@ func (m *AppModel) confirmProjectAssignment() {
 	m.selected = map[string]bool{}
 	if m.inboxPendingEntryID != "" {
 		m.inboxPendingEntryID = ""
+		m.inboxPendingItemStart = time.Time{}
+		m.inboxPendingItemOperator = ""
 		for i, item := range m.inboxItems {
 			if item.Start.Equal(entry.StartedAt) && item.Operator == entry.Operator {
 				m.inboxItems = append(m.inboxItems[:i], m.inboxItems[i+1:]...)
@@ -5016,45 +5021,47 @@ func (m *AppModel) handleInboxKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-func (m *AppModel) applyInboxSearch() {
-	if m.inboxLastSearch == "" {
-		m.buildInboxItems()
-		return
-	}
-	query := strings.ToLower(strings.TrimSpace(m.inboxLastSearch))
-	if query == "" {
-		m.buildInboxItems()
-		return
-	}
+func (m *AppModel) applyInboxFilter(query string) {
+	q := strings.ToLower(strings.TrimSpace(query))
 	m.buildInboxItems()
+	if q == "" {
+		return
+	}
 	var filtered []inboxItem
 	for _, item := range m.inboxItems {
-		if inboxItemMatchesSearch(item, query) {
+		if inboxItemMatchesSearch(item, q) {
 			filtered = append(filtered, item)
 		}
 	}
 	m.inboxItems = filtered
+}
+
+func (m *AppModel) applyInboxSearch() {
+	m.applyInboxFilter(m.inboxLastSearch)
 	m.inboxCursor = 0
 	m.inboxOffset = 0
 }
 
 func (m *AppModel) applyInboxLiveSearch() {
-	query := strings.ToLower(strings.TrimSpace(m.inboxSearchQuery))
-	m.buildInboxItems()
-	if query == "" {
-		m.inboxCursor = 0
-		m.inboxOffset = 0
-		return
-	}
-	var filtered []inboxItem
-	for _, item := range m.inboxItems {
-		if inboxItemMatchesSearch(item, query) {
-			filtered = append(filtered, item)
-		}
-	}
-	m.inboxItems = filtered
+	m.applyInboxFilter(m.inboxSearchQuery)
 	m.inboxCursor = 0
 	m.inboxOffset = 0
+}
+
+func (m *AppModel) restoreInboxCursorAfterFilter() {
+	if !m.inboxPendingItemStart.IsZero() {
+		for i, item := range m.inboxItems {
+			if item.Start.Equal(m.inboxPendingItemStart) && item.Operator == m.inboxPendingItemOperator {
+				m.inboxCursor = i
+				m.ensureInboxVisible()
+				return
+			}
+		}
+	}
+	if m.inboxCursor >= len(m.inboxItems) {
+		m.inboxCursor = max(0, len(m.inboxItems)-1)
+	}
+	m.ensureInboxVisible()
 }
 
 func inboxItemMatchesSearch(item inboxItem, query string) bool {
@@ -5163,6 +5170,8 @@ func (m *AppModel) createEntryFromInboxItem() tea.Cmd {
 		return nil
 	}
 	m.inboxPendingEntryID = entry.ID
+	m.inboxPendingItemStart = item.Start
+	m.inboxPendingItemOperator = item.Operator
 	m.previousMode = modeInbox
 	for i, e := range m.entries {
 		if e.ID == entry.ID {
