@@ -2889,6 +2889,53 @@ func TestDashboardStatusBarSpansFullWidth(t *testing.T) {
 	}
 }
 
+func TestDashboardShowsTimeOffAllowanceSummaries(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	project, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "USD"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if err := store.EnsureProjectDefaultTimeOffTypes(ctx, project.ID); err != nil {
+		t.Fatalf("EnsureProjectDefaultTimeOffTypes() error = %v", err)
+	}
+	types, err := store.ListTimeOffTypesByProject(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("ListTimeOffTypesByProject() error = %v", err)
+	}
+	var vacation model.TimeOffType
+	for _, item := range types {
+		if item.Name == "Vacation" {
+			vacation = item
+			break
+		}
+	}
+	if vacation.ID == "" {
+		t.Fatal("vacation type not found")
+	}
+	if _, err := store.UpsertTimeOffAllowance(ctx, project.ID, vacation.ID, time.Now().Year(), 20); err != nil {
+		t.Fatalf("UpsertTimeOffAllowance() error = %v", err)
+	}
+	if _, err := store.UpsertTimeOffDay(ctx, project.ID, vacation.ID, time.Now().Format("2006-01-02")); err != nil {
+		t.Fatalf("UpsertTimeOffDay() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	app = updated.(AppModel)
+	out := stripANSI(app.View())
+	if !strings.Contains(out, "Vacation @ hrs 1/20 used") {
+		t.Fatalf("dashboard allowance summary missing: %q", out)
+	}
+}
+
 func TestReportViewCanSwitchRangePresets(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -5939,6 +5986,113 @@ func TestDayViewFocusedThreeRowEntryTouchingAboveShowsTitleInsideBlock(t *testin
 	rowsView := strings.Join(lines[4:len(lines)-1], "\n")
 	if got := strings.Count(rowsView, "freshly created block"); got != 1 {
 		t.Fatalf("title count = %d, want 1, got:\n%s", got, view)
+	}
+}
+
+func TestDayViewRendersOverlappingEntriesSideBySide(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "hrs",
+		Description:  "product meeting",
+		StartedAt:    time.Date(2026, 4, 7, 9, 0, 0, 0, time.Local),
+		EndedAt:      time.Date(2026, 4, 7, 10, 0, 0, 0, time.Local),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "hrs",
+		Description:  "claude debugging",
+		StartedAt:    time.Date(2026, 4, 7, 9, 15, 0, 0, time.Local),
+		EndedAt:      time.Date(2026, 4, 7, 9, 45, 0, 0, time.Local),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local))
+	m.dayWindowStart = time.Date(2026, 4, 7, 8, 0, 0, 0, time.Local)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 35})
+	app := updated.(AppModel)
+	view := stripANSI(renderDayTimeline(app, newStyles(app.width)))
+
+	var topRow string
+	var bodyRow string
+	for _, line := range strings.Split(strings.TrimRight(view, "\n"), "\n") {
+		if strings.Contains(line, "09:00") && strings.Contains(line, "claude debugging") {
+			topRow = line
+		}
+		if strings.Contains(line, "product meeting") {
+			bodyRow = line
+		}
+	}
+	if !strings.Contains(topRow, "09:00") || !strings.Contains(topRow, "claude debugging") {
+		t.Fatalf("overlap top row missing split lanes, got:\n%s", view)
+	}
+	if !strings.Contains(bodyRow, "product meeting") || !strings.Contains(bodyRow, "│ │") {
+		t.Fatalf("overlap row missing side-by-side labels, got:\n%s", view)
+	}
+}
+
+func TestEnterOnSlotWithMultipleOverlapsOpensChooser(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "hrs",
+		Description:  "product meeting",
+		StartedAt:    time.Date(2026, 4, 7, 9, 0, 0, 0, time.Local),
+		EndedAt:      time.Date(2026, 4, 7, 10, 0, 0, 0, time.Local),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "hrs",
+		Description:  "claude debugging",
+		StartedAt:    time.Date(2026, 4, 7, 9, 15, 0, 0, time.Local),
+		EndedAt:      time.Date(2026, 4, 7, 9, 45, 0, 0, time.Local),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local))
+	m.dayWindowStart = time.Date(2026, 4, 7, 8, 0, 0, 0, time.Local)
+	m.dayFocusKind = "slot"
+	m.daySlotStart = time.Date(2026, 4, 7, 9, 15, 0, 0, time.Local)
+	m.daySlotSpan = 15 * time.Minute
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 35})
+	app := updated.(AppModel)
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+
+	if app.mode != modeOverlapChooser {
+		t.Fatalf("mode after enter = %q, want %q", app.mode, modeOverlapChooser)
+	}
+	view := stripANSI(app.View())
+	if !strings.Contains(view, "Choose Overlap") {
+		t.Fatalf("chooser title missing, got:\n%s", view)
+	}
+	if !strings.Contains(view, "product meeting") || !strings.Contains(view, "claude debugging") {
+		t.Fatalf("chooser entries missing, got:\n%s", view)
 	}
 }
 

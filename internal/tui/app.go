@@ -30,15 +30,16 @@ type inspectorTab string
 type reportPreset string
 
 const (
-	modeTimeline      mode = "timeline"
-	modeDashboard     mode = "dashboard"
-	modeReport        mode = "report"
-	modeAssign        mode = "assign"
-	modeTimeOff       mode = "time-off"
-	modeEntryEdit     mode = "entry-edit"
-	modeGapEntry      mode = "gap-entry"
-	modeSearch        mode = "search"
-	modeDeleteConfirm mode = "delete-confirm"
+	modeTimeline       mode = "timeline"
+	modeDashboard      mode = "dashboard"
+	modeReport         mode = "report"
+	modeAssign         mode = "assign"
+	modeTimeOff        mode = "time-off"
+	modeEntryEdit      mode = "entry-edit"
+	modeGapEntry       mode = "gap-entry"
+	modeOverlapChooser mode = "overlap-chooser"
+	modeSearch         mode = "search"
+	modeDeleteConfirm  mode = "delete-confirm"
 
 	projectDialogAssign projectDialogMode = "assign"
 	projectDialogManage projectDialogMode = "manage"
@@ -69,6 +70,7 @@ type AppModel struct {
 	projects             []model.Project
 	timeOffTypes         []model.TimeOffType
 	timeOffRecords       []model.TimeOffDayDetail
+	timeOffAllowances    []model.TimeOffAllowanceSummary
 	selected             map[string]bool
 	searchQuery          string
 	lastSearch           string
@@ -122,6 +124,8 @@ type AppModel struct {
 	slotMarkStart        time.Time
 	slotMarkSpan         time.Duration
 	confirmDeleteID      string
+	overlapChoiceCursor  int
+	overlapChoiceIndices []int
 	reportPreset         reportPreset
 	reportProjectCursor  int
 	reportResult         db.ReportResult
@@ -254,6 +258,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.mode == modeGapEntry {
 			return m, m.handleGapEntryKey(msg)
+		}
+		if m.mode == modeOverlapChooser {
+			return m, m.handleOverlapChooserKey(msg)
 		}
 		if m.mode == modeTimeOff {
 			return m, m.handleTimeOffDialogKey(msg)
@@ -453,14 +460,20 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.timelineView == timelineViewDay && m.dayFocusKind == "slot" {
-				if idx := m.overlappingEntryIndexForSlot(); idx >= 0 {
-					m.cursor = idx
+				overlaps := m.overlappingEntryIndicesForSlot()
+				switch len(overlaps) {
+				case 0:
+					m.openGapEntryDialog()
+					return m, cursorBlinkCmd()
+				case 1:
+					m.cursor = overlaps[0]
 					m.dayFocusKind = "entry"
 					m.openEntryEditDialog(false)
 					return m, cursorBlinkCmd()
+				default:
+					m.openOverlapChooser(overlaps)
+					return m, nil
 				}
-				m.openGapEntryDialog()
-				return m, cursorBlinkCmd()
 			}
 			if m.timelineView == timelineViewDay && m.dayFocusKind == "gap" {
 				m.openGapEntryDialog()
@@ -766,6 +779,9 @@ func (m AppModel) View() string {
 	if m.mode == modeEntryEdit {
 		return renderEntryEditDialog(m, styles, view)
 	}
+	if m.mode == modeOverlapChooser {
+		return renderOverlapChooserDialog(m, styles, view)
+	}
 	if m.mode == modeDeleteConfirm {
 		return renderDeleteConfirmDialog(m, styles, view)
 	}
@@ -820,6 +836,11 @@ type dayTimelineRow struct {
 	start time.Time
 	end   time.Time
 	label string
+}
+
+type dayLaneLayout struct {
+	entryLane map[string]int
+	laneCount int
 }
 
 func (m *AppModel) ensureVisible() {
@@ -1429,18 +1450,27 @@ func (m AppModel) selectedCreateRange() *dayGap {
 }
 
 func (m AppModel) overlappingEntryIndexForSlot() int {
-	if m.dayFocusKind != "slot" || m.daySlotStart.IsZero() {
+	overlaps := m.overlappingEntryIndicesForSlot()
+	if len(overlaps) == 0 {
 		return -1
+	}
+	return overlaps[0]
+}
+
+func (m AppModel) overlappingEntryIndicesForSlot() []int {
+	if m.dayFocusKind != "slot" || m.daySlotStart.IsZero() {
+		return nil
 	}
 	slotEnd := m.daySlotStart.Add(m.daySlotSpan)
 	indices := m.dayEntryIndices(m.displayedDay().Format("2006-01-02"))
+	overlaps := make([]int, 0, len(indices))
 	for _, idx := range indices {
 		entry := m.entries[idx]
 		if rangesOverlap(m.daySlotStart, slotEnd, entry.StartedAt, timelineBlockEnd(entry)) {
-			return idx
+			overlaps = append(overlaps, idx)
 		}
 	}
-	return -1
+	return overlaps
 }
 
 func (m AppModel) entryMarker(index int) string {
@@ -1811,6 +1841,17 @@ func (m *AppModel) openEntryEditDialog(projectOnly bool) {
 	m.caretVisible = true
 }
 
+func (m *AppModel) openOverlapChooser(indices []int) {
+	if len(indices) < 2 {
+		return
+	}
+	m.mode = modeOverlapChooser
+	m.overlapChoiceIndices = append(m.overlapChoiceIndices[:0], indices...)
+	m.overlapChoiceCursor = 0
+	m.caretVisible = false
+	m.err = nil
+}
+
 func (m *AppModel) closeEntryEditDialog() {
 	m.mode = modeTimeline
 	m.entryInput = ""
@@ -1821,6 +1862,45 @@ func (m *AppModel) closeEntryEditDialog() {
 	m.entryProjectCursor = 0
 	m.entryProjectOnly = false
 	m.caretVisible = false
+}
+
+func (m *AppModel) closeOverlapChooser() {
+	m.mode = modeTimeline
+	m.overlapChoiceCursor = 0
+	m.overlapChoiceIndices = nil
+	if m.dayFocusKind != "slot" {
+		m.dayFocusKind = "slot"
+	}
+}
+
+func (m *AppModel) handleOverlapChooserKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		m.quitting = true
+		return tea.Quit
+	case "esc":
+		m.closeOverlapChooser()
+	case "up", "k":
+		if m.overlapChoiceCursor > 0 {
+			m.overlapChoiceCursor--
+		}
+	case "down", "j":
+		if m.overlapChoiceCursor < len(m.overlapChoiceIndices)-1 {
+			m.overlapChoiceCursor++
+		}
+	case "enter":
+		if len(m.overlapChoiceIndices) == 0 {
+			m.closeOverlapChooser()
+			return nil
+		}
+		m.cursor = m.overlapChoiceIndices[m.overlapChoiceCursor]
+		m.dayFocusKind = "entry"
+		m.overlapChoiceIndices = nil
+		m.overlapChoiceCursor = 0
+		m.openEntryEditDialog(false)
+		return cursorBlinkCmd()
+	}
+	return nil
 }
 
 func (m *AppModel) handleDeleteConfirmKey(msg tea.KeyMsg) tea.Cmd {
@@ -2978,6 +3058,7 @@ func renderDayTimeline(m AppModel, styles tuiStyles) string {
 	selectedDay := m.displayedDay().Format("2006-01-02")
 	selectedWeekday := m.displayedDay().Format("Monday")
 	dayEntries := dayEntriesForDate(m.entries, selectedDay)
+	laneLayout := buildDayLaneLayout(dayEntries)
 	window := dayTimelineWindow(dayEntries, m.displayedDay(), m.dayWindowStart)
 	rows := dayTimelineRows(window, m.height)
 	activityColWidth := max(16, timelineWidth(m.width)-8)
@@ -3013,7 +3094,7 @@ func renderDayTimeline(m AppModel, styles tuiStyles) string {
 	// rows
 	for _, row := range rows {
 		timePart := renderVerticalTimeCell(m, row, styles)
-		activityPart := renderActivityCell(m, window.start, row.start, row.end, dayEntries, activityColWidth, styles)
+		activityPart := renderActivityRow(m, window.start, row.start, row.end, dayEntries, laneLayout, activityColWidth, styles)
 		b.WriteString(timePart + " " + activityPart + "\n")
 	}
 	if m.dayFocusKind == "slot" && !m.daySlotStart.IsZero() {
@@ -3831,54 +3912,121 @@ func (m AppModel) slotHasActivity(slotStart time.Time) bool {
 	return false
 }
 
-func renderActivityCell(m AppModel, viewportStart, slotStart, slotEnd time.Time, entries []model.TimeEntryDetail, width int, styles tuiStyles) string {
-	// entries take visual precedence over activity markers
+func buildDayLaneLayout(entries []model.TimeEntryDetail) dayLaneLayout {
+	layout := dayLaneLayout{entryLane: make(map[string]int, len(entries)), laneCount: 1}
+	if len(entries) == 0 {
+		return layout
+	}
+	laneEnds := make([]time.Time, 0, len(entries))
 	for _, entry := range entries {
 		entryEnd := timelineBlockEnd(entry)
-		if !rangesOverlap(slotStart, slotEnd, entry.StartedAt, entryEnd) {
-			continue
+		lane := -1
+		for i, laneEnd := range laneEnds {
+			if !laneEnd.After(entry.StartedAt) {
+				lane = i
+				laneEnds[i] = entryEnd
+				break
+			}
 		}
-		touchesAbove := false
-		touchesBelow := false
-		for _, other := range entries {
-			if other.ID == entry.ID {
+		if lane == -1 {
+			lane = len(laneEnds)
+			laneEnds = append(laneEnds, entryEnd)
+		}
+		layout.entryLane[entry.ID] = lane
+	}
+	layout.laneCount = max(1, len(laneEnds))
+	return layout
+}
+
+func splitDayLaneWidths(total, lanes int) []int {
+	if lanes <= 0 {
+		lanes = 1
+	}
+	separatorWidth := max(0, lanes-1)
+	contentWidth := max(lanes, total-separatorWidth)
+	base := contentWidth / lanes
+	remainder := contentWidth % lanes
+	widths := make([]int, lanes)
+	for i := range widths {
+		widths[i] = max(1, base)
+		if i < remainder {
+			widths[i]++
+		}
+	}
+	return widths
+}
+
+func renderActivityCell(m AppModel, viewportStart, slotStart, slotEnd time.Time, entries []model.TimeEntryDetail, width int, styles tuiStyles) string {
+	return renderActivityRow(m, viewportStart, slotStart, slotEnd, entries, buildDayLaneLayout(entries), width, styles)
+}
+
+func renderActivityRow(m AppModel, viewportStart, slotStart, slotEnd time.Time, entries []model.TimeEntryDetail, layout dayLaneLayout, width int, styles tuiStyles) string {
+	laneCount := max(1, layout.laneCount)
+	widths := splitDayLaneWidths(width, laneCount)
+	parts := make([]string, 0, laneCount)
+	activityText := m.activityTextForSlot(slotStart)
+	activityPlaced := false
+	overlapFocus := m.overlappingEntryIndicesForSlot()
+	focusedBySlot := map[int]bool{}
+	for _, idx := range overlapFocus {
+		focusedBySlot[idx] = true
+	}
+	for lane := 0; lane < laneCount; lane++ {
+		cellWidth := widths[lane]
+		var entry *model.TimeEntryDetail
+		globalIdx := -1
+		for _, candidate := range entries {
+			if layout.entryLane[candidate.ID] != lane {
 				continue
 			}
-			otherEnd := timelineBlockEnd(other)
-			if otherEnd.Equal(entry.StartedAt) && sharesVisualBoundary(entry, other) {
-				touchesAbove = true
-			}
-			if other.StartedAt.Equal(entryEnd) && sharesVisualBoundary(entry, other) {
-				touchesBelow = true
-			}
-			if touchesAbove && touchesBelow {
+			entryEnd := timelineBlockEnd(candidate)
+			if rangesOverlap(slotStart, slotEnd, candidate.StartedAt, entryEnd) {
+				entryCopy := candidate
+				entry = &entryCopy
+				for gi, e := range m.entries {
+					if e.ID == candidate.ID {
+						globalIdx = gi
+						break
+					}
+				}
 				break
 			}
 		}
-		globalIdx := -1
-		for gi, e := range m.entries {
-			if e.ID == entry.ID {
-				globalIdx = gi
-				break
+		if entry != nil {
+			entryEnd := timelineBlockEnd(*entry)
+			touchesAbove := false
+			touchesBelow := false
+			for _, other := range entries {
+				if other.ID == entry.ID || layout.entryLane[other.ID] != lane {
+					continue
+				}
+				otherEnd := timelineBlockEnd(other)
+				if otherEnd.Equal(entry.StartedAt) && sharesVisualBoundary(*entry, other) {
+					touchesAbove = true
+				}
+				if other.StartedAt.Equal(entryEnd) && sharesVisualBoundary(*entry, other) {
+					touchesBelow = true
+				}
 			}
+			focused := (m.dayFocusKind == "entry" && globalIdx == m.cursor) || (m.dayFocusKind == "slot" && focusedBySlot[globalIdx])
+			cellStyle := styles.confirmed
+			if entry.Status == model.StatusDraft {
+				cellStyle = styles.draft
+			}
+			if entry.ProjectColor != nil && *entry.ProjectColor != "" && !focused {
+				cellStyle = cellStyle.Foreground(lipgloss.Color(*entry.ProjectColor))
+			}
+			parts = append(parts, renderVerticalEntryCell(viewportStart, slotStart, slotEnd, entry.StartedAt, entryEnd, touchesAbove, touchesBelow, focused, cellWidth, timelineBlockLabel(*entry), cellStyle, styles))
+			continue
 		}
-		focused := (m.dayFocusKind == "entry" && globalIdx == m.cursor) || (m.dayFocusKind == "slot" && globalIdx == m.overlappingEntryIndexForSlot())
-		cellStyle := styles.confirmed
-		if entry.Status == model.StatusDraft {
-			cellStyle = styles.draft
+		if !activityPlaced && activityText != "" {
+			parts = append(parts, styles.muted.Render(padRight(truncateForWidth(" "+activityText, cellWidth), cellWidth)))
+			activityPlaced = true
+			continue
 		}
-		if entry.ProjectColor != nil && *entry.ProjectColor != "" && !focused {
-			cellStyle = cellStyle.Foreground(lipgloss.Color(*entry.ProjectColor))
-		}
-		label := timelineBlockLabel(entry)
-		return renderVerticalEntryCell(viewportStart, slotStart, slotEnd, entry.StartedAt, entryEnd, touchesAbove, touchesBelow, focused, width, label, cellStyle, styles)
+		parts = append(parts, padRight("", cellWidth))
 	}
-	// activity marker (faint text)
-	text := m.activityTextForSlot(slotStart)
-	if text != "" {
-		return styles.muted.Render(padRight(truncateForWidth(" "+text, width), width))
-	}
-	return padRight("", width)
+	return strings.Join(parts, " ")
 }
 
 func sharesProjectBoundary(a, b model.TimeEntryDetail) bool {
@@ -4489,7 +4637,13 @@ func (m *AppModel) loadDashboardForDay(day time.Time) {
 		m.err = err
 		return
 	}
+	allowances, err := m.store.ListTimeOffAllowanceSummaries(m.ctx, day.Year())
+	if err != nil {
+		m.err = err
+		return
+	}
 	m.dashboardResult = result
+	m.timeOffAllowances = allowances
 	m.dayDate = day
 	m.loadActivitySlots()
 }
@@ -4709,7 +4863,6 @@ func renderDashboardTimeOffCard(m AppModel, width int) string {
 	day := m.displayedDay()
 	yearStart, yearEnd := reportYearRange(day)
 	future := make([]model.TimeOffDayDetail, 0)
-	counts := map[string]int{}
 	for _, record := range m.timeOffRecords {
 		recordDay, err := time.ParseInLocation("2006-01-02", record.Day, time.Local)
 		if err != nil {
@@ -4722,22 +4875,23 @@ func renderDashboardTimeOffCard(m AppModel, width int) string {
 			continue
 		}
 		future = append(future, record)
-		counts[record.TimeOffType]++
 	}
 	var b strings.Builder
 	b.WriteString("Planned time off\n")
-	if len(future) == 0 {
+	if len(m.timeOffAllowances) == 0 && len(future) == 0 {
 		b.WriteString("No upcoming time off")
 		return b.String()
 	}
-	b.WriteString(truncateForWidth(fmt.Sprintf("Upcoming days %d", len(future)), width) + "\n")
-	b.WriteString(truncateForWidth(fmt.Sprintf("Next %s %s", future[0].TimeOffType, future[0].Day), width) + "\n")
-	types := make([]string, 0, len(counts))
-	for name, count := range counts {
-		types = append(types, fmt.Sprintf("%s %d", name, count))
+	if len(m.timeOffAllowances) > 0 {
+		for _, allowance := range m.timeOffAllowances {
+			label := fmt.Sprintf("%s @ %s %d/%d used", allowance.TimeOffType, allowance.ProjectName, allowance.UsedDays, allowance.AllowedDays)
+			b.WriteString(truncateForWidth(label, width) + "\n")
+		}
 	}
-	sort.Strings(types)
-	b.WriteString(truncateForWidth(strings.Join(types, " | "), width))
+	if len(future) > 0 {
+		b.WriteString(truncateForWidth(fmt.Sprintf("Upcoming days %d", len(future)), width) + "\n")
+		b.WriteString(truncateForWidth(fmt.Sprintf("Next %s %s", future[0].TimeOffType, future[0].Day), width))
+	}
 	return b.String()
 }
 
@@ -5402,6 +5556,35 @@ func renderDeleteConfirmDialog(m AppModel, styles tuiStyles, background string) 
 	content.WriteString(desc + "\n")
 	content.WriteString(styles.muted.Render(formatRange(entry.StartedAt, entry.EndedAt)) + "\n\n")
 	content.WriteString("Delete this entry? (y/n)")
+
+	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
+	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)
+}
+
+func renderOverlapChooserDialog(m AppModel, styles tuiStyles, background string) string {
+	dialogWidth := min(72, max(40, m.width/2))
+	innerWidth := max(20, dialogWidth-6)
+
+	var content strings.Builder
+	content.WriteString(styles.title.Render("Choose Overlap") + "\n")
+	if rng := m.selectedCreateRange(); rng != nil {
+		content.WriteString(styles.muted.Render(fmt.Sprintf("%s-%s | %d overlapping entries", clock(rng.start), clock(rng.end), len(m.overlapChoiceIndices))) + "\n\n")
+	} else {
+		content.WriteString(styles.muted.Render(fmt.Sprintf("%d overlapping entries", len(m.overlapChoiceIndices))) + "\n\n")
+	}
+	for i, idx := range m.overlapChoiceIndices {
+		if idx < 0 || idx >= len(m.entries) {
+			continue
+		}
+		entry := m.entries[idx]
+		project := "unassigned"
+		if entry.ProjectName != "" {
+			project = entry.ProjectName
+		}
+		label := fmt.Sprintf("%s | %s | %s | %s", formatRange(entry.StartedAt, entry.EndedAt), entry.Operator, project, timelineBlockLabel(entry))
+		content.WriteString(renderDialogPickerLine(label, i == m.overlapChoiceCursor, true, styles, innerWidth) + "\n")
+	}
+	content.WriteString("\n" + styles.muted.Render("up/down move | enter edit | esc cancel"))
 
 	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
 	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)
