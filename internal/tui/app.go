@@ -17,6 +17,7 @@ import (
 
 	"github.com/akoskm/hrs/internal/db"
 	"github.com/akoskm/hrs/internal/model"
+	"github.com/oklog/ulid/v2"
 )
 
 type mode string
@@ -28,6 +29,7 @@ type timelineViewMode string
 
 type inspectorTab string
 type reportPreset string
+type inboxPreset string
 
 const (
 	modeTimeline       mode = "timeline"
@@ -38,8 +40,12 @@ const (
 	modeEntryEdit      mode = "entry-edit"
 	modeGapEntry       mode = "gap-entry"
 	modeOverlapChooser mode = "overlap-chooser"
+	modeInbox          mode = "inbox"
 	modeSearch         mode = "search"
 	modeDeleteConfirm  mode = "delete-confirm"
+
+	inboxPresetWeek  inboxPreset = "week"
+	inboxPresetMonth inboxPreset = "month"
 
 	projectDialogAssign projectDialogMode = "assign"
 	projectDialogManage projectDialogMode = "manage"
@@ -126,6 +132,14 @@ type AppModel struct {
 	confirmDeleteID      string
 	overlapChoiceCursor  int
 	overlapChoiceIndices []int
+	inboxPreset          inboxPreset
+	inboxCursor          int
+	inboxOffset          int
+	inboxItems           []inboxItem
+	inboxSearchActive    bool
+	inboxSearchQuery     string
+	inboxLastSearch      string
+	inboxPendingEntryID  string
 	reportPreset         reportPreset
 	reportProjectCursor  int
 	reportResult         db.ReportResult
@@ -134,6 +148,7 @@ type AppModel struct {
 	styles               tuiStyles
 	stylesWidth          int
 	mode                 mode
+	previousMode         mode
 	err                  error
 	quitting             bool
 }
@@ -148,6 +163,24 @@ type timelineRow struct {
 	Header     string
 	Entry      *model.TimeEntryDetail
 	EntryIndex int
+}
+
+type inboxItem struct {
+	Start      time.Time
+	End        time.Time
+	Operator   string
+	Cwd        string
+	GitBranch  string
+	MsgCount   int
+	TokenInput int
+	TokenOutput int
+	Texts      []string
+	Slots      []model.ActivitySlot
+}
+
+type inboxDayGroup struct {
+	Day   string
+	Items []inboxItem
 }
 
 func NewAppModel(ctx context.Context, store *db.Store) (AppModel, error) {
@@ -233,14 +266,29 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeSearch {
 			switch msg.String() {
 			case "esc":
-				m.mode = modeTimeline
 				m.searchQuery = ""
+				if m.previousMode == modeInbox {
+					m.inboxLastSearch = ""
+					m.buildInboxItems()
+					m.mode = modeInbox
+					m.previousMode = ""
+				} else {
+					m.mode = modeTimeline
+				}
 			case "enter":
-				m.lastSearch = strings.TrimSpace(m.searchQuery)
-				m.mode = modeTimeline
-				m.searchQuery = ""
-				if m.lastSearch != "" {
-					m.jumpToSearchMatch(m.cursor, 1, true)
+				if m.previousMode == modeInbox {
+					m.inboxLastSearch = strings.TrimSpace(m.searchQuery)
+					m.mode = modeInbox
+					m.previousMode = ""
+					m.searchQuery = ""
+					m.applyInboxSearch()
+				} else {
+					m.lastSearch = strings.TrimSpace(m.searchQuery)
+					m.mode = modeTimeline
+					m.searchQuery = ""
+					if m.lastSearch != "" {
+						m.jumpToSearchMatch(m.cursor, 1, true)
+					}
 				}
 			case "backspace":
 				if len(m.searchQuery) > 0 {
@@ -277,6 +325,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeDashboard {
 			return m.handleDashboardKey(msg)
 		}
+		if m.mode == modeInbox {
+			return m, m.handleInboxKey(msg)
+		}
 		switch msg.String() {
 		case "ctrl+c", "q":
 			m.quitting = true
@@ -291,8 +342,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selected = map[string]bool{}
 			}
 		case "/":
-			m.mode = modeSearch
-			m.searchQuery = ""
+			if m.mode == modeTimeline || m.mode == modeInbox {
+				m.previousMode = m.mode
+				m.mode = modeSearch
+				m.searchQuery = ""
+			}
 		case "t":
 			if m.timelineView == timelineViewDay {
 				m.jumpToToday()
@@ -302,6 +356,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "d":
 			if m.mode == modeTimeline {
 				m.openDashboard()
+			}
+		case "i":
+			if m.mode == modeTimeline || m.mode == modeInbox {
+				m.toggleInbox()
 			}
 		case "m":
 			if m.mode == modeTimeline {
@@ -698,6 +756,10 @@ func (m AppModel) View() string {
 		b.WriteString(renderReportView(m, styles))
 	} else if m.mode == modeDashboard {
 		b.WriteString(renderDashboardView(m, styles))
+	} else if m.mode == modeInbox {
+		inspectorWidth := dayInspectorWidth(m.width)
+		listWidth := max(40, m.width-inspectorWidth-2)
+		b.WriteString(renderInboxPane(m, styles, listWidth, dayPaneHeight(m.height)))
 	} else if m.timelineView == timelineViewMonth {
 		b.WriteString(renderMonthTimeline(m, styles))
 	} else if m.timelineView == timelineViewDay {
@@ -741,9 +803,17 @@ func (m AppModel) View() string {
 		}
 	}
 	body := b.String()
-	if showDayLayout {
+	if showDayLayout || m.mode == modeInbox {
 		inspectorWidth := dayInspectorWidth(m.width)
 		inspector := renderInspectorPane(m, styles, inspectorWidth, dayPaneHeight(m.height))
+		if m.mode == modeInbox {
+			selectedItem := m.selectedInboxItem()
+			if selectedItem != nil {
+				inspector = renderInboxInspector(*selectedItem, styles, inspectorWidth)
+			} else {
+				inspector = styles.inspectorBox.Width(max(20, inspectorWidth-2)).Render("No item selected")
+			}
+		}
 		body = lipgloss.JoinHorizontal(lipgloss.Top, body, inspector)
 	}
 	sections = append(sections, body)
@@ -1523,6 +1593,7 @@ func (m AppModel) unassignEntries(entryIDs []string) error {
 }
 
 func (m *AppModel) openProjectDialog(dialogMode projectDialogMode) {
+	m.previousMode = m.mode
 	m.mode = modeAssign
 	m.dialogMode = dialogMode
 	m.projectInput = ""
@@ -1853,7 +1924,21 @@ func (m *AppModel) openOverlapChooser(indices []int) {
 }
 
 func (m *AppModel) closeEntryEditDialog() {
-	m.mode = modeTimeline
+	if m.inboxPendingEntryID != "" && m.previousMode == modeInbox {
+		_ = m.store.SoftDeleteEntry(m.ctx, m.inboxPendingEntryID)
+		m.inboxPendingEntryID = ""
+		_ = m.reloadEntries()
+		m.buildInboxItems()
+		if m.inboxLastSearch != "" {
+			m.applyInboxSearch()
+		}
+	}
+	if m.previousMode != "" {
+		m.mode = m.previousMode
+	} else {
+		m.mode = modeTimeline
+	}
+	m.previousMode = ""
 	m.entryInput = ""
 	m.entryInputField = ""
 	m.entryInputCursor = 0
@@ -1985,6 +2070,10 @@ func (m *AppModel) handleEntryEditKey(msg tea.KeyMsg) tea.Cmd {
 		if !m.entryProjectOnly {
 			m.deleteWordEntryFieldInput()
 		}
+	case "ctrl+u":
+		if !m.entryProjectOnly {
+			m.clearEntryFieldInput()
+		}
 	case " ", "space":
 		if !m.entryProjectOnly && m.entryInputField == "description" {
 			m.entryInput, m.entryInputCursor = insertTextAtCursor(m.entryInput, m.entryInputCursor, " ")
@@ -2027,6 +2116,19 @@ func (m *AppModel) saveEntryEdit() {
 		return
 	}
 	m.focusEntryByID(entry.ID)
+	if m.inboxPendingEntryID != "" {
+		m.inboxPendingEntryID = ""
+		for i, item := range m.inboxItems {
+			if item.Start.Equal(entry.StartedAt) && item.Operator == entry.Operator {
+				m.inboxItems = append(m.inboxItems[:i], m.inboxItems[i+1:]...)
+				if m.inboxCursor >= len(m.inboxItems) {
+					m.inboxCursor = max(0, len(m.inboxItems)-1)
+				}
+				m.ensureInboxVisible()
+				break
+			}
+		}
+	}
 	m.closeEntryEditDialog()
 }
 
@@ -2145,7 +2247,18 @@ func (m *AppModel) selectedGapProject() *model.Project {
 }
 
 func (m *AppModel) closeProjectDialog() {
-	m.mode = modeTimeline
+	if m.inboxPendingEntryID != "" && m.previousMode == modeInbox {
+		_ = m.store.SoftDeleteEntry(m.ctx, m.inboxPendingEntryID)
+		m.inboxPendingEntryID = ""
+		_ = m.reloadEntries()
+		m.buildInboxItems()
+	}
+	if m.previousMode != "" {
+		m.mode = m.previousMode
+	} else {
+		m.mode = modeTimeline
+	}
+	m.previousMode = ""
 	m.dialogMode = projectDialogAssign
 	m.projectInput = ""
 	m.projectCursor = 0
@@ -2536,6 +2649,19 @@ func (m *AppModel) confirmProjectAssignment() {
 		return
 	}
 	m.selected = map[string]bool{}
+	if m.inboxPendingEntryID != "" {
+		m.inboxPendingEntryID = ""
+		for i, item := range m.inboxItems {
+			if item.Start.Equal(entry.StartedAt) && item.Operator == entry.Operator {
+				m.inboxItems = append(m.inboxItems[:i], m.inboxItems[i+1:]...)
+				if m.inboxCursor >= len(m.inboxItems) {
+					m.inboxCursor = max(0, len(m.inboxItems)-1)
+				}
+				m.ensureInboxVisible()
+				break
+			}
+		}
+	}
 	m.closeProjectDialog()
 }
 
@@ -4491,6 +4617,18 @@ func renderBaseStatusBar(m AppModel, width int) string {
 		text := fmt.Sprintf("dashboard %s | up/down day | left/right week | pgup/pgdn scroll | t today | esc back", m.displayedDay().Format("2006-01-02"))
 		return truncateForWidth(text, width)
 	}
+		if m.mode == modeInbox {
+			if m.inboxSearchActive {
+				text := fmt.Sprintf("inbox %s | search: %s | %d items | esc cancel | enter confirm", m.inboxPreset, m.inboxSearchQuery, len(m.inboxItems))
+				return truncateForWidth(text, width)
+			}
+			searchHint := ""
+			if m.inboxLastSearch != "" {
+				searchHint = " | / search n/N next"
+			}
+			text := fmt.Sprintf("inbox %s | %d items | j/k move | w/m scope | enter categorize | x dismiss | i close%s", m.inboxPreset, len(m.inboxItems), searchHint)
+			return truncateForWidth(text, width)
+		}
 	if m.mode == modeAssign {
 		return truncateForWidth(projectDialogHelp(m), width)
 	}
@@ -4626,6 +4764,426 @@ func (m *AppModel) openDashboard() {
 	m.mode = modeDashboard
 }
 
+func (m *AppModel) toggleInbox() {
+	if m.mode == modeInbox {
+		m.closeInbox()
+		return
+	}
+	m.openInbox()
+}
+
+func (m *AppModel) openInbox() {
+	if m.dayDate.IsZero() {
+		m.dayDate = dayStart(time.Now())
+	}
+	m.inboxPreset = inboxPresetWeek
+	m.buildInboxItems()
+	m.mode = modeInbox
+}
+
+func (m *AppModel) closeInbox() {
+	m.mode = modeTimeline
+	m.inboxItems = nil
+	m.inboxCursor = 0
+	m.inboxOffset = 0
+	m.inboxSearchActive = false
+	m.inboxSearchQuery = ""
+	m.inboxLastSearch = ""
+}
+
+func (m *AppModel) buildInboxItems() {
+	start, end := inboxRangeForPreset(m.inboxPreset, m.displayedDay())
+	slots, err := m.store.ListActivitySlotsInRange(m.ctx, start, end)
+	if err != nil {
+		m.err = err
+		m.inboxItems = nil
+		return
+	}
+	m.inboxItems = filterAndMergeInboxSlots(slots, m.allEntries)
+	if m.inboxCursor >= len(m.inboxItems) {
+		m.inboxCursor = max(0, len(m.inboxItems)-1)
+	}
+	m.ensureInboxVisible()
+}
+
+func inboxRangeForPreset(preset inboxPreset, anchor time.Time) (time.Time, time.Time) {
+	switch preset {
+	case inboxPresetMonth:
+		return reportMonthRange(anchor)
+	default:
+		return reportWeekRange(anchor)
+	}
+}
+
+func filterAndMergeInboxSlots(slots []model.ActivitySlot, entries []model.TimeEntryDetail) []inboxItem {
+	if len(slots) == 0 {
+		return nil
+	}
+	var uncovered []model.ActivitySlot
+	for _, slot := range slots {
+		slotStart := slot.SlotTime
+		slotEnd := slotStart.Add(15 * time.Minute)
+		covered := false
+		for _, entry := range entries {
+			entryEnd := timelineBlockEnd(entry)
+			if rangesOverlap(slotStart, slotEnd, entry.StartedAt, entryEnd) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			uncovered = append(uncovered, slot)
+		}
+	}
+	if len(uncovered) == 0 {
+		return nil
+	}
+	var items []inboxItem
+	current := inboxItem{
+		Start:     uncovered[0].SlotTime,
+		End:       uncovered[0].SlotTime.Add(15 * time.Minute),
+		Operator:  uncovered[0].Operator,
+		Cwd:       uncovered[0].Cwd,
+		GitBranch: uncovered[0].GitBranch,
+		Slots:     []model.ActivitySlot{uncovered[0]},
+	}
+	if uncovered[0].FirstText != "" {
+		current.Texts = append(current.Texts, uncovered[0].FirstText)
+	}
+	current.MsgCount = uncovered[0].MsgCount
+	current.TokenInput = uncovered[0].TokenInput
+	current.TokenOutput = uncovered[0].TokenOutput
+	for i := 1; i < len(uncovered); i++ {
+		slot := uncovered[i]
+		gap := slot.SlotTime.Sub(current.End)
+		if slot.Operator == current.Operator && gap <= 15*time.Minute {
+			current.End = slot.SlotTime.Add(15 * time.Minute)
+			current.Slots = append(current.Slots, slot)
+			if slot.FirstText != "" {
+				current.Texts = append(current.Texts, slot.FirstText)
+			}
+			current.MsgCount += slot.MsgCount
+			current.TokenInput += slot.TokenInput
+			current.TokenOutput += slot.TokenOutput
+			if current.Cwd == "" && slot.Cwd != "" {
+				current.Cwd = slot.Cwd
+			}
+			if current.GitBranch == "" && slot.GitBranch != "" {
+				current.GitBranch = slot.GitBranch
+			}
+			continue
+		}
+		items = append(items, current)
+		current = inboxItem{
+			Start:     slot.SlotTime,
+			End:       slot.SlotTime.Add(15 * time.Minute),
+			Operator:  slot.Operator,
+			Cwd:       slot.Cwd,
+			GitBranch: slot.GitBranch,
+			Slots:     []model.ActivitySlot{slot},
+		}
+		if slot.FirstText != "" {
+			current.Texts = append(current.Texts, slot.FirstText)
+		}
+		current.MsgCount = slot.MsgCount
+		current.TokenInput = slot.TokenInput
+		current.TokenOutput = slot.TokenOutput
+	}
+	items = append(items, current)
+	return items
+}
+
+func (m *AppModel) handleInboxKey(msg tea.KeyMsg) tea.Cmd {
+	if m.inboxSearchActive {
+		switch msg.String() {
+		case "ctrl+c", "q":
+			m.quitting = true
+			return tea.Quit
+		case "esc":
+			m.inboxSearchActive = false
+			m.inboxSearchQuery = ""
+			m.inboxLastSearch = ""
+			m.buildInboxItems()
+		case "enter":
+			m.inboxSearchActive = false
+			m.inboxLastSearch = strings.TrimSpace(m.inboxSearchQuery)
+			if len(m.inboxItems) > 0 && m.inboxCursor >= 0 && m.inboxCursor < len(m.inboxItems) {
+				return m.createEntryFromInboxItem()
+			}
+		case "backspace":
+			if len(m.inboxSearchQuery) > 0 {
+				m.inboxSearchQuery = m.inboxSearchQuery[:len(m.inboxSearchQuery)-1]
+			}
+			m.applyInboxLiveSearch()
+		case " ":
+			m.inboxSearchQuery += " "
+			m.applyInboxLiveSearch()
+		case "up":
+			if m.inboxCursor > 0 {
+				m.inboxCursor--
+			}
+			m.ensureInboxVisible()
+		case "down":
+			if m.inboxCursor < len(m.inboxItems)-1 {
+				m.inboxCursor++
+			}
+			m.ensureInboxVisible()
+		default:
+			if msg.Type == tea.KeyRunes {
+				m.inboxSearchQuery += string(msg.Runes)
+				m.applyInboxLiveSearch()
+			}
+		}
+		return nil
+	}
+
+	switch msg.String() {
+	case "ctrl+c", "q":
+		m.quitting = true
+		return tea.Quit
+	case "esc":
+		if m.inboxLastSearch != "" {
+			m.inboxLastSearch = ""
+			m.buildInboxItems()
+			m.ensureInboxVisible()
+		} else {
+			m.closeInbox()
+		}
+	case "i":
+		m.closeInbox()
+	case "up", "k":
+		if m.inboxCursor > 0 {
+			m.inboxCursor--
+		}
+		m.ensureInboxVisible()
+	case "down", "j":
+		if m.inboxCursor < len(m.inboxItems)-1 {
+			m.inboxCursor++
+		}
+		m.ensureInboxVisible()
+	case "home":
+		m.inboxCursor = 0
+		m.ensureInboxVisible()
+	case "end":
+		if len(m.inboxItems) > 0 {
+			m.inboxCursor = len(m.inboxItems) - 1
+		}
+		m.ensureInboxVisible()
+	case "pgup", "ctrl+b", "ctrl+u":
+		step := max(1, m.timelineRows())
+		m.inboxCursor = max(0, m.inboxCursor-step)
+		m.ensureInboxVisible()
+	case "pgdown", "ctrl+f", "ctrl+d":
+		step := max(1, m.timelineRows())
+		m.inboxCursor = min(len(m.inboxItems)-1, m.inboxCursor+step)
+		m.ensureInboxVisible()
+	case "w":
+		m.inboxPreset = inboxPresetWeek
+		m.inboxLastSearch = ""
+		m.inboxSearchQuery = ""
+		m.buildInboxItems()
+		m.ensureInboxVisible()
+	case "m":
+		m.inboxPreset = inboxPresetMonth
+		m.inboxLastSearch = ""
+		m.inboxSearchQuery = ""
+		m.buildInboxItems()
+		m.ensureInboxVisible()
+	case "n":
+		if m.inboxLastSearch != "" {
+			m.jumpToInboxSearchMatch(1)
+		}
+	case "N":
+		if m.inboxLastSearch != "" {
+			m.jumpToInboxSearchMatch(-1)
+		}
+	case "/":
+		m.inboxSearchActive = true
+		m.inboxSearchQuery = ""
+	case "enter":
+		if len(m.inboxItems) > 0 && m.inboxCursor >= 0 && m.inboxCursor < len(m.inboxItems) {
+			return m.createEntryFromInboxItem()
+		}
+	case "x":
+		if len(m.inboxItems) > 0 && m.inboxCursor >= 0 && m.inboxCursor < len(m.inboxItems) {
+			m.inboxItems = append(m.inboxItems[:m.inboxCursor], m.inboxItems[m.inboxCursor+1:]...)
+			if m.inboxCursor >= len(m.inboxItems) {
+				m.inboxCursor = max(0, len(m.inboxItems)-1)
+			}
+			m.ensureInboxVisible()
+		}
+	}
+	return nil
+}
+
+func (m *AppModel) applyInboxSearch() {
+	if m.inboxLastSearch == "" {
+		m.buildInboxItems()
+		return
+	}
+	query := strings.ToLower(strings.TrimSpace(m.inboxLastSearch))
+	if query == "" {
+		m.buildInboxItems()
+		return
+	}
+	m.buildInboxItems()
+	var filtered []inboxItem
+	for _, item := range m.inboxItems {
+		if inboxItemMatchesSearch(item, query) {
+			filtered = append(filtered, item)
+		}
+	}
+	m.inboxItems = filtered
+	m.inboxCursor = 0
+	m.inboxOffset = 0
+}
+
+func (m *AppModel) applyInboxLiveSearch() {
+	query := strings.ToLower(strings.TrimSpace(m.inboxSearchQuery))
+	m.buildInboxItems()
+	if query == "" {
+		m.inboxCursor = 0
+		m.inboxOffset = 0
+		return
+	}
+	var filtered []inboxItem
+	for _, item := range m.inboxItems {
+		if inboxItemMatchesSearch(item, query) {
+			filtered = append(filtered, item)
+		}
+	}
+	m.inboxItems = filtered
+	m.inboxCursor = 0
+	m.inboxOffset = 0
+}
+
+func inboxItemMatchesSearch(item inboxItem, query string) bool {
+	parts := []string{item.Operator, item.Cwd, item.GitBranch}
+	for _, text := range item.Texts {
+		parts = append(parts, text)
+	}
+	for _, part := range parts {
+		if strings.Contains(strings.ToLower(part), query) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *AppModel) jumpToInboxSearchMatch(direction int) {
+	if len(m.inboxItems) == 0 || m.inboxLastSearch == "" {
+		return
+	}
+	query := strings.ToLower(strings.TrimSpace(m.inboxLastSearch))
+	if query == "" {
+		return
+	}
+	index := m.inboxCursor + direction
+	for checked := 0; checked < len(m.inboxItems); checked++ {
+		if index < 0 {
+			index = len(m.inboxItems) - 1
+		}
+		if index >= len(m.inboxItems) {
+			index = 0
+		}
+		if inboxItemMatchesSearch(m.inboxItems[index], query) {
+			m.inboxCursor = index
+			m.ensureInboxVisible()
+			return
+		}
+		index += direction
+	}
+}
+
+func (m *AppModel) ensureInboxVisible() {
+	if len(m.inboxItems) == 0 {
+		m.inboxOffset = 0
+		return
+	}
+	visible := m.timelineRows()
+	if visible <= 0 {
+		m.inboxOffset = 0
+		return
+	}
+	groups := inboxDayGroups(m.inboxItems)
+	rows := inboxRowsData(groups)
+	selectedRow := 0
+	for i, row := range rows {
+		if !row.IsHeader && row.Index == m.inboxCursor {
+			selectedRow = i
+			break
+		}
+	}
+	if selectedRow < m.inboxOffset {
+		m.inboxOffset = selectedRow
+	}
+	if selectedRow >= m.inboxOffset+visible {
+		m.inboxOffset = selectedRow - visible + 1
+	}
+	maxOffset := max(0, len(rows)-visible)
+	if m.inboxOffset > maxOffset {
+		m.inboxOffset = maxOffset
+	}
+}
+
+func (m *AppModel) createEntryFromInboxItem() tea.Cmd {
+	if len(m.inboxItems) == 0 || m.inboxCursor < 0 || m.inboxCursor >= len(m.inboxItems) {
+		return nil
+	}
+	item := m.inboxItems[m.inboxCursor]
+	desc := m.inboxItemDescription(item)
+	projectID, err := m.store.DetectProjectIDByPath(m.ctx, item.Cwd)
+	if err != nil {
+		m.err = err
+		return nil
+	}
+	var input db.AgentEntryUpsertInput
+	if projectID != nil {
+		project, err := m.store.ProjectByID(m.ctx, *projectID)
+		if err != nil {
+			m.err = err
+			return nil
+		}
+		input.ProjectIdent = project.Name
+	}
+	input.Description = desc
+	input.StartedAt = item.Start
+	input.EndedAt = item.End
+	input.Operator = item.Operator
+	input.GitBranch = item.GitBranch
+	input.Cwd = item.Cwd
+	input.SourceRef = fmt.Sprintf("inbox-%s", ulid.Make().String())
+	entry, err := m.store.UpsertAgentEntry(m.ctx, input)
+	if err != nil {
+		m.err = err
+		return nil
+	}
+	if err := m.reloadEntries(); err != nil {
+		m.err = err
+		return nil
+	}
+	m.inboxPendingEntryID = entry.ID
+	m.previousMode = modeInbox
+	for i, e := range m.entries {
+		if e.ID == entry.ID {
+			m.cursor = i
+			break
+		}
+	}
+	m.openEntryEditDialog(false)
+	return nil
+}
+
+func (m AppModel) inboxItemDescription(item inboxItem) string {
+	if len(item.Texts) > 0 {
+		return item.Texts[0]
+	}
+	if item.Operator != "" && item.Operator != "human" {
+		return item.Operator + " session"
+	}
+	return "uncategorized activity"
+}
+
 func (m *AppModel) loadDashboardForDay(day time.Time) {
 	day = dayStart(day)
 	if day.IsZero() {
@@ -4697,6 +5255,144 @@ func renderDashboardView(m AppModel, styles tuiStyles) string {
 	gap := lipgloss.NewStyle().Width(1).Height(totalHeight).Render(" ")
 	row := lipgloss.JoinHorizontal(lipgloss.Top, left, gap, right)
 	return strings.TrimRight(lipgloss.JoinVertical(lipgloss.Left, styles.title.Render("Dashboard"), row), "\n")
+}
+
+func renderInboxPane(m AppModel, styles tuiStyles, width int, height int) string {
+	innerWidth := max(16, width-6)
+	content := renderInboxList(m, styles, innerWidth)
+	return styles.inspectorBox.Width(max(20, width-2)).Height(max(1, height-2)).Render(content)
+}
+
+func renderInboxList(m AppModel, styles tuiStyles, contentWidth int) string {
+	if contentWidth <= 0 {
+		contentWidth = timelineWidth(m.width)
+	}
+	var b strings.Builder
+	b.WriteString(styles.title.Render("Inbox") + "\n")
+	start, end := inboxRangeForPreset(m.inboxPreset, m.displayedDay())
+	rangeLabel := fmt.Sprintf("%s to %s", start.Format("2006-01-02"), end.Add(-time.Nanosecond).Format("2006-01-02"))
+	b.WriteString(styles.muted.Render(rangeLabel) + "\n")
+	if m.inboxSearchActive {
+		b.WriteString(styles.activePicker.Render("> "+m.inboxSearchQuery) + "\n")
+	} else if m.inboxLastSearch != "" {
+		b.WriteString(styles.muted.Render("search: "+m.inboxLastSearch) + "\n")
+	}
+	b.WriteString(styles.rule.Render(strings.Repeat("─", contentWidth)) + "\n")
+	if len(m.inboxItems) == 0 {
+		if m.inboxLastSearch != "" {
+			b.WriteString("No matching inbox items\n")
+		} else {
+			b.WriteString("No uncategorized activity for this " + string(m.inboxPreset) + "\n")
+		}
+		return b.String()
+	}
+	groups := inboxDayGroups(m.inboxItems)
+	rows := inboxRowsData(groups)
+	visible := m.timelineRows()
+	startRow, endRow := inboxVisibleRange(len(rows), m.inboxOffset, visible)
+	for i := startRow; i < endRow; i++ {
+		row := rows[i]
+		if row.IsHeader {
+			b.WriteString(styles.dateHeader.Render(renderDateHeader(row.Day, contentWidth)) + "\n")
+			continue
+		}
+		marker := "  "
+		if row.Index == m.inboxCursor {
+			marker = "> "
+		}
+		timeRange := formatRange(row.Item.Start, &row.Item.End)
+		desc := truncateForWidth(m.inboxItemDescription(row.Item), contentWidth-lipgloss.Width(marker)-lipgloss.Width(timeRange)-2)
+		line := marker + timeRange + " " + desc
+		if row.Index == m.inboxCursor {
+			line = styles.activePicker.Render(truncateForWidth(line, contentWidth))
+		} else {
+			line = truncateForWidth(line, contentWidth)
+		}
+		b.WriteString(line + "\n")
+	}
+	if len(rows) > endRow {
+		remaining := len(rows) - endRow
+		b.WriteString(styles.muted.Render(truncateForWidth("... "+strconv.Itoa(remaining)+" more", contentWidth)) + "\n")
+	}
+	return b.String()
+}
+
+type inboxRow struct {
+	IsHeader bool
+	Day      string
+	Item     inboxItem
+	Index    int
+}
+
+func inboxRowsData(groups []inboxDayGroup) []inboxRow {
+	var rows []inboxRow
+	globalIdx := 0
+	for _, group := range groups {
+		rows = append(rows, inboxRow{IsHeader: true, Day: group.Day})
+		for _, item := range group.Items {
+			rows = append(rows, inboxRow{Item: item, Index: globalIdx})
+			globalIdx++
+		}
+	}
+	return rows
+}
+
+func inboxVisibleRange(total, offset, visible int) (int, int) {
+	start := min(offset, max(0, total))
+	end := min(total, start+visible)
+	return start, end
+}
+
+func inboxDayGroups(items []inboxItem) []inboxDayGroup {
+	if len(items) == 0 {
+		return nil
+	}
+	var groups []inboxDayGroup
+	currentDay := dayKey(items[0].Start)
+	currentGroup := inboxDayGroup{Day: currentDay}
+	for _, item := range items {
+		d := dayKey(item.Start)
+		if d != currentDay {
+			groups = append(groups, currentGroup)
+			currentDay = d
+			currentGroup = inboxDayGroup{Day: currentDay}
+		}
+		currentGroup.Items = append(currentGroup.Items, item)
+	}
+	groups = append(groups, currentGroup)
+	return groups
+}
+
+func (m AppModel) selectedInboxItem() *inboxItem {
+	if m.inboxCursor < 0 || m.inboxCursor >= len(m.inboxItems) {
+		return nil
+	}
+	return &m.inboxItems[m.inboxCursor]
+}
+
+func renderInboxInspector(item inboxItem, styles tuiStyles, width int) string {
+	innerWidth := max(20, width-4)
+	var b strings.Builder
+	b.WriteString(styles.muted.Render("Activity") + "\n")
+	b.WriteString(formatRange(item.Start, &item.End) + "\n")
+	if item.Operator != "" {
+		b.WriteString(truncateForWidth("Operator "+item.Operator, innerWidth) + "\n")
+	}
+	if item.Cwd != "" {
+		b.WriteString(truncateForWidth("Folder "+item.Cwd, innerWidth) + "\n")
+	}
+	if item.GitBranch != "" {
+		b.WriteString(truncateForWidth("Branch "+item.GitBranch, innerWidth) + "\n")
+	}
+	tokenLine := fmt.Sprintf("Messages %d | Tokens %s in / %s out", item.MsgCount, formatTokenCount(item.TokenInput), formatTokenCount(item.TokenOutput))
+	b.WriteString(truncateForWidth(tokenLine, innerWidth) + "\n\n")
+	if len(item.Texts) > 0 {
+		b.WriteString(styles.muted.Render("Prompts") + "\n")
+		for _, text := range item.Texts {
+			b.WriteString(truncateForWidth(text, innerWidth) + "\n")
+		}
+	}
+	return styles.inspectorBox.Width(max(20, width-2)).Render(strings.TrimRight(b.String(), "\n"))
 }
 
 func dashboardColumnWidths(contentWidth int) (mainWidth int, sideWidth int) {

@@ -194,6 +194,25 @@ type TimeOffDayDetail struct {
 	TimeOffType string  `json:"time_off_type" db:"time_off_type"`
 }
 
+type TimeOffAllowance struct {
+	ID            string    `json:"id"               db:"id"`
+	ProjectID     string    `json:"project_id"       db:"project_id"`
+	TimeOffTypeID string    `json:"time_off_type_id" db:"time_off_type_id"`
+	Year          int       `json:"year"             db:"year"`
+	AllowedDays   int       `json:"allowed_days"     db:"allowed_days"`
+	CreatedAt     time.Time `json:"created_at"       db:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"       db:"updated_at"`
+}
+
+type TimeOffAllowanceSummary struct {
+	TimeOffAllowance
+	ProjectName   string  `json:"project_name"    db:"project_name"`
+	ProjectCode   *string `json:"project_code"    db:"project_code"`
+	TimeOffType   string  `json:"time_off_type"   db:"time_off_type"`
+	UsedDays      int     `json:"used_days"       db:"used_days"`
+	RemainingDays int     `json:"remaining_days"  db:"remaining_days"`
+}
+
 // ── Aggregation Types ───────────────────────────────────────
 
 type ProjectSummary struct {

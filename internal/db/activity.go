@@ -35,16 +35,13 @@ func (s *Store) UpsertActivitySlots(ctx context.Context, slots []model.ActivityS
 	return nil
 }
 
-func (s *Store) ListActivitySlotsForDay(ctx context.Context, day time.Time) ([]model.ActivitySlot, error) {
-	local := day.In(time.Local)
-	start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local).UTC()
-	end := start.Add(24 * time.Hour)
+func (s *Store) ListActivitySlotsInRange(ctx context.Context, start, end time.Time) ([]model.ActivitySlot, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT slot_time, operator, cwd, msg_count, first_text, git_branch, user_texts, token_input, token_output
 		FROM activity_slots
 		WHERE slot_time >= ? AND slot_time < ?
 		ORDER BY slot_time
-	`, start.Format(timeFormat), end.Format(timeFormat))
+	`, start.UTC().Format(timeFormat), end.UTC().Format(timeFormat))
 	if err != nil {
 		return nil, err
 	}
@@ -77,4 +74,11 @@ func (s *Store) ListActivitySlotsForDay(ctx context.Context, day time.Time) ([]m
 		slots = append(slots, slot)
 	}
 	return slots, rows.Err()
+}
+
+func (s *Store) ListActivitySlotsForDay(ctx context.Context, day time.Time) ([]model.ActivitySlot, error) {
+	local := day.In(time.Local)
+	start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local).UTC()
+	end := start.Add(24 * time.Hour)
+	return s.ListActivitySlotsInRange(ctx, start, end)
 }

@@ -103,6 +103,15 @@ func (s *Store) TimeOffTypeByID(ctx context.Context, id string) (model.TimeOffTy
 	return scanTimeOffType(row)
 }
 
+func (s *Store) TimeOffTypeByProjectAndName(ctx context.Context, projectID, name string) (model.TimeOffType, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, project_id, name, is_system, archived_at, created_at, updated_at
+		FROM time_off_types
+		WHERE project_id = ? AND name = ? AND archived_at IS NULL
+	`, projectID, strings.TrimSpace(name))
+	return scanTimeOffType(row)
+}
+
 func (s *Store) UpsertTimeOffDay(ctx context.Context, projectID, timeOffTypeID, day string) (model.TimeOffDay, error) {
 	now := nowUTC().Format(timeFormat)
 	row := s.db.QueryRowContext(ctx, `SELECT id FROM time_off_days WHERE project_id = ? AND day = ?`, projectID, day)
@@ -222,6 +231,166 @@ func scanTimeOffDayDetail(row timeOffDayScanner) (model.TimeOffDayDetail, error)
 	item.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
 	if err != nil {
 		return model.TimeOffDayDetail{}, err
+	}
+	return item, nil
+}
+
+type timeOffAllowanceScanner interface {
+	Scan(dest ...any) error
+}
+
+func (s *Store) UpsertTimeOffAllowance(ctx context.Context, projectID, timeOffTypeID string, year int, allowedDays int) (model.TimeOffAllowance, error) {
+	now := nowUTC().Format(timeFormat)
+	row := s.db.QueryRowContext(ctx, `SELECT id FROM time_off_allowances WHERE project_id = ? AND time_off_type_id = ? AND year = ?`, projectID, timeOffTypeID, year)
+	var id string
+	err := row.Scan(&id)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			return model.TimeOffAllowance{}, err
+		}
+		id = ulid.Make().String()
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO time_off_allowances (id, project_id, time_off_type_id, year, allowed_days, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, id, projectID, timeOffTypeID, year, allowedDays, now, now); err != nil {
+			return model.TimeOffAllowance{}, err
+		}
+		return s.TimeOffAllowanceByID(ctx, id)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE time_off_allowances
+		SET allowed_days = ?, updated_at = ?
+		WHERE id = ?
+	`, allowedDays, now, id); err != nil {
+		return model.TimeOffAllowance{}, err
+	}
+	return s.TimeOffAllowanceByID(ctx, id)
+}
+
+func (s *Store) DeleteTimeOffAllowance(ctx context.Context, projectID, timeOffTypeID string, year int) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM time_off_allowances WHERE project_id = ? AND time_off_type_id = ? AND year = ?`, projectID, timeOffTypeID, year)
+	return err
+}
+
+func (s *Store) TimeOffAllowanceByID(ctx context.Context, id string) (model.TimeOffAllowance, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, project_id, time_off_type_id, year, allowed_days, created_at, updated_at
+		FROM time_off_allowances
+		WHERE id = ?
+	`, id)
+	return scanTimeOffAllowance(row)
+}
+
+func (s *Store) ListTimeOffAllowancesByProject(ctx context.Context, projectID string, year *int) ([]model.TimeOffAllowance, error) {
+	query := `
+		SELECT id, project_id, time_off_type_id, year, allowed_days, created_at, updated_at
+		FROM time_off_allowances
+		WHERE project_id = ?`
+	args := []any{projectID}
+	if year != nil {
+		query += ` AND year = ?`
+		args = append(args, *year)
+	}
+	query += ` ORDER BY year, time_off_type_id`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []model.TimeOffAllowance
+	for rows.Next() {
+		item, err := scanTimeOffAllowance(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) ListTimeOffAllowanceSummaries(ctx context.Context, year int) ([]model.TimeOffAllowanceSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			t.id, t.project_id, t.time_off_type_id, t.year, t.allowed_days, t.created_at, t.updated_at,
+			p.name, p.code, tot.name,
+			COUNT(tod.id) AS used_days
+		FROM time_off_allowances t
+		JOIN projects p ON p.id = t.project_id
+		JOIN time_off_types tot ON tot.id = t.time_off_type_id
+		LEFT JOIN time_off_days tod
+			ON tod.project_id = t.project_id
+			AND tod.time_off_type_id = t.time_off_type_id
+			AND CAST(substr(tod.day, 1, 4) AS INTEGER) = t.year
+		WHERE t.year = ?
+		GROUP BY t.id, t.project_id, t.time_off_type_id, t.year, t.allowed_days, t.created_at, t.updated_at, p.name, p.code, tot.name
+		ORDER BY p.name, tot.name
+	`, year)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []model.TimeOffAllowanceSummary
+	for rows.Next() {
+		item, err := scanTimeOffAllowanceSummary(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func scanTimeOffAllowance(row timeOffAllowanceScanner) (model.TimeOffAllowance, error) {
+	var item model.TimeOffAllowance
+	var createdAt string
+	var updatedAt string
+	if err := row.Scan(&item.ID, &item.ProjectID, &item.TimeOffTypeID, &item.Year, &item.AllowedDays, &createdAt, &updatedAt); err != nil {
+		return model.TimeOffAllowance{}, err
+	}
+	var err error
+	item.CreatedAt, err = parseTime(createdAt)
+	if err != nil {
+		return model.TimeOffAllowance{}, err
+	}
+	item.UpdatedAt, err = parseTime(updatedAt)
+	if err != nil {
+		return model.TimeOffAllowance{}, err
+	}
+	return item, nil
+}
+
+func scanTimeOffAllowanceSummary(row timeOffAllowanceScanner) (model.TimeOffAllowanceSummary, error) {
+	var item model.TimeOffAllowanceSummary
+	var projectCode sql.NullString
+	var createdAt string
+	var updatedAt string
+	if err := row.Scan(
+		&item.ID,
+		&item.ProjectID,
+		&item.TimeOffTypeID,
+		&item.Year,
+		&item.AllowedDays,
+		&createdAt,
+		&updatedAt,
+		&item.ProjectName,
+		&projectCode,
+		&item.TimeOffType,
+		&item.UsedDays,
+	); err != nil {
+		return model.TimeOffAllowanceSummary{}, err
+	}
+	item.ProjectCode = scanNullString(projectCode)
+	item.RemainingDays = item.AllowedDays - item.UsedDays
+	var err error
+	item.CreatedAt, err = parseTime(createdAt)
+	if err != nil {
+		return model.TimeOffAllowanceSummary{}, err
+	}
+	item.UpdatedAt, err = parseTime(updatedAt)
+	if err != nil {
+		return model.TimeOffAllowanceSummary{}, err
 	}
 	return item, nil
 }
