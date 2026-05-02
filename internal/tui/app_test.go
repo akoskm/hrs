@@ -7567,3 +7567,149 @@ func TestInboxFilterCursorPreservedAfterClosingEditDialog(t *testing.T) {
 		t.Fatalf("item at cursor = %q, want deploy auth", app.inboxItems[app.inboxCursor].Texts[0])
 	}
 }
+
+func TestInboxCursorWithArrowKeysWhileSearchActive(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	slots := []model.ActivitySlot{
+		{SlotTime: time.Date(2026, 4, 7, 9, 0, 0, 0, time.Local), Operator: "claude-code", MsgCount: 1, FirstText: "debug auth"},
+		{SlotTime: time.Date(2026, 4, 7, 10, 0, 0, 0, time.Local), Operator: "codex", MsgCount: 1, FirstText: "fix billing"},
+		{SlotTime: time.Date(2026, 4, 7, 11, 0, 0, 0, time.Local), Operator: "claude-code", MsgCount: 1, FirstText: "deploy auth"},
+	}
+	if err := store.UpsertActivitySlots(ctx, slots); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.dayDate = dayStart(time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local))
+	m.openInbox()
+
+	// open search, type "auth"
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("auth")})
+	app = updated.(AppModel)
+
+	if len(app.inboxItems) != 2 {
+		t.Fatalf("filtered items = %d, want 2", len(app.inboxItems))
+	}
+	if app.inboxCursor != 0 {
+		t.Fatalf("cursor after search = %d, want 0", app.inboxCursor)
+	}
+
+	// navigate down with arrow key while search is still active
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = updated.(AppModel)
+	if app.inboxCursor != 1 {
+		t.Fatalf("cursor after down = %d, want 1", app.inboxCursor)
+	}
+	if !app.inboxSearchActive {
+		t.Fatalf("search should still be active")
+	}
+
+	// press enter to open dialog on second item
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.mode != modeEntryEdit {
+		t.Fatalf("mode after enter = %q, want entry-edit", app.mode)
+	}
+
+	// press esc to cancel
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	app = updated.(AppModel)
+
+	if app.mode != modeInbox {
+		t.Fatalf("mode after cancel = %q, want inbox", app.mode)
+	}
+	if len(app.inboxItems) != 2 {
+		t.Fatalf("filtered items after cancel = %d, want 2", len(app.inboxItems))
+	}
+	if app.inboxCursor != 1 {
+		t.Fatalf("cursor after cancel = %d, want 1, got item %q", app.inboxCursor, app.inboxItems[app.inboxCursor].Texts[0])
+	}
+	if app.inboxItems[app.inboxCursor].Texts[0] != "deploy auth" {
+		t.Fatalf("item at cursor = %q, want deploy auth", app.inboxItems[app.inboxCursor].Texts[0])
+	}
+}
+
+func TestInboxCursorPreservedAfterDismissWithOkaySearch(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	slots := []model.ActivitySlot{
+		{SlotTime: time.Date(2026, 4, 7, 9, 0, 0, 0, time.Local), Operator: "claude-code", MsgCount: 1, FirstText: "debug okay"},
+		{SlotTime: time.Date(2026, 4, 7, 10, 0, 0, 0, time.Local), Operator: "codex", MsgCount: 1, FirstText: "fix billing"},
+		{SlotTime: time.Date(2026, 4, 7, 11, 0, 0, 0, time.Local), Operator: "claude-code", MsgCount: 1, FirstText: "deploy okay"},
+	}
+	if err := store.UpsertActivitySlots(ctx, slots); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.dayDate = dayStart(time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local))
+	m.openInbox()
+
+	// filter to "okay" while search active
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	app := updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("okay")})
+	app = updated.(AppModel)
+
+	if len(app.inboxItems) != 2 {
+		t.Fatalf("filtered items = %d, want 2", len(app.inboxItems))
+	}
+	if app.inboxCursor != 0 {
+		t.Fatalf("cursor after search = %d, want 0", app.inboxCursor)
+	}
+
+	// navigate down to second item while search still active
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = updated.(AppModel)
+	if app.inboxCursor != 1 {
+		t.Fatalf("cursor after down = %d, want 1", app.inboxCursor)
+	}
+	if !app.inboxSearchActive {
+		t.Fatalf("search should still be active")
+	}
+
+	// press enter to open dialog on second item
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.mode != modeEntryEdit {
+		t.Fatalf("mode after enter = %q, want entry-edit", app.mode)
+	}
+
+	// press esc to dismiss/cancel
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	app = updated.(AppModel)
+
+	if app.mode != modeInbox {
+		t.Fatalf("mode after cancel = %q, want inbox", app.mode)
+	}
+	if len(app.inboxItems) != 2 {
+		t.Fatalf("filtered items after cancel = %d, want 2", len(app.inboxItems))
+	}
+	if app.inboxCursor != 1 {
+		t.Fatalf("cursor after cancel = %d, want 1, got item %q", app.inboxCursor, app.inboxItems[app.inboxCursor].Texts[0])
+	}
+	if app.inboxItems[app.inboxCursor].Texts[0] != "deploy okay" {
+		t.Fatalf("item at cursor = %q, want deploy okay", app.inboxItems[app.inboxCursor].Texts[0])
+	}
+}
