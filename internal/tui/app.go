@@ -272,6 +272,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.previousMode == modeInbox {
 					m.inboxLastSearch = ""
 					m.buildInboxItems()
+					m.ensureInboxVisible()
 					m.mode = modeInbox
 					m.previousMode = ""
 				} else {
@@ -1925,14 +1926,21 @@ func (m *AppModel) openOverlapChooser(indices []int) {
 	m.err = nil
 }
 
-func (m *AppModel) closeEntryEditDialog() {
-	if m.inboxPendingEntryID != "" && m.previousMode == modeInbox {
-		_ = m.store.SoftDeleteEntry(m.ctx, m.inboxPendingEntryID)
-		m.inboxPendingEntryID = ""
-		_ = m.reloadEntries()
-		m.applyInboxFilter(m.inboxLastSearch)
-		m.restoreInboxCursorAfterFilter()
+func (m *AppModel) cleanupInboxPendingEntry() {
+	if m.inboxPendingEntryID == "" || m.previousMode != modeInbox {
+		return
 	}
+	_ = m.store.SoftDeleteEntry(m.ctx, m.inboxPendingEntryID)
+	m.inboxPendingEntryID = ""
+	m.inboxPendingItemStart = time.Time{}
+	m.inboxPendingItemOperator = ""
+	_ = m.reloadEntries()
+	m.applyInboxFilter(m.inboxLastSearch)
+	m.restoreInboxCursorAfterFilter()
+}
+
+func (m *AppModel) closeEntryEditDialog() {
+	m.cleanupInboxPendingEntry()
 	if m.previousMode != "" {
 		m.mode = m.previousMode
 	} else {
@@ -2249,13 +2257,7 @@ func (m *AppModel) selectedGapProject() *model.Project {
 }
 
 func (m *AppModel) closeProjectDialog() {
-	if m.inboxPendingEntryID != "" && m.previousMode == modeInbox {
-		_ = m.store.SoftDeleteEntry(m.ctx, m.inboxPendingEntryID)
-		m.inboxPendingEntryID = ""
-		_ = m.reloadEntries()
-		m.applyInboxFilter(m.inboxLastSearch)
-		m.restoreInboxCursorAfterFilter()
-	}
+	m.cleanupInboxPendingEntry()
 	if m.previousMode != "" {
 		m.mode = m.previousMode
 	} else {
@@ -4783,6 +4785,7 @@ func (m *AppModel) openInbox() {
 	}
 	m.inboxPreset = inboxPresetWeek
 	m.buildInboxItems()
+	m.ensureInboxVisible()
 	m.mode = modeInbox
 }
 
@@ -4808,7 +4811,6 @@ func (m *AppModel) buildInboxItems() {
 	if m.inboxCursor >= len(m.inboxItems) {
 		m.inboxCursor = max(0, len(m.inboxItems)-1)
 	}
-	m.ensureInboxVisible()
 }
 
 func inboxRangeForPreset(preset inboxPreset, anchor time.Time) (time.Time, time.Time) {
@@ -4909,6 +4911,7 @@ func (m *AppModel) handleInboxKey(msg tea.KeyMsg) tea.Cmd {
 			m.inboxSearchQuery = ""
 			m.inboxLastSearch = ""
 			m.buildInboxItems()
+			m.ensureInboxVisible()
 		case "enter":
 			m.inboxSearchActive = false
 			m.inboxLastSearch = strings.TrimSpace(m.inboxSearchQuery)
