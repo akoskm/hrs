@@ -2950,7 +2950,7 @@ func TestReportViewCanSwitchRangePresets(t *testing.T) {
 	monthStart, monthEnd := reportMonthRange(now)
 	yearStart, yearEnd := reportYearRange(now)
 
-	weekEntryStart := time.Date(weekStart.Year(), weekStart.Month(), weekStart.Day(), 9, 0, 0, 0, time.Local)
+	weekEntryStart := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, time.Local)
 	monthOnlyStart := firstDayOutsideRange(monthStart, monthEnd, weekStart, weekEnd)
 	yearOnlyStart := firstDayOutsideRange(yearStart, yearEnd, monthStart, monthEnd)
 
