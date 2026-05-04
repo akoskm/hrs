@@ -3477,15 +3477,17 @@ func renderDayTimelinePane(m AppModel, styles tuiStyles, width int, height int) 
 	innerWidth := max(16, width-6)
 	timelineModel := m
 	timelineModel.width = innerWidth
-	timelineModel.height = max(10, height-1)
+	timelineModel.height = max(10, height-2)
 	body := renderDayTimeline(timelineModel, styles)
 	scrollbar := renderDayScrollbar(timelineModel, styles)
-	content := lipgloss.JoinHorizontal(lipgloss.Top, body, scrollbar)
+	title := styles.muted.Render("Day")
+	content := title + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, body, scrollbar)
 	return styles.inspectorBox.Width(max(20, width-2)).Height(max(1, height-2)).Render(content)
 }
 
 func renderInspectorPane(m AppModel, styles tuiStyles, width int, height int) string {
 	innerWidth := max(20, width-4)
+	title := styles.muted.Render("Inspector")
 	tabs := renderInspectorTabs(m, styles)
 	bodyHeight := inspectorBodyHeight(height)
 	bodyWidth := innerWidth
@@ -3500,12 +3502,12 @@ func renderInspectorPane(m AppModel, styles tuiStyles, width int, height int) st
 	if scrollbar != "" {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, body, scrollbar)
 	}
-	content := tabs + "\n" + body
+	content := title + "\n" + tabs + "\n" + body
 	return styles.inspectorBox.Width(max(20, width-2)).Height(max(1, height-2)).Render(content)
 }
 
 func inspectorBodyHeight(height int) int {
-	return max(1, height-3)
+	return max(1, height-4)
 }
 
 func dayInspectorWidth(width int) int {
