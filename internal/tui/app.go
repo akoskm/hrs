@@ -836,6 +836,10 @@ func (m AppModel) View() string {
 		sections = append(sections, statusBar)
 	}
 	view := strings.Join(sections, "\n")
+	isDialogOpen := m.mode == modeAssign || m.mode == modeGapEntry || m.mode == modeTimeOff || m.mode == modeEntryEdit || m.mode == modeOverlapChooser || m.mode == modeDeleteConfirm
+	if isDialogOpen {
+		view = styles.dimmed.Render(view)
+	}
 	if m.mode == modeAssign {
 		return renderProjectDialog(m, styles, view)
 	}
@@ -3079,6 +3083,7 @@ type tuiStyles struct {
 	inspectorBox  lipgloss.Style
 	inspectorTab  lipgloss.Style
 	activeTab     lipgloss.Style
+	dimmed        lipgloss.Style
 }
 
 func newStyles(width int) tuiStyles {
@@ -3108,6 +3113,7 @@ func newStyles(width int) tuiStyles {
 		inspectorBox:  lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1),
 		inspectorTab:  lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Padding(0, 1),
 		activeTab:     lipgloss.NewStyle().Reverse(true).Bold(true).Padding(0, 1),
+		dimmed:        lipgloss.NewStyle().Faint(true),
 	}
 }
 
@@ -6246,7 +6252,7 @@ func renderProjectDialog(m AppModel, styles tuiStyles, background string) string
 	content.WriteString("\n" + styles.muted.Render(projectDialogHelp(m)))
 
 	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
-	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)
+	return overlayCenteredDialog(background, dialog, timelineWidth(m.width), dialogHeight(m.height, background, dialog))
 }
 
 func renderTimeOffDialog(m AppModel, styles tuiStyles, background string) string {
@@ -6304,7 +6310,7 @@ func renderTimeOffDialog(m AppModel, styles tuiStyles, background string) string
 	}
 
 	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
-	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)
+	return overlayCenteredDialog(background, dialog, timelineWidth(m.width), dialogHeight(m.height, background, dialog))
 }
 
 func renderGapEntryDialog(m AppModel, styles tuiStyles, background string) string {
@@ -6348,7 +6354,7 @@ func renderGapEntryDialog(m AppModel, styles tuiStyles, background string) strin
 	content.WriteString("\n\n" + styles.muted.Render("tab focus | enter create | esc cancel"))
 
 	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
-	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)
+	return overlayCenteredDialog(background, dialog, timelineWidth(m.width), dialogHeight(m.height, background, dialog))
 }
 
 func renderEntryEditDialog(m AppModel, styles tuiStyles, background string) string {
@@ -6388,7 +6394,7 @@ func renderEntryEditDialog(m AppModel, styles tuiStyles, background string) stri
 	content.WriteString("\n\n" + styles.muted.Render(entryEditHelp(m)))
 
 	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
-	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)
+	return overlayCenteredDialog(background, dialog, timelineWidth(m.width), dialogHeight(m.height, background, dialog))
 }
 
 func renderDeleteConfirmDialog(m AppModel, styles tuiStyles, background string) string {
@@ -6411,7 +6417,7 @@ func renderDeleteConfirmDialog(m AppModel, styles tuiStyles, background string) 
 	content.WriteString("Delete this entry? (y/n)")
 
 	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
-	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)
+	return overlayCenteredDialog(background, dialog, timelineWidth(m.width), dialogHeight(m.height, background, dialog))
 }
 
 func renderOverlapChooserDialog(m AppModel, styles tuiStyles, background string) string {
@@ -6440,7 +6446,7 @@ func renderOverlapChooserDialog(m AppModel, styles tuiStyles, background string)
 	content.WriteString("\n" + styles.muted.Render("up/down move | enter edit | esc cancel"))
 
 	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
-	return lipgloss.Place(timelineWidth(m.width), dialogHeight(m.height, background, dialog), lipgloss.Center, lipgloss.Center, dialog)
+	return overlayCenteredDialog(background, dialog, timelineWidth(m.width), dialogHeight(m.height, background, dialog))
 }
 
 func timeOffDialogTitle(m AppModel) string {
@@ -6682,6 +6688,45 @@ func dialogHeight(height int, background, dialog string) int {
 		return height
 	}
 	return max(len(strings.Split(background, "\n")), len(strings.Split(dialog, "\n")))
+}
+
+func overlayCenteredDialog(background, dialog string, width, height int) string {
+	bgLines := strings.Split(background, "\n")
+	dialogLines := strings.Split(dialog, "\n")
+	dialogWidth := lipgloss.Width(dialog)
+	dialogHeight := len(dialogLines)
+	startY := (height - dialogHeight) / 2
+	startX := (width - dialogWidth) / 2
+	if startX < 0 {
+		startX = 0
+	}
+	if startY < 0 {
+		startY = 0
+	}
+	for len(bgLines) < height {
+		bgLines = append(bgLines, "")
+	}
+	result := make([]string, height)
+	for y := 0; y < height; y++ {
+		if y < startY || y >= startY+dialogHeight {
+			result[y] = bgLines[y]
+			continue
+		}
+		dLine := dialogLines[y-startY]
+		bgLine := bgLines[y]
+		left := truncateForWidth(bgLine, startX)
+		leftWidth := lipgloss.Width(left)
+		if leftWidth < startX {
+			left += strings.Repeat(" ", startX-leftWidth)
+		}
+		rightWidth := width - startX - lipgloss.Width(dLine)
+		right := ""
+		if rightWidth > 0 {
+			right = strings.Repeat(" ", rightWidth)
+		}
+		result[y] = left + dLine + right
+	}
+	return strings.Join(result, "\n")
 }
 
 func renderPickerLine(label string, index, current int, styles tuiStyles, width int) string {
