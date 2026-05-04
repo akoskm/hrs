@@ -837,9 +837,6 @@ func (m AppModel) View() string {
 		sections = append(sections, statusBar)
 	}
 	view := strings.Join(sections, "\n")
-	if isDialogOpen {
-		view = styles.dimmed.Render(view)
-	}
 	if m.mode == modeAssign {
 		return renderProjectDialog(m, styles, view)
 	}
@@ -3083,7 +3080,6 @@ type tuiStyles struct {
 	inspectorBox  lipgloss.Style
 	inspectorTab  lipgloss.Style
 	activeTab     lipgloss.Style
-	dimmed        lipgloss.Style
 }
 
 func newStyles(width int) tuiStyles {
@@ -3113,7 +3109,6 @@ func newStyles(width int) tuiStyles {
 		inspectorBox:  lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1),
 		inspectorTab:  lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Padding(0, 1),
 		activeTab:     lipgloss.NewStyle().Reverse(true).Bold(true).Padding(0, 1),
-		dimmed:        lipgloss.NewStyle().Faint(true),
 	}
 }
 
