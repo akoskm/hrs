@@ -827,11 +827,7 @@ func (m AppModel) View() string {
 	if statusWidth == 0 {
 		statusWidth = timelineWidth(m.width)
 	}
-	statusText := renderStatusBar(m, statusWidth)
-	if lipgloss.Width(statusText) < statusWidth {
-		statusText += strings.Repeat(" ", statusWidth-lipgloss.Width(statusText))
-	}
-	statusBar := styles.statusBar.Render(statusText)
+	statusBar := renderStatusBar(m, styles, statusWidth)
 	if m.mode == modeReport {
 		content := strings.Join(sections, "\n")
 		content = padViewToHeight(content, max(0, m.height-lipgloss.Height(statusBar)))
@@ -3066,6 +3062,10 @@ type tuiStyles struct {
 	dateHeader    lipgloss.Style
 	muted         lipgloss.Style
 	statusBar     lipgloss.Style
+	statusKey     lipgloss.Style
+	statusSep     lipgloss.Style
+	statusText    lipgloss.Style
+	modeBadge     lipgloss.Style
 	tableHeader   lipgloss.Style
 	baseRow       lipgloss.Style
 	activeRow     lipgloss.Style
@@ -3090,7 +3090,11 @@ func newStyles(width int) tuiStyles {
 		rule:          lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
 		dateHeader:    lipgloss.NewStyle().Bold(true),
 		muted:         lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
-		statusBar:     lipgloss.NewStyle().Reverse(true),
+		statusBar:     lipgloss.NewStyle().Background(lipgloss.Color("8")).Foreground(lipgloss.Color("15")),
+		statusKey:     lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
+		statusSep:     lipgloss.NewStyle().Foreground(lipgloss.Color("7")),
+		statusText:    lipgloss.NewStyle().Foreground(lipgloss.Color("15")),
+		modeBadge:     lipgloss.NewStyle().Background(lipgloss.Color("4")).Foreground(lipgloss.Color("15")).Bold(true).Padding(0, 1),
 		tableHeader:   lipgloss.NewStyle().Bold(true),
 		baseRow:       lipgloss.NewStyle(),
 		activeRow:     lipgloss.NewStyle().Background(lipgloss.Color("236")),
@@ -4609,56 +4613,201 @@ func timelineBlockLabel(entry model.TimeEntryDetail) string {
 	return strings.Join(parts, " ")
 }
 
-func renderStatusBar(m AppModel, width int) string {
-	base := renderBaseStatusBar(m, width)
+func renderStatusBar(m AppModel, styles tuiStyles, width int) string {
+	segments := renderBaseStatusBar(m, styles)
 	if m.syncing || m.syncStatusErr != nil {
-		return mergeSyncIntoStatusBar(base, m, width)
+		segments = append(segments, renderInlineSyncStatus(m))
 	}
-	return base
+	return buildStatusBar(segments, width, styles)
 }
 
-func renderBaseStatusBar(m AppModel, width int) string {
-	if m.mode == modeTimeOff {
-		return truncateForWidth(timeOffDialogHelp(m), width)
-	}
-	if m.mode == modeDashboard {
-		text := fmt.Sprintf("dashboard %s | up/down day | left/right week | pgup/pgdn scroll | t today | esc back", m.displayedDay().Format("2006-01-02"))
-		return truncateForWidth(text, width)
-	}
-		if m.mode == modeInbox {
-			if m.inboxSearchActive {
-				text := fmt.Sprintf("inbox %s | search: %s | %d items | esc cancel | enter confirm", m.inboxPreset, m.inboxSearchQuery, len(m.inboxItems))
-				return truncateForWidth(text, width)
-			}
-			searchHint := ""
-			if m.inboxLastSearch != "" {
-				searchHint = " | / search n/N next"
-			}
-			text := fmt.Sprintf("inbox %s | %d items | j/k move | w/m scope | enter categorize | x dismiss | i close%s", m.inboxPreset, len(m.inboxItems), searchHint)
-			return truncateForWidth(text, width)
+func buildStatusBar(segments []string, width int, styles tuiStyles) string {
+	var b strings.Builder
+	currentWidth := 0
+	for i, seg := range segments {
+		segWidth := lipgloss.Width(seg)
+		if i > 0 {
+			b.WriteString(" ")
+			currentWidth++
 		}
-	if m.mode == modeAssign {
-		return truncateForWidth(projectDialogHelp(m), width)
+		if currentWidth+segWidth > width {
+			break
+		}
+		b.WriteString(seg)
+		currentWidth += segWidth
 	}
-	if m.mode == modeDeleteConfirm {
-		return truncateForWidth("delete entry? | y confirm | n/esc cancel", width)
+	if currentWidth < width {
+		b.WriteString(strings.Repeat(" ", width-currentWidth))
 	}
-	if m.mode == modeGapEntry {
-		return truncateForWidth("gap entry | up/down project | tab focus | enter create | esc cancel", width)
-	}
-	if m.mode == modeSearch {
-		return truncateForWidth("/"+m.searchQuery+" | enter search | esc cancel", width)
-	}
-	if m.mode == modeReport {
-		return truncateForWidth(fmt.Sprintf("report %s | w week | m month | y year | r refresh | esc back", m.reportPreset), width)
-	}
-	if m.timelineView == timelineViewMonth {
-		text := fmt.Sprintf("month %s | arrows/hjkl move | enter open day | o time off | m back | t today", m.displayedDay().Format("2006-01-02"))
-		return truncateForWidth(text, width)
+	return styles.statusBar.Render(b.String())
+}
+
+func sbKey(k string, styles tuiStyles) string {
+	return styles.statusKey.Render(k)
+}
+
+func sbSep(styles tuiStyles) string {
+	return styles.statusSep.Render("│")
+}
+
+func sbText(t string, styles tuiStyles) string {
+	return styles.statusText.Render(t)
+}
+
+func renderModeLabel(m AppModel) string {
+	switch m.mode {
+	case modeDashboard:
+		return "DASHBOARD"
+	case modeReport:
+		return "REPORT"
+	case modeInbox:
+		return "INBOX"
+	case modeAssign:
+		return "ASSIGN"
+	case modeGapEntry, modeEntryEdit:
+		return "EDIT"
+	case modeTimeOff:
+		return "TIME OFF"
+	case modeSearch:
+		return "SEARCH"
+	case modeDeleteConfirm:
+		return "DELETE"
+	case modeOverlapChooser:
+		return "OVERLAP"
 	}
 	if m.timelineView == timelineViewDay {
-		text := fmt.Sprintf("entries %d | day %s | up/down 15m | shift+up/down 1h | j/k items | left/right day | wheel/pgup/pgdn inspector | enter create/edit | tab inspector", len(m.entries), m.displayedDay().Format("2006-01-02"))
-		return truncateForWidth(text, width)
+		return "DAY"
+	}
+	if m.timelineView == timelineViewMonth {
+		return "MONTH"
+	}
+	return "TIMELINE"
+}
+
+func renderBaseStatusBar(m AppModel, styles tuiStyles) []string {
+	var segs []string
+	segs = append(segs, styles.modeBadge.Render(renderModeLabel(m)))
+
+	if m.mode == modeTimeOff {
+		segs = append(segs, sbText(timeOffDialogHelp(m), styles))
+		return segs
+	}
+	if m.mode == modeDashboard {
+		segs = append(segs, sbText(m.displayedDay().Format("2006-01-02"), styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("↑/↓", styles)+" "+sbText("day", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("←/→", styles)+" "+sbText("week", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("pgup/pgdn", styles)+" "+sbText("scroll", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("t", styles)+" "+sbText("today", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("esc", styles)+" "+sbText("back", styles))
+		return segs
+	}
+	if m.mode == modeInbox {
+		if m.inboxSearchActive {
+			segs = append(segs, sbText(fmt.Sprintf("search: %s", m.inboxSearchQuery), styles))
+			segs = append(segs, sbSep(styles))
+			segs = append(segs, sbText(fmt.Sprintf("%d items", len(m.inboxItems)), styles))
+			segs = append(segs, sbSep(styles))
+			segs = append(segs, sbKey("esc", styles)+" "+sbText("cancel", styles))
+			segs = append(segs, sbSep(styles))
+			segs = append(segs, sbKey("enter", styles)+" "+sbText("confirm", styles))
+			return segs
+		}
+		segs = append(segs, sbText(string(m.inboxPreset), styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbText(fmt.Sprintf("%d items", len(m.inboxItems)), styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("j/k", styles)+" "+sbText("move", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("enter", styles)+" "+sbText("categorize", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("x", styles)+" "+sbText("dismiss", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("i", styles)+" "+sbText("close", styles))
+		if m.inboxLastSearch != "" {
+			segs = append(segs, sbSep(styles))
+			segs = append(segs, sbKey("/", styles)+" "+sbText("search n/N next", styles))
+		}
+		return segs
+	}
+	if m.mode == modeAssign {
+		segs = append(segs, sbText(projectDialogHelp(m), styles))
+		return segs
+	}
+	if m.mode == modeDeleteConfirm {
+		segs = append(segs, sbKey("y", styles)+" "+sbText("confirm", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("n/esc", styles)+" "+sbText("cancel", styles))
+		return segs
+	}
+	if m.mode == modeGapEntry {
+		segs = append(segs, sbKey("↑/↓", styles)+" "+sbText("project", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("tab", styles)+" "+sbText("focus", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("enter", styles)+" "+sbText("create", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("esc", styles)+" "+sbText("cancel", styles))
+		return segs
+	}
+	if m.mode == modeSearch {
+		segs = append(segs, sbText("/"+m.searchQuery, styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("enter", styles)+" "+sbText("search", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("esc", styles)+" "+sbText("cancel", styles))
+		return segs
+	}
+	if m.mode == modeReport {
+		segs = append(segs, sbText(string(m.reportPreset), styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("w", styles)+" "+sbText("week", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("m", styles)+" "+sbText("month", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("y", styles)+" "+sbText("year", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("r", styles)+" "+sbText("refresh", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("esc", styles)+" "+sbText("back", styles))
+		return segs
+	}
+	if m.timelineView == timelineViewMonth {
+		segs = append(segs, sbText(m.displayedDay().Format("2006-01-02"), styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("arrows/hjkl", styles)+" "+sbText("move", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("enter", styles)+" "+sbText("open day", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("o", styles)+" "+sbText("time off", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("m", styles)+" "+sbText("back", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("t", styles)+" "+sbText("today", styles))
+		return segs
+	}
+	if m.timelineView == timelineViewDay {
+		segs = append(segs, sbText(fmt.Sprintf("entries %d", len(m.entries)), styles))
+		segs = append(segs, sbText(m.displayedDay().Format("2006-01-02"), styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("↑/↓", styles)+" "+sbText("15m", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("shift+↑/↓", styles)+" "+sbText("1h", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("j/k", styles)+" "+sbText("items", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("←/→", styles)+" "+sbText("day", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("enter", styles)+" "+sbText("edit", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("a", styles)+" "+sbText("add", styles))
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("tab", styles)+" "+sbText("inspect", styles))
+		return segs
 	}
 	drafts := 0
 	for _, entry := range m.entries {
@@ -4670,23 +4819,24 @@ func renderBaseStatusBar(m AppModel, width int) string {
 	if len(m.entries) > 0 {
 		position = strconv.Itoa(m.cursor+1) + "/" + strconv.Itoa(len(m.entries))
 	}
-	searchHint := ""
+	segs = append(segs, sbText(fmt.Sprintf("entries %d", len(m.entries)), styles))
+	segs = append(segs, sbText(fmt.Sprintf("drafts %d", drafts), styles))
+	segs = append(segs, sbText(position, styles))
+	segs = append(segs, sbSep(styles))
+	segs = append(segs, sbKey("↑/↓", styles)+" "+sbText("move", styles))
+	segs = append(segs, sbSep(styles))
+	segs = append(segs, sbKey("space", styles)+" "+sbText("select", styles))
+	segs = append(segs, sbSep(styles))
+	segs = append(segs, sbKey("p", styles)+" "+sbText("assign", styles))
+	segs = append(segs, sbSep(styles))
+	segs = append(segs, sbKey("d", styles)+" "+sbText("dash", styles))
+	segs = append(segs, sbSep(styles))
+	segs = append(segs, sbKey("s", styles)+" "+sbText("sync", styles))
 	if m.lastSearch != "" {
-		searchHint = " | / search n/N next"
+		segs = append(segs, sbSep(styles))
+		segs = append(segs, sbKey("/", styles)+" "+sbText("search n/N", styles))
 	}
-	text := fmt.Sprintf("entries %d | drafts %d | pos %s | d dashboard | s sync | up/down home/end pgup/pgdn space p assign P projects o time-off enter q%s", len(m.entries), drafts, position, searchHint)
-	return truncateForWidth(text, width)
-}
-
-func mergeSyncIntoStatusBar(base string, m AppModel, width int) string {
-	rightWidth := min(24, max(14, width/5))
-	leftWidth := max(0, width-rightWidth-1)
-	left := padRight(truncateForWidth(stripANSI(base), leftWidth), leftWidth)
-	right := renderInlineSyncStatus(m, rightWidth)
-	if lipgloss.Width(right) < rightWidth {
-		right = strings.Repeat(" ", rightWidth-lipgloss.Width(right)) + right
-	}
-	return left + " " + right
+	return segs
 }
 
 func (m *AppModel) loadReportPreset(preset reportPreset) error {
@@ -5985,17 +6135,11 @@ func reportSharePercent(totalSecs, totalRangeSecs int) string {
 	return fmt.Sprintf("%d%%", percent)
 }
 
-func renderInlineSyncStatus(m AppModel, width int) string {
-	label := "↻ Syncing"
+func renderInlineSyncStatus(m AppModel) string {
 	if m.syncStatusErr != nil {
-		label = "✕ Sync Error"
-		return padRight(label+" "+truncateForWidth(m.syncStatusErr.Error(), max(8, width-lipgloss.Width(label)-1)), width)
+		return "✕ Sync Error " + truncateForWidth(m.syncStatusErr.Error(), 24)
 	}
-	text := m.syncSpinner.View() + " " + label
-	if lipgloss.Width(text) >= width {
-		return text
-	}
-	return text + strings.Repeat(" ", width-lipgloss.Width(text))
+	return m.syncSpinner.View() + " ↻ Syncing"
 }
 
 func (m *AppModel) jumpToSearchMatch(start, direction int, includeCurrent bool) {

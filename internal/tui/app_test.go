@@ -1278,7 +1278,7 @@ func TestTimelineDayViewLeftRightMovesBetweenDays(t *testing.T) {
 		t.Fatalf("focus on returned day = %q, want Day two", got)
 	}
 
-	if !strings.Contains(stripANSI(app.View()), "left/right day") {
+	if !strings.Contains(stripANSI(app.View()), "←/→ day") {
 		t.Fatalf("day status missing nav hint: %q", stripANSI(app.View()))
 	}
 }
@@ -2368,10 +2368,10 @@ func TestSyncStatusBarAnimatesWhileSyncing(t *testing.T) {
 	model.width = 120
 	model.height = 20
 	model.syncing = true
-	first := renderStatusBar(model, 120)
+	first := renderStatusBar(model, newStyles(120), 120)
 	updated, cmd := model.Update(spinner.TickMsg{ID: model.syncSpinner.ID()})
 	model = updated.(AppModel)
-	second := renderStatusBar(model, 120)
+	second := renderStatusBar(model, newStyles(120), 120)
 	if !strings.Contains(first, "Syncing") {
 		t.Fatalf("first status missing sync bar: %q", first)
 	}
@@ -2414,7 +2414,7 @@ func TestSyncStatusBarShowsErrorsWithoutSpinner(t *testing.T) {
 
 	updated, _ := model.Update(syncDoneMsg{err: errors.New("boom")})
 	app := updated.(AppModel)
-	status := renderStatusBar(app, 120)
+	status := renderStatusBar(app, newStyles(120), 120)
 	if !strings.Contains(status, "Sync Error") {
 		t.Fatalf("status missing sync error label: %q", status)
 	}
@@ -3184,7 +3184,7 @@ func TestReportViewPinsStatusBarToBottom(t *testing.T) {
 	if got := lipgloss.Height(app.View()); got != app.height {
 		t.Fatalf("report view height = %d, want %d\n%s", got, app.height, view)
 	}
-	if !strings.Contains(lines[len(lines)-1], "report week") {
+	if !strings.Contains(lines[len(lines)-1], "REPORT") || !strings.Contains(lines[len(lines)-1], "week") {
 		t.Fatalf("report status bar not at bottom: %q", lines[len(lines)-1])
 	}
 	if strings.TrimSpace(lines[len(lines)-2]) != "" {
