@@ -3167,10 +3167,13 @@ func renderEntryRow(cursor string, entry *model.TimeEntryDetail, desc, project s
 		statusText = "●"
 		statusCell = styles.confirmed
 	}
-	projectCell := lipgloss.NewStyle()
+	dot := ""
+	dotWidth := 0
 	if entry.ProjectColor != nil && *entry.ProjectColor != "" {
-		projectCell = projectCell.Foreground(lipgloss.Color(*entry.ProjectColor)).Bold(true)
+		dot = lipgloss.NewStyle().Foreground(lipgloss.Color(*entry.ProjectColor)).Render("● ")
+		dotWidth = 2
 	}
+	projectCell := lipgloss.NewStyle()
 	line := lipgloss.JoinHorizontal(lipgloss.Top,
 		lipgloss.NewStyle().Width(cols.Cursor).Render(cursor),
 		lipgloss.NewStyle().Width(1).Render(" "),
@@ -3180,7 +3183,7 @@ func renderEntryRow(cursor string, entry *model.TimeEntryDetail, desc, project s
 		lipgloss.NewStyle().Width(1).Render(" "),
 		statusCell.Width(cols.Status).Render(padRight(statusText, cols.Status)),
 		lipgloss.NewStyle().Width(1).Render(" "),
-		projectCell.Width(cols.Project).Render(padRight(truncateForWidth(project, cols.Project), cols.Project)),
+		projectCell.Width(cols.Project).Render(padRight(dot+truncateForWidth(project, cols.Project-dotWidth), cols.Project)),
 	)
 	rowStyle := styles.baseRow
 	switch {
