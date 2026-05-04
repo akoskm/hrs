@@ -3255,7 +3255,8 @@ func renderDayTimeline(m AppModel, styles tuiStyles) string {
 		return b.String()
 	}
 	if len(dayEntries) == 0 {
-		b.WriteString(styles.muted.Render(truncateForWidth(fmt.Sprintf("%s | focus empty day | left/right change day | t today", selectedWeekday), timelineWidth(m.width))))
+		msg := lipgloss.NewStyle().Width(timelineWidth(m.width)).Align(lipgloss.Center).Render("◷ No entries for " + selectedWeekday)
+		b.WriteString(msg)
 		return b.String()
 	}
 	selected := m.entries[m.cursor]
@@ -5450,11 +5451,11 @@ func renderInboxList(m AppModel, styles tuiStyles, contentWidth int) string {
 	}
 	b.WriteString(styles.rule.Render(strings.Repeat("─", contentWidth)) + "\n")
 	if len(m.inboxItems) == 0 {
+		msg := "◷ No uncategorized activity"
 		if m.inboxLastSearch != "" {
-			b.WriteString("No matching inbox items\n")
-		} else {
-			b.WriteString("No uncategorized activity for this " + string(m.inboxPreset) + "\n")
+			msg = "◷ No matching items"
 		}
+		b.WriteString(lipgloss.NewStyle().Width(contentWidth).Align(lipgloss.Center).Render(msg) + "\n")
 		return b.String()
 	}
 	groups := inboxDayGroups(m.inboxItems)
@@ -6335,7 +6336,7 @@ func renderGapEntryDialog(m AppModel, styles tuiStyles, background string) strin
 	content.WriteString(styles.muted.Render("Project") + "\n")
 	content.WriteString(renderPickerLine("Unassign", 0, m.gapProjectCursor, styles, innerWidth) + "\n")
 	if len(m.projects) == 0 {
-		content.WriteString(styles.muted.Render("no projects") + "\n")
+		content.WriteString(lipgloss.NewStyle().Width(innerWidth).Align(lipgloss.Center).Render("◷ No projects") + "\n")
 	} else {
 		for i, project := range m.projects {
 			content.WriteString(renderPickerLine(projectDialogLabel(AppModel{}, project), i+1, m.gapProjectCursor, styles, innerWidth) + "\n")
@@ -6545,9 +6546,9 @@ func projectDialogTitle(m AppModel) string {
 
 func projectDialogEmpty(m AppModel) string {
 	if m.dialogMode == projectDialogAssign {
-		return "no projects"
+		return "◷ No projects"
 	}
-	return "no active projects"
+	return "◷ No active projects"
 }
 
 func projectDialogHelp(m AppModel) string {
