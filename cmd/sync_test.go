@@ -10,6 +10,57 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func TestSyncAllSkipsMissingSources(t *testing.T) {
+	resetProjectCommandState()
+	dbPath = t.TempDir() + "/hrs.db"
+	claudeLogsPath = t.TempDir() + "/nonexistent-claude"
+	codexLogsPath = t.TempDir() + "/nonexistent-codex"
+	opencodeDBPath = t.TempDir() + "/nonexistent-opencode.db"
+
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+	rootCmd.SetArgs([]string{"--db", dbPath, "sync"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("sync execute error = %v", err)
+	}
+}
+
+func TestSyncAllImportsExistingSources(t *testing.T) {
+	resetProjectCommandState()
+	dbPath = t.TempDir() + "/hrs.db"
+
+	projectOut := &bytes.Buffer{}
+	rootCmd.SetOut(projectOut)
+	rootCmd.SetErr(projectOut)
+	rootCmd.SetArgs([]string{"--db", dbPath, "project", "add", "wrkpad", "--code", "wrkpad"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("project add execute error = %v", err)
+	}
+
+	pathOut := &bytes.Buffer{}
+	rootCmd.SetOut(pathOut)
+	rootCmd.SetErr(pathOut)
+	rootCmd.SetArgs([]string{"--db", dbPath, "path", "add", "/Users/akoskm/Projects/wrkpad", "wrkpad"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("path add execute error = %v", err)
+	}
+
+	claudeLogsPath = t.TempDir() + "/nonexistent-claude"
+	codexLogsPath = filepath.Join("..", "testdata", "codex-sessions")
+	opencodeDBPath = t.TempDir() + "/nonexistent-opencode.db"
+
+	syncOut := &bytes.Buffer{}
+	rootCmd.SetOut(syncOut)
+	rootCmd.SetErr(syncOut)
+	rootCmd.SetArgs([]string{"--db", dbPath, "sync"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("sync execute error = %v", err)
+	}
+	if strings.Contains(syncOut.String(), "Error") {
+		t.Fatalf("unexpected output = %q", syncOut.String())
+	}
+}
+
 func TestSyncCodexCommand(t *testing.T) {
 	resetProjectCommandState()
 	dbPath = t.TempDir() + "/hrs.db"

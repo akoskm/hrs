@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 
@@ -13,6 +14,14 @@ import (
 var syncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Import agent logs",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		store, err := db.Open(dbPath)
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		return syncAllSources(cmd.Context(), store)
+	},
 }
 
 var syncClaudeCmd = &cobra.Command{
@@ -72,4 +81,23 @@ func init() {
 	syncCodexCmd.Flags().StringVar(&codexLogsPath, "path", defaultCodexPath, "Codex sessions directory")
 	syncOpenCodeCmd.Flags().StringVar(&opencodeDBPath, "path", defaultOpenCodeDBPath, "OpenCode SQLite database path")
 	syncCmd.AddCommand(syncClaudeCmd, syncCodexCmd, syncOpenCodeCmd)
+}
+
+func syncAllSources(ctx context.Context, store *db.Store) error {
+	if _, err := os.Stat(claudeLogsPath); err == nil {
+		if err := sync.ImportClaudeLogs(ctx, store, claudeLogsPath); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Stat(codexLogsPath); err == nil {
+		if err := sync.ImportCodexLogs(ctx, store, codexLogsPath); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Stat(opencodeDBPath); err == nil {
+		if err := sync.ImportOpenCodeLogs(ctx, store, opencodeDBPath); err != nil {
+			return err
+		}
+	}
+	return nil
 }
