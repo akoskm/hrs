@@ -46,7 +46,7 @@ func TestTimelineRendersAndAssigns(t *testing.T) {
 	tm := teatest.NewTestModel(t, model, teatest.WithInitialTermSize(120, 30))
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
 		out := stripANSI(string(b))
-		return strings.Contains(out, "Auth refactor") && strings.Contains(out, "confirmed")
+		return strings.Contains(out, "Auth refactor") && strings.Contains(out, "●")
 	}, teatest.WithDuration(5*time.Second))
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
@@ -58,7 +58,7 @@ func TestTimelineRendersAndAssigns(t *testing.T) {
 	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
 		out := stripANSI(string(b))
-		return strings.Contains(out, "confirmed") && strings.Contains(out, project.Name)
+		return strings.Contains(out, "●") && strings.Contains(out, project.Name)
 	}, teatest.WithDuration(5*time.Second))
 	tm.Quit()
 
@@ -149,8 +149,8 @@ func TestAssignPickerShowsProjectsFromDB(t *testing.T) {
 
 func TestRenderDialogTextInputDoesNotInsertLeadingSpaceForVisibleCaret(t *testing.T) {
 	rendered := stripANSI(renderDialogTextInput("production bug", 0, true, true, 40))
-	if rendered != "> production bug" {
-		t.Fatalf("rendered input = %q, want %q", rendered, "> production bug")
+	if rendered != "❯ production bug" {
+		t.Fatalf("rendered input = %q, want %q", rendered, "❯ production bug")
 	}
 }
 
@@ -163,8 +163,8 @@ func TestTextWithCaretAtEndDoesNotAddExtraCell(t *testing.T) {
 
 func TestRenderDialogTextInputShowsCaretAfterLastCharacter(t *testing.T) {
 	rendered := stripANSI(renderDialogTextInput("DELTA-838 reviews", len([]rune("DELTA-838 reviews")), true, true, 40))
-	if rendered != "> DELTA-838 reviews▏" {
-		t.Fatalf("rendered input = %q, want %q", rendered, "> DELTA-838 reviews▏")
+	if rendered != "❯ DELTA-838 reviews▏" {
+		t.Fatalf("rendered input = %q, want %q", rendered, "❯ DELTA-838 reviews▏")
 	}
 }
 
@@ -2127,7 +2127,7 @@ func TestBulkAssignSelectedEntries(t *testing.T) {
 		t.Fatalf("selected = %d, want 2", len(app.selected))
 	}
 	plain := stripANSI(app.View())
-	if !strings.Contains(plain, ">*") || !strings.Contains(plain, " *") {
+	if !strings.Contains(plain, "❯●") || !strings.Contains(plain, " ●") {
 		t.Fatalf("view missing selection markers: %q", plain)
 	}
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
@@ -4596,7 +4596,7 @@ func TestDayViewRendersTimelineWithNoEntries(t *testing.T) {
 	view := stripANSI(app.View())
 
 	// timeline must render even with zero entries
-	if strings.Contains(view, "no entries") {
+		if strings.Contains(view, "No entries") {
 		t.Fatal("day view should not show 'no entries' — it should render the timeline grid")
 	}
 	if !strings.Contains(view, "time") || !strings.Contains(view, "activity") {
@@ -5512,7 +5512,7 @@ func TestDayViewFullUIElements(t *testing.T) {
 			t.Errorf("missing %s (%q) in view:\n%s", name, want, view)
 		}
 	}
-	if strings.Contains(view, "hrs") {
+		if strings.Contains(view, "⏱ hrs") {
 		t.Errorf("unexpected day view header in view:\n%s", view)
 	}
 	if strings.Contains(view, "Timeline") {

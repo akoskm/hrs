@@ -752,7 +752,7 @@ func (m AppModel) View() string {
 		sections = append(sections, styles.header.Render(renderHeader(m.entries, m.width)))
 	}
 	if m.err != nil {
-		sections = append(sections, styles.error.Render("error: "+m.err.Error()))
+		sections = append(sections, styles.error.Render("✕ "+m.err.Error()))
 	}
 	var b strings.Builder
 	if m.mode == modeReport {
@@ -771,7 +771,7 @@ func (m AppModel) View() string {
 		b.WriteString(renderDayTimelinePane(m, styles, timelineWidth, dayPaneHeight(m.height)))
 	} else if len(m.entries) == 0 {
 		b.WriteString(styles.title.Render("Timeline") + "\n")
-		b.WriteString(styles.muted.Render("no entries") + "\n")
+		b.WriteString(styles.muted.Render("◷ No entries") + "\n")
 	} else {
 		b.WriteString(styles.title.Render("Timeline") + "\n")
 		cols := timelineColumns(m.width)
@@ -1551,11 +1551,11 @@ func (m AppModel) entryMarker(index int) string {
 	active := index == m.cursor && m.mode == modeTimeline
 	switch {
 	case active && selected:
-		return ">*"
+		return "❯●"
 	case active:
-		return "> "
+		return "❯ "
 	case selected:
-		return " *"
+		return " ●"
 	default:
 		return "  "
 	}
@@ -3109,7 +3109,7 @@ func newStyles(width int) tuiStyles {
 
 func renderHeader(entries []model.TimeEntryDetail, width int) string {
 	rangeText := currentRange(entries)
-	left := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5")).Render("hrs")
+	left := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5")).Render("⏱ hrs")
 	right := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(rangeText)
 	spacer := max(1, timelineWidth(width)-lipgloss.Width(left)-lipgloss.Width(right))
 	return left + strings.Repeat(" ", spacer) + right
@@ -3155,9 +3155,10 @@ func renderDateHeader(date string, width int) string {
 }
 
 func renderEntryRow(cursor string, entry *model.TimeEntryDetail, desc, project string, cols timelineColWidths, styles tuiStyles, active, selected bool) string {
-	statusText := truncateForWidth(string(entry.Status), cols.Status)
+	statusText := "○"
 	statusCell := styles.draft
 	if entry.Status == model.StatusConfirmed {
+		statusText = "●"
 		statusCell = styles.confirmed
 	}
 	projectCell := lipgloss.NewStyle()
@@ -5285,7 +5286,7 @@ func renderInboxList(m AppModel, styles tuiStyles, contentWidth int) string {
 	rangeLabel := fmt.Sprintf("%s to %s", start.Format("2006-01-02"), end.Add(-time.Nanosecond).Format("2006-01-02"))
 	b.WriteString(styles.muted.Render(rangeLabel) + "\n")
 	if m.inboxSearchActive {
-		b.WriteString(styles.activePicker.Render("> "+m.inboxSearchQuery) + "\n")
+		b.WriteString(styles.activePicker.Render("❯ "+m.inboxSearchQuery) + "\n")
 	} else if m.inboxLastSearch != "" {
 		b.WriteString(styles.muted.Render("search: "+m.inboxLastSearch) + "\n")
 	}
@@ -5310,7 +5311,7 @@ func renderInboxList(m AppModel, styles tuiStyles, contentWidth int) string {
 		}
 		marker := "  "
 		if row.Index == m.inboxCursor {
-			marker = "> "
+			marker = "❯ "
 		}
 		timeRange := formatRange(row.Item.Start, &row.Item.End)
 		desc := truncateForWidth(m.inboxItemDescription(row.Item), contentWidth-lipgloss.Width(marker)-lipgloss.Width(timeRange)-2)
@@ -5891,7 +5892,7 @@ func renderReportProjectsPane(m AppModel, width int) string {
 	for i, project := range m.reportResult.Projects {
 		prefix := "  "
 		if i == m.reportProjectCursor {
-			prefix = "> "
+			prefix = "❯ "
 		}
 		bar := reportProjectBar(project.TotalSecs, maxProjectSecs, 8)
 		line := fmt.Sprintf("%s%s %.1fh %s %s", prefix, project.ProjectName, float64(project.TotalSecs)/3600, reportSharePercent(project.TotalSecs, m.reportResult.Summary.TotalSecs), bar)
@@ -5985,9 +5986,9 @@ func reportSharePercent(totalSecs, totalRangeSecs int) string {
 }
 
 func renderInlineSyncStatus(m AppModel, width int) string {
-	label := "Syncing"
+	label := "↻ Syncing"
 	if m.syncStatusErr != nil {
-		label = "Sync Error"
+		label = "✕ Sync Error"
 		return padRight(label+" "+truncateForWidth(m.syncStatusErr.Error(), max(8, width-lipgloss.Width(label)-1)), width)
 	}
 	text := m.syncSpinner.View() + " " + label
@@ -6096,7 +6097,7 @@ func renderProjectDialog(m AppModel, styles tuiStyles, background string) string
 		}
 	}
 	if m.dialogMode == projectDialogCreate {
-		content.WriteString("\n" + styles.activePicker.Render(truncateForWidth("> "+m.projectInput, innerWidth)))
+		content.WriteString("\n" + styles.activePicker.Render(truncateForWidth("❯ "+m.projectInput, innerWidth)))
 	}
 	content.WriteString("\n" + styles.muted.Render(projectDialogHelp(m)))
 
@@ -6139,7 +6140,7 @@ func renderTimeOffDialog(m AppModel, styles tuiStyles, background string) string
 	}
 	if m.timeOffDialogMode == timeOffDialogCreate {
 		content.WriteString("\n" + styles.muted.Render("Type name") + "\n")
-		content.WriteString(styles.activePicker.Render(truncateForWidth("> "+m.timeOffInput, innerWidth)))
+		content.WriteString(styles.activePicker.Render(truncateForWidth("❯ "+m.timeOffInput, innerWidth)))
 		content.WriteString("\n\n" + styles.muted.Render("type name | enter create | esc back"))
 	} else {
 		content.WriteString("\n" + styles.muted.Render("Time Off Type") + "\n")
@@ -6197,9 +6198,9 @@ func renderGapEntryDialog(m AppModel, styles tuiStyles, background string) strin
 		endStyle = lipgloss.NewStyle().Bold(true)
 	}
 	content.WriteString("\n" + styles.muted.Render("Start") + "\n")
-	content.WriteString(startStyle.Render(truncateForWidth("> "+textWithCaret(m.gapStartInput, m.caretVisible, m.gapInputField == "start"), innerWidth)))
+	content.WriteString(startStyle.Render(truncateForWidth("❯ "+textWithCaret(m.gapStartInput, m.caretVisible, m.gapInputField == "start"), innerWidth)))
 	content.WriteString("\n" + styles.muted.Render("End") + "\n")
-	content.WriteString(endStyle.Render(truncateForWidth("> "+textWithCaret(m.gapEndInput, m.caretVisible, m.gapInputField == "end"), innerWidth)))
+	content.WriteString(endStyle.Render(truncateForWidth("❯ "+textWithCaret(m.gapEndInput, m.caretVisible, m.gapInputField == "end"), innerWidth)))
 	content.WriteString("\n\n" + styles.muted.Render("tab focus | enter create | esc cancel"))
 
 	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
@@ -6237,9 +6238,9 @@ func renderEntryEditDialog(m AppModel, styles tuiStyles, background string) stri
 		endStyle = lipgloss.NewStyle().Bold(true)
 	}
 	content.WriteString("\n" + styles.muted.Render("Start") + "\n")
-	content.WriteString(startStyle.Render(truncateForWidth("> "+textWithCaret(m.entryStartInput, m.caretVisible, m.entryInputField == "start"), innerWidth)))
+	content.WriteString(startStyle.Render(truncateForWidth("❯ "+textWithCaret(m.entryStartInput, m.caretVisible, m.entryInputField == "start"), innerWidth)))
 	content.WriteString("\n" + styles.muted.Render("End") + "\n")
-	content.WriteString(endStyle.Render(truncateForWidth("> "+textWithCaret(m.entryEndInput, m.caretVisible, m.entryInputField == "end"), innerWidth)))
+	content.WriteString(endStyle.Render(truncateForWidth("❯ "+textWithCaret(m.entryEndInput, m.caretVisible, m.entryInputField == "end"), innerWidth)))
 	content.WriteString("\n\n" + styles.muted.Render(entryEditHelp(m)))
 
 	dialog := styles.dialogBox.Width(dialogWidth).Render(strings.TrimRight(content.String(), "\n"))
@@ -6449,7 +6450,7 @@ func renderDialogTextInputStyled(text string, cursor int, visible, active bool, 
 	if width <= 0 {
 		return ""
 	}
-	prefix := []rune("> ")
+	prefix := []rune("❯ ")
 	available := max(0, width-len(prefix))
 	reserveEndCaret := active && cursor >= len([]rune(text))
 	segment, relCursor := dialogTextViewportSegment(text, cursor, available, reserveEndCaret)
@@ -6542,7 +6543,7 @@ func dialogHeight(height int, background, dialog string) int {
 func renderPickerLine(label string, index, current int, styles tuiStyles, width int) string {
 	cursor := " "
 	if index == current {
-		cursor = ">"
+		cursor = "❯"
 	}
 	line := lipgloss.NewStyle().MaxWidth(width).Render(cursor + " " + label)
 	style := styles.projectPicker
@@ -6555,7 +6556,7 @@ func renderPickerLine(label string, index, current int, styles tuiStyles, width 
 func renderDialogPickerLine(label string, selected bool, active bool, styles tuiStyles, width int) string {
 	cursor := " "
 	if selected {
-		cursor = ">"
+		cursor = "❯"
 	}
 	line := lipgloss.NewStyle().MaxWidth(width).Render(cursor + " " + label)
 	style := styles.projectPicker
