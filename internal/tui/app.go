@@ -3093,7 +3093,7 @@ func newStyles(width int) tuiStyles {
 		title:         lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")),
 		error:         lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true),
 		rule:          lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
-		dateHeader:    lipgloss.NewStyle().Bold(true),
+		dateHeader:    lipgloss.NewStyle().Bold(true).Background(lipgloss.Color("236")).Padding(0, 1),
 		muted:         lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
 		statusBar:     lipgloss.NewStyle().Background(lipgloss.Color("8")).Foreground(lipgloss.Color("15")),
 		statusKey:     lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
@@ -3157,11 +3157,7 @@ func renderTableHeader(cols timelineColWidths, styles tuiStyles) string {
 }
 
 func renderDateHeader(date string, width int) string {
-	label := "── " + date + " ──"
-	if lipgloss.Width(label) >= width {
-		return truncateForWidth(label, width)
-	}
-	return label + strings.Repeat("─", width-lipgloss.Width(label))
+	return truncateForWidth(date, width)
 }
 
 func renderEntryRow(cursor string, entry *model.TimeEntryDetail, desc, project string, cols timelineColWidths, styles tuiStyles, active, selected bool) string {

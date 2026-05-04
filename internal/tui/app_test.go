@@ -1175,8 +1175,8 @@ func TestTimelineGroupsByDateNewestFirst(t *testing.T) {
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
 	app := updated.(AppModel)
 	view := stripANSI(app.View())
-	newerHeader := strings.Index(view, "── 2026-04-03")
-	olderHeader := strings.Index(view, "── 2026-04-02")
+	newerHeader := strings.LastIndex(view, "2026-04-03")
+	olderHeader := strings.LastIndex(view, "2026-04-02")
 	newerEntry := strings.Index(view, "Newer")
 	olderEntry := strings.Index(view, "Older")
 	if newerHeader == -1 || olderHeader == -1 || newerEntry == -1 || olderEntry == -1 {
