@@ -2127,7 +2127,7 @@ func TestBulkAssignSelectedEntries(t *testing.T) {
 		t.Fatalf("selected = %d, want 2", len(app.selected))
 	}
 	plain := stripANSI(app.View())
-	if !strings.Contains(plain, "❯●") || !strings.Contains(plain, " ●") {
+	if !strings.Contains(plain, "│◆") || !strings.Contains(plain, "│●") {
 		t.Fatalf("view missing selection markers: %q", plain)
 	}
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})

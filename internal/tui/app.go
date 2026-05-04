@@ -1547,11 +1547,11 @@ func (m AppModel) entryMarker(index int) string {
 	active := index == m.cursor && m.mode == modeTimeline
 	switch {
 	case active && selected:
-		return "❯●"
+		return "│◆"
 	case active:
-		return "❯ "
+		return "│❯"
 	case selected:
-		return " ●"
+		return "│●"
 	default:
 		return "  "
 	}
@@ -3097,9 +3097,9 @@ func newStyles(width int) tuiStyles {
 		modeBadge:     lipgloss.NewStyle().Background(lipgloss.Color("4")).Foreground(lipgloss.Color("15")).Bold(true).Padding(0, 1),
 		tableHeader:   lipgloss.NewStyle().Bold(true),
 		baseRow:       lipgloss.NewStyle(),
-		activeRow:     lipgloss.NewStyle().Background(lipgloss.Color("236")),
-		selectedRow:   lipgloss.NewStyle().Background(lipgloss.Color("60")),
-		activeSelRow:  lipgloss.NewStyle().Reverse(true).Bold(true),
+		activeRow:     lipgloss.NewStyle().Bold(true),
+		selectedRow:   lipgloss.NewStyle().Bold(true),
+		activeSelRow:  lipgloss.NewStyle().Bold(true).Underline(true),
 		draft:         lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true),
 		confirmed:     lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true),
 		projectPicker: lipgloss.NewStyle(),
