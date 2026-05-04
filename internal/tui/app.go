@@ -6267,12 +6267,12 @@ func renderTimeOffDialog(m AppModel, styles tuiStyles, background string) string
 	if m.timeOffDialogMode == timeOffDialogRecord {
 		fromStyle := styles.muted
 		if m.timeOffField == "from" {
-			fromStyle = lipgloss.NewStyle().Underline(true)
-		}
-		toStyle := styles.muted
-		if m.timeOffField == "to" {
-			toStyle = lipgloss.NewStyle().Underline(true)
-		}
+		fromStyle = lipgloss.NewStyle().Bold(true)
+	}
+	toStyle := styles.muted
+	if m.timeOffField == "to" {
+		toStyle = lipgloss.NewStyle().Bold(true)
+	}
 		content.WriteString(styles.muted.Render("From") + "\n")
 		content.WriteString(renderDialogTextInputStyled(m.timeOffFromInput, m.timeOffFromCursor, m.caretVisible, m.timeOffField == "from", innerWidth, fromStyle))
 		content.WriteString("\n\n")
@@ -6327,7 +6327,7 @@ func renderGapEntryDialog(m AppModel, styles tuiStyles, background string) strin
 	}
 	inputStyle := styles.muted
 	if m.gapInputField == "description" {
-		inputStyle = lipgloss.NewStyle().Underline(true)
+		inputStyle = lipgloss.NewStyle().Bold(true)
 	}
 	content.WriteString(styles.muted.Render("Description") + "\n")
 	content.WriteString(renderDialogTextInputStyled(m.gapInput, m.gapInputCursor, m.caretVisible, m.gapInputField == "description", innerWidth, inputStyle))
@@ -6343,11 +6343,11 @@ func renderGapEntryDialog(m AppModel, styles tuiStyles, background string) strin
 	}
 	startStyle := styles.muted
 	if m.gapInputField == "start" {
-		startStyle = lipgloss.NewStyle().Underline(true)
+		startStyle = lipgloss.NewStyle().Bold(true)
 	}
 	endStyle := styles.muted
 	if m.gapInputField == "end" {
-		endStyle = lipgloss.NewStyle().Underline(true)
+		endStyle = lipgloss.NewStyle().Bold(true)
 	}
 	content.WriteString("\n" + styles.muted.Render("Start") + "\n")
 	content.WriteString(startStyle.Render(truncateForWidth("❯ "+textWithCaret(m.gapStartInput, m.caretVisible, m.gapInputField == "start"), innerWidth)))
@@ -6370,7 +6370,7 @@ func renderEntryEditDialog(m AppModel, styles tuiStyles, background string) stri
 	if !m.entryProjectOnly {
 		inputStyle := styles.muted
 		if m.entryInputField == "description" {
-		inputStyle = lipgloss.NewStyle().Underline(true)
+		inputStyle = lipgloss.NewStyle().Bold(true)
 		}
 		content.WriteString(styles.muted.Render("Description") + "\n")
 		content.WriteString(renderDialogTextInputStyled(m.entryInput, m.entryInputCursor, m.caretVisible, m.entryInputField == "description", innerWidth, inputStyle))
@@ -6383,11 +6383,11 @@ func renderEntryEditDialog(m AppModel, styles tuiStyles, background string) stri
 	}
 	startStyle := styles.muted
 	if m.entryInputField == "start" {
-		startStyle = lipgloss.NewStyle().Underline(true)
+		startStyle = lipgloss.NewStyle().Bold(true)
 	}
 	endStyle := styles.muted
 	if m.entryInputField == "end" {
-		endStyle = lipgloss.NewStyle().Underline(true)
+		endStyle = lipgloss.NewStyle().Bold(true)
 	}
 	content.WriteString("\n" + styles.muted.Render("Start") + "\n")
 	content.WriteString(startStyle.Render(truncateForWidth("❯ "+textWithCaret(m.entryStartInput, m.caretVisible, m.entryInputField == "start"), innerWidth)))
@@ -6627,7 +6627,7 @@ func dialogTextViewport(text string, cursor int, visible, active bool, width int
 	if width <= 0 {
 		return ""
 	}
-	segment, relCursor := dialogTextViewportSegment(text, cursor, width, false)
+	segment, relCursor := dialogTextViewportSegment(text, cursor, width, true)
 	if !active || !visible {
 		return segment
 	}
@@ -6667,13 +6667,10 @@ func textWithCaretAt(text string, cursor int, visible, active bool) string {
 	if !visible {
 		return text
 	}
-	caretStyle := lipgloss.NewStyle().Reverse(true).Bold(true)
 	if pos >= len(value) {
-		if len(value) == 0 {
-			return "▏"
-		}
-		return string(value[:len(value)-1]) + caretStyle.Render(string(value[len(value)-1]))
+		return text + "▏"
 	}
+	caretStyle := lipgloss.NewStyle().Reverse(true).Bold(true)
 	return string(value[:pos]) + caretStyle.Render(string(value[pos])) + string(value[pos+1:])
 }
 

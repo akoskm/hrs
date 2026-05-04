@@ -154,10 +154,10 @@ func TestRenderDialogTextInputDoesNotInsertLeadingSpaceForVisibleCaret(t *testin
 	}
 }
 
-func TestTextWithCaretAtEndDoesNotAddExtraCell(t *testing.T) {
+func TestTextWithCaretAtEndAppendsCaret(t *testing.T) {
 	rendered := stripANSI(textWithCaret("Auth", true, true))
-	if rendered != "Auth" {
-		t.Fatalf("textWithCaret(end) = %q, want %q", rendered, "Auth")
+	if rendered != "Auth▏" {
+		t.Fatalf("textWithCaret(end) = %q, want %q", rendered, "Auth▏")
 	}
 }
 
