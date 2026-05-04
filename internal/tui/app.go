@@ -6708,7 +6708,7 @@ func overlayCenteredDialog(background, dialog string, width, height int) string 
 		}
 		dLine := dialogLines[y-startY]
 		bgLine := bgLines[y]
-		left := truncateForWidth(bgLine, startX)
+		left := lipgloss.NewStyle().MaxWidth(startX).Render(bgLine)
 		leftWidth := lipgloss.Width(left)
 		if leftWidth < startX {
 			left += strings.Repeat(" ", startX-leftWidth)

@@ -4615,6 +4615,54 @@ func TestDayViewRendersTimelineWithNoEntries(t *testing.T) {
 	}
 }
 
+func TestDayViewDialogDoesNotShowTruncationArtifacts(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "Elaiia", Code: "elaiia", HourlyRate: 15000, Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	now := time.Now()
+	today := dayStart(now)
+	for i := 0; i < 5; i++ {
+		start := today.Add(time.Duration(9+i) * time.Hour)
+		if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+			ProjectIdent: "elaiia",
+			Description:  fmt.Sprintf("Task %d with a long description that fills width", i),
+			StartedAt:    start,
+			EndedAt:      start.Add(time.Hour),
+		}); err != nil {
+			t.Fatalf("CreateManualEntry() error = %v", err)
+		}
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.SetDefaultTimelineView("day")
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
+	app := updated.(AppModel)
+
+	// Open edit dialog on first entry
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.mode != modeEntryEdit {
+		t.Fatalf("mode = %q, want entry-edit", app.mode)
+	}
+
+	view := stripANSI(app.View())
+	// Count spurious "..." artifacts outside the dialog
+	artifactCount := strings.Count(view, "...")
+	// Some "..." are expected for legitimate ellipsis (like truncated URLs or text).
+	// But spurious "..." from overlayCenteredDialog appear as standalone artifacts.
+	// The old buggy code produced dozens of them; this test ensures we don't regress.
+	if artifactCount > 5 {
+		t.Fatalf("view contains %d '...' artifacts — dialog overlay is corrupting background text:\n%s", artifactCount, view)
+	}
+}
+
 func TestDayViewRendersEntriesAndActivity(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
