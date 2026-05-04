@@ -746,8 +746,9 @@ func (m AppModel) View() string {
 	if m.stylesWidth == 0 {
 		styles = newStyles(m.width)
 	}
+	isDialogOpen := m.mode == modeAssign || m.mode == modeGapEntry || m.mode == modeTimeOff || m.mode == modeEntryEdit || m.mode == modeOverlapChooser || m.mode == modeDeleteConfirm
 	var sections []string
-	showDayLayout := m.mode == modeTimeline && m.timelineView == timelineViewDay
+	showDayLayout := m.timelineView == timelineViewDay && (m.mode == modeTimeline || isDialogOpen)
 	if !showDayLayout {
 		sections = append(sections, styles.header.Render(renderHeader(m.entries, m.width)))
 	}
@@ -836,7 +837,6 @@ func (m AppModel) View() string {
 		sections = append(sections, statusBar)
 	}
 	view := strings.Join(sections, "\n")
-	isDialogOpen := m.mode == modeAssign || m.mode == modeGapEntry || m.mode == modeTimeOff || m.mode == modeEntryEdit || m.mode == modeOverlapChooser || m.mode == modeDeleteConfirm
 	if isDialogOpen {
 		view = styles.dimmed.Render(view)
 	}
