@@ -3091,11 +3091,11 @@ func newStyles(width int) tuiStyles {
 		rule:          lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
 		dateHeader:    lipgloss.NewStyle().Bold(true).Background(lipgloss.Color("236")).Padding(0, 1),
 		muted:         lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
-		statusBar:     lipgloss.NewStyle().Background(lipgloss.Color("8")).Foreground(lipgloss.Color("15")),
-		statusKey:     lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
-		statusSep:     lipgloss.NewStyle().Foreground(lipgloss.Color("7")),
-		statusText:    lipgloss.NewStyle().Foreground(lipgloss.Color("15")),
-		modeBadge:     lipgloss.NewStyle().Background(lipgloss.Color("4")).Foreground(lipgloss.Color("15")).Bold(true).Padding(0, 1),
+		statusBar:     lipgloss.NewStyle(),
+		statusKey:     lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")),
+		statusSep:     lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+		statusText:    lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+		modeBadge:     lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")),
 		tableHeader:   lipgloss.NewStyle().Bold(true),
 		baseRow:       lipgloss.NewStyle(),
 		activeRow:     lipgloss.NewStyle().Bold(true),
@@ -4642,7 +4642,7 @@ func buildStatusBar(segments []string, width int, styles tuiStyles) string {
 	if currentWidth < width {
 		b.WriteString(strings.Repeat(" ", width-currentWidth))
 	}
-	return styles.statusBar.Render(b.String())
+	return b.String()
 }
 
 func sbKey(k string, styles tuiStyles) string {
