@@ -2096,6 +2096,10 @@ func (m *AppModel) handleEntryEditKey(msg tea.KeyMsg) tea.Cmd {
 			if m.entryProjectCursor > 0 {
 				m.entryProjectCursor--
 			}
+		} else if m.entryInputField == "start" {
+			m.entryStartInput = adjustTimeByMinutes(m.entryStartInput, 10)
+		} else if m.entryInputField == "end" {
+			m.entryEndInput = adjustTimeByMinutes(m.entryEndInput, 10)
 		}
 	case "down", "j":
 		if !m.entryProjectOnly && m.entryInputField == "description" {
@@ -2112,6 +2116,10 @@ func (m *AppModel) handleEntryEditKey(msg tea.KeyMsg) tea.Cmd {
 			if m.entryProjectCursor < len(m.projects) {
 				m.entryProjectCursor++
 			}
+		} else if m.entryInputField == "start" {
+			m.entryStartInput = adjustTimeByMinutes(m.entryStartInput, -10)
+		} else if m.entryInputField == "end" {
+			m.entryEndInput = adjustTimeByMinutes(m.entryEndInput, -10)
 		}
 	case "backspace":
 		if !m.entryProjectOnly {
@@ -4657,6 +4665,15 @@ func clock(ts time.Time) string {
 	return ts.In(time.Local).Format("15:04")
 }
 
+func adjustTimeByMinutes(text string, delta int) string {
+	t, err := time.Parse("15:04", strings.TrimSpace(text))
+	if err != nil {
+		return text
+	}
+	t = t.Add(time.Duration(delta) * time.Minute)
+	return t.Format("15:04")
+}
+
 func formatTokenCount(n int) string {
 	if n >= 1000 {
 		return fmt.Sprintf("%.1fk", float64(n)/1000)
@@ -6683,7 +6700,7 @@ func entryEditHelp(m AppModel) string {
 	if m.entryProjectOnly {
 		return "up/down project | enter save | esc cancel"
 	}
-	return "tab focus | up/down navigate | enter save | esc cancel"
+	return "tab focus | up/down navigate or ±10m | enter save | esc cancel"
 }
 
 func projectColorLabel(project model.Project) string {

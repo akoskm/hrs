@@ -852,7 +852,7 @@ func TestEditDialogUpDownOnProjectField(t *testing.T) {
 	}
 }
 
-func TestEditDialogUpDownOnStartFieldDoesNothing(t *testing.T) {
+func TestEditDialogUpDownAdjustsStartEndTime(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
 	defer store.Close()
@@ -885,15 +885,44 @@ func TestEditDialogUpDownOnStartFieldDoesNothing(t *testing.T) {
 		t.Fatalf("entryInputField = %q, want start", app.entryInputField)
 	}
 
-	initialInput := app.entryInput
-	initialProjectCursor := app.entryProjectCursor
+	initialStart := app.entryStartInput
+	initialEnd := app.entryEndInput
+
+	// up on start field adds 10 minutes
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyUp})
 	app = updated.(AppModel)
-	if app.entryInput != initialInput {
-		t.Fatalf("up changed entryInput on start field: %q vs %q", app.entryInput, initialInput)
+	wantStartUp := adjustTimeByMinutes(initialStart, 10)
+	if app.entryStartInput != wantStartUp {
+		t.Fatalf("after up on start: entryStartInput = %q, want %q", app.entryStartInput, wantStartUp)
 	}
-	if app.entryProjectCursor != initialProjectCursor {
-		t.Fatalf("up changed project cursor on start field: %d vs %d", app.entryProjectCursor, initialProjectCursor)
+
+	// down on start field subtracts 10 minutes
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = updated.(AppModel)
+	if app.entryStartInput != initialStart {
+		t.Fatalf("after down on start: entryStartInput = %q, want %q", app.entryStartInput, initialStart)
+	}
+
+	// tab to end field
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	if app.entryInputField != "end" {
+		t.Fatalf("entryInputField = %q, want end", app.entryInputField)
+	}
+
+	// down on end field subtracts 10 minutes
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = updated.(AppModel)
+	wantEndDown := adjustTimeByMinutes(initialEnd, -10)
+	if app.entryEndInput != wantEndDown {
+		t.Fatalf("after down on end: entryEndInput = %q, want %q", app.entryEndInput, wantEndDown)
+	}
+
+	// up on end field adds 10 minutes
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	app = updated.(AppModel)
+	if app.entryEndInput != initialEnd {
+		t.Fatalf("after up on end: entryEndInput = %q, want %q", app.entryEndInput, initialEnd)
 	}
 }
 
