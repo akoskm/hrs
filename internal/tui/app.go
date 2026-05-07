@@ -798,7 +798,7 @@ func (m AppModel) View() string {
 			if entry.Description != nil && *entry.Description != "" {
 				desc = *entry.Description
 			}
-			line := renderEntryRow(cursor, entry, desc, project, cols, styles, row.EntryIndex == m.cursor, m.selected[entry.ID])
+			line := renderEntryRow(cursor, entry, desc, project, cols, styles, row.EntryIndex == m.cursor, m.selected[entry.ID], m.lastSearch)
 			b.WriteString(line + "\n")
 		}
 		if len(rows) > end {
@@ -3018,7 +3018,7 @@ func cursorBlinkCmd() tea.Cmd {
 }
 
 func newSyncSpinner() spinner.Model {
-	return spinner.New(spinner.WithSpinner(spinner.Dot))
+	return spinner.New(spinner.WithSpinner(spinner.Moon))
 }
 
 func runSyncCmd(syncFn func() error) tea.Cmd {
@@ -3080,6 +3080,7 @@ type tuiStyles struct {
 	inspectorBox  lipgloss.Style
 	inspectorTab  lipgloss.Style
 	activeTab     lipgloss.Style
+	searchHighlight lipgloss.Style
 }
 
 func newStyles(width int) tuiStyles {
@@ -3089,7 +3090,7 @@ func newStyles(width int) tuiStyles {
 		title:         lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")),
 		error:         lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true),
 		rule:          lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
-		dateHeader:    lipgloss.NewStyle().Bold(true).Background(lipgloss.Color("236")).Padding(0, 1),
+		dateHeader:    lipgloss.NewStyle().Bold(true).Reverse(true).Padding(0, 1),
 		muted:         lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
 		statusBar:     lipgloss.NewStyle(),
 		statusKey:     lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")),
@@ -3104,11 +3105,12 @@ func newStyles(width int) tuiStyles {
 		draft:         lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true),
 		confirmed:     lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true),
 		projectPicker: lipgloss.NewStyle(),
-		activePicker:  lipgloss.NewStyle().Background(lipgloss.Color("153")).Foreground(lipgloss.Color("235")).Bold(true),
+		activePicker:  lipgloss.NewStyle().Bold(true).Reverse(true),
 		dialogBox:     lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("4")).Padding(1, 2),
 		inspectorBox:  lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1),
 		inspectorTab:  lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Padding(0, 1),
 		activeTab:     lipgloss.NewStyle().Reverse(true).Bold(true).Padding(0, 1),
+		searchHighlight: lipgloss.NewStyle().Bold(true).Reverse(true),
 	}
 }
 
@@ -3155,7 +3157,31 @@ func renderDateHeader(date string, width int) string {
 	return truncateForWidth(date, width)
 }
 
-func renderEntryRow(cursor string, entry *model.TimeEntryDetail, desc, project string, cols timelineColWidths, styles tuiStyles, active, selected bool) string {
+func highlightSearch(text, query string, style lipgloss.Style) string {
+	if query == "" {
+		return text
+	}
+	queryRunes := []rune(strings.ToLower(query))
+	textRunes := []rune(text)
+	for i := 0; i <= len(textRunes)-len(queryRunes); i++ {
+		match := true
+		for j := 0; j < len(queryRunes); j++ {
+			if unicode.ToLower(textRunes[i+j]) != queryRunes[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			before := string(textRunes[:i])
+			matchStr := string(textRunes[i : i+len(queryRunes)])
+			after := string(textRunes[i+len(queryRunes):])
+			return before + style.Render(matchStr) + after
+		}
+	}
+	return text
+}
+
+func renderEntryRow(cursor string, entry *model.TimeEntryDetail, desc, project string, cols timelineColWidths, styles tuiStyles, active, selected bool, searchQuery string) string {
 	statusText := "○"
 	statusCell := styles.draft
 	if entry.Status == model.StatusConfirmed {
@@ -3168,17 +3194,29 @@ func renderEntryRow(cursor string, entry *model.TimeEntryDetail, desc, project s
 		dot = lipgloss.NewStyle().Foreground(lipgloss.Color(*entry.ProjectColor)).Render("● ")
 		dotWidth = 2
 	}
-	projectCell := lipgloss.NewStyle()
+
+	descText := truncateForWidth(desc, cols.Description)
+	if active && searchQuery != "" {
+		descText = highlightSearch(descText, searchQuery, styles.searchHighlight)
+	}
+	descCell := lipgloss.NewStyle().Width(cols.Description).Render(descText)
+
+	projectText := truncateForWidth(project, cols.Project-dotWidth)
+	if active && searchQuery != "" {
+		projectText = highlightSearch(projectText, searchQuery, styles.searchHighlight)
+	}
+	projectCell := lipgloss.NewStyle().Width(cols.Project).Render(dot + projectText)
+
 	line := lipgloss.JoinHorizontal(lipgloss.Top,
 		lipgloss.NewStyle().Width(cols.Cursor).Render(cursor),
 		lipgloss.NewStyle().Width(1).Render(" "),
 		lipgloss.NewStyle().Width(cols.Time).Render(padRight(formatRange(entry.StartedAt, entry.EndedAt), cols.Time)),
 		lipgloss.NewStyle().Width(1).Render(" "),
-		lipgloss.NewStyle().Width(cols.Description).Render(padRight(truncateForWidth(desc, cols.Description), cols.Description)),
+		descCell,
 		lipgloss.NewStyle().Width(1).Render(" "),
 		statusCell.Width(cols.Status).Render(padRight(statusText, cols.Status)),
 		lipgloss.NewStyle().Width(1).Render(" "),
-		projectCell.Width(cols.Project).Render(padRight(dot+truncateForWidth(project, cols.Project-dotWidth), cols.Project)),
+		projectCell,
 	)
 	rowStyle := styles.baseRow
 	switch {
@@ -3266,6 +3304,7 @@ func renderDayTimeline(m AppModel, styles tuiStyles) string {
 type monthProjectTotal struct {
 	name     string
 	duration time.Duration
+	color    string
 }
 
 type monthTimeOffLabel struct {
@@ -3326,7 +3365,23 @@ func renderMonthCell(day, monthStart, selectedDay time.Time, summary monthDaySum
 	if summary.total > 0 {
 		lines = append(lines, formatWorkDuration(summary.total))
 	}
-	available := max(0, height-len(lines))
+
+	maxContent := height
+	indicatorLine := ""
+	if summary.total > 0 {
+		maxContent = height - 1
+		indicator := "●"
+		if len(summary.projects) > 0 && summary.projects[0].color != "" {
+			indicator = lipgloss.NewStyle().Foreground(lipgloss.Color(summary.projects[0].color)).Render(indicator)
+		}
+		if w := lipgloss.Width(indicator); w < innerWidth {
+			indicatorLine = indicator + strings.Repeat(" ", innerWidth-w)
+		} else {
+			indicatorLine = indicator
+		}
+	}
+
+	available := max(0, maxContent-len(lines))
 	if available > 0 && len(summary.projects) > 0 {
 		show := min(len(summary.projects), available)
 		if len(summary.projects) > available && available > 0 {
@@ -3337,20 +3392,24 @@ func renderMonthCell(day, monthStart, selectedDay time.Time, summary monthDaySum
 			lines = append(lines, fmt.Sprintf("%s %s", project.name, formatWorkDuration(project.duration)))
 		}
 		remaining := len(summary.projects) - show
-		if remaining > 0 && len(lines) < height {
+		if remaining > 0 && len(lines) < maxContent {
 			lines = append(lines, fmt.Sprintf("+%d more", remaining))
 		}
 	}
-	for len(lines) < height {
+	for len(lines) < maxContent {
 		lines = append(lines, "")
 	}
+
 	for i := range lines {
 		lines[i] = padRight(truncateForWidth(lines[i], innerWidth), innerWidth)
+	}
+	if indicatorLine != "" {
+		lines = append(lines, indicatorLine)
 	}
 
 	style := lipgloss.NewStyle().Border(lipgloss.NormalBorder()).Width(width).Height(height)
 	if dayKey(day) == dayKey(selectedDay) {
-		style = style.Background(lipgloss.Color("60")).Foreground(lipgloss.Color("255")).Bold(true)
+		style = style.Reverse(true).Bold(true)
 	} else if dayKey(day) == dayKey(time.Now()) {
 		style = style.BorderForeground(lipgloss.Color("6"))
 	} else if day.Month() != monthStart.Month() {
@@ -3385,6 +3444,7 @@ func monthColumnWidths(totalWidth int) []int {
 
 func monthSummaries(entries []model.TimeEntryDetail, timeOffRecords []model.TimeOffDayDetail) map[string]monthDaySummary {
 	totals := map[string]map[string]time.Duration{}
+	colors := map[string]map[string]string{}
 	for _, entry := range entries {
 		duration := timelineBlockEnd(entry).Sub(entry.StartedAt)
 		if duration <= 0 {
@@ -3393,12 +3453,16 @@ func monthSummaries(entries []model.TimeEntryDetail, timeOffRecords []model.Time
 		day := dayKey(entry.StartedAt)
 		if totals[day] == nil {
 			totals[day] = map[string]time.Duration{}
+			colors[day] = map[string]string{}
 		}
 		project := "unassigned"
 		if entry.ProjectName != "" {
 			project = entry.ProjectName
 		}
 		totals[day][project] += duration
+		if colors[day][project] == "" && entry.ProjectColor != nil && *entry.ProjectColor != "" {
+			colors[day][project] = *entry.ProjectColor
+		}
 	}
 
 	summaries := make(map[string]monthDaySummary, len(totals))
@@ -3406,7 +3470,7 @@ func monthSummaries(entries []model.TimeEntryDetail, timeOffRecords []model.Time
 		summary := monthDaySummary{}
 		for name, duration := range projects {
 			summary.total += duration
-			summary.projects = append(summary.projects, monthProjectTotal{name: name, duration: duration})
+			summary.projects = append(summary.projects, monthProjectTotal{name: name, duration: duration, color: colors[day][name]})
 		}
 		sort.Slice(summary.projects, func(i, j int) bool {
 			if summary.projects[i].duration == summary.projects[j].duration {
@@ -3818,8 +3882,8 @@ func inspectorScrollbar(totalLines, visibleLines, offset int) (thumbStart, thumb
 
 func renderInspectorScrollbar(vp viewport.Model, height int, styles tuiStyles) string {
 	thumbStart, thumbEnd := inspectorScrollbar(vp.TotalLineCount(), vp.Height, vp.YOffset)
-	trackStyle := lipgloss.NewStyle().Background(lipgloss.Color("236"))
-	thumbStyle := lipgloss.NewStyle().Background(lipgloss.Color("4"))
+	trackStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	thumbStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
 	return renderScrollbarColumn(height, thumbStart, thumbEnd, trackStyle, thumbStyle)
 }
 
@@ -3979,8 +4043,8 @@ func renderDayScrollbar(m AppModel, styles tuiStyles) string {
 
 	// 4 header lines (date, subheader, column header, separator) + row lines + 1 footer
 	totalLines := 4 + len(rows) + 1
-	trackStyle := lipgloss.NewStyle().Background(lipgloss.Color("236"))
-	thumbStyle := lipgloss.NewStyle().Background(lipgloss.Color("4"))
+	trackStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	thumbStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
 	return renderScrollbarColumn(totalLines, 4+thumbStart, 4+thumbEnd, trackStyle, thumbStyle)
 }
 
@@ -4006,7 +4070,10 @@ func renderScrollbarCell(thumb bool, style lipgloss.Style) string {
 		}
 		return "│"
 	}
-	return style.Render(" ")
+	if thumb {
+		return style.Render("█")
+	}
+	return style.Render("┃")
 }
 
 func timeCellIsSlotHighlighted(m AppModel, row dayTimelineRow) bool {
@@ -4189,17 +4256,12 @@ func renderVerticalEntryCell(viewportStart, slotStart, slotEnd, itemStart, itemE
 		return renderVerticalRangeCell(viewportStart, slotStart, slotEnd, itemStart, itemEnd, touchesAbove, touchesBelow, true, width, label, baseStyle, styles)
 	}
 	text := outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart, itemEnd, touchesAbove, touchesBelow, width, label)
-	if strings.TrimSpace(text) == "" {
-		return padRight("", width)
-	}
-	return baseStyle.Render(text)
+	blockStyle := baseStyle.Copy().Background(baseStyle.GetForeground()).UnsetForeground().Foreground(lipgloss.Color("0"))
+	return blockStyle.Render(text)
 }
 
 func renderVerticalRangeCell(viewportStart, slotStart, slotEnd, itemStart, itemEnd time.Time, touchesAbove, touchesBelow, focused bool, width int, label string, baseStyle lipgloss.Style, styles tuiStyles) string {
 	text := outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart, itemEnd, touchesAbove, touchesBelow, width, label)
-	if strings.TrimSpace(text) == "" {
-		return padRight("", width)
-	}
 	style := baseStyle
 	if focused {
 		style = styles.activePicker
@@ -4213,7 +4275,7 @@ func outlinedBlockCell(slotStart, slotEnd, itemStart, itemEnd time.Time, width i
 
 func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart, itemEnd time.Time, touchesAbove, touchesBelow bool, width int, label string) string {
 	if width <= 1 {
-		return "│"
+		return " "
 	}
 	starts := !itemStart.Before(slotStart) && itemStart.Before(slotEnd)
 	ends := itemEnd.After(slotStart) && !itemEnd.After(slotEnd)
@@ -4226,80 +4288,65 @@ func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart,
 	anchoredTop := entryAnchoredAtViewportTop(viewportStart, itemStart)
 	topClipped := entryClippedAtViewportTop(viewportStart, slotStart, itemStart)
 	topAnchorRow := anchoredTop && slotStart.Equal(viewportStart)
-	innerWidth := max(0, width-2)
-	fill := strings.Repeat("─", innerWidth)
-	space := strings.Repeat(" ", innerWidth)
 	if starts && ends {
-		if lipgloss.Width(label) > innerWidth && lipgloss.Width(label) <= width {
+		if lipgloss.Width(label) > max(0, width-2) && lipgloss.Width(label) <= width {
 			return compactBlockLabel(label, width)
 		}
-		return borderLabelRow('┌', '┐', label, width)
+		return blockLabelRow(label, width)
 	}
 	if topAnchorRow && starts {
 		if !hasInteriorRow {
-			return borderLabelRow('┌', '┐', label, width)
+			return blockLabelRow(label, width)
 		}
-		return "┌" + fill + "┐"
+		return padRight("", width)
 	}
 	if topClipped && ends {
-		return "└" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "┘"
+		return blockLabelRow(label, width)
 	}
 	if topClipped {
-		return "│" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "│"
+		return blockLabelRow(label, width)
 	}
 	if starts && touchesAbove {
 		if preferInteriorLabel && !hasInteriorRow {
-			return borderLabelRow('├', '┤', label, width)
+			return blockLabelRow(label, width)
 		}
-		return "├" + fill + "┤"
+		return padRight("", width)
 	}
 	if starts {
 		if preferTopBorderLabel {
-			return borderLabelRow('┌', '┐', label, width)
+			return blockLabelRow(label, width)
 		}
 		if containsMid && !anchoredTop {
-			return borderLabelRow('┌', '┐', label, width)
+			return blockLabelRow(label, width)
 		}
-		return "┌" + fill + "┐"
+		return padRight("", width)
 	}
 	if ends {
 		if preferInteriorLabel && !hasInteriorRow {
-			return "└" + fill + "┘"
+			return padRight("", width)
 		}
 		if touchesBelow {
-			return "│" + space + "│"
+			return padRight("", width)
 		}
 		if containsMid && !anchoredTop && preferInteriorLabel {
-			return borderLabelRow('└', '┘', label, width)
+			return blockLabelRow(label, width)
 		}
 		if containsMid && !anchoredTop && !preferTopBorderLabel {
-			return borderLabelRow('┌', '┐', label, width)
+			return blockLabelRow(label, width)
 		}
 		if touchesBelow {
-			return "├" + fill + "┤"
+			return padRight("", width)
 		}
-		return "└" + fill + "┘"
+		return padRight("", width)
 	}
 	if containsMid && (!preferTopBorderLabel || preferInteriorLabel) {
-		return "│" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "│"
+		return blockLabelRow(label, width)
 	}
-	return "│" + space + "│"
+	return padRight("", width)
 }
 
-func borderLabelRow(left, right rune, label string, width int) string {
-	if width <= 1 {
-		return string(left)
-	}
-	innerWidth := max(0, width-2)
-	prefix := ""
-	availableWidth := innerWidth
-	if innerWidth > 1 {
-		prefix = "─"
-		availableWidth--
-	}
-	trimmed := truncateForWidth(label, availableWidth)
-	fill := strings.Repeat("─", max(0, innerWidth-lipgloss.Width(prefix)-lipgloss.Width(trimmed)))
-	return string(left) + prefix + trimmed + fill + string(right)
+func blockLabelRow(label string, width int) string {
+	return padRight(truncateForWidth(label, width), width)
 }
 
 func entryAnchoredAtViewportTop(viewportStart, itemStart time.Time) bool {
@@ -5643,7 +5690,7 @@ func renderDashboardHeatmapCell(day, selected time.Time, totalSecs int, records 
 	}
 	cell := string(fill) + " "
 	if dayKey(day) == dayKey(selected) {
-		return lipgloss.NewStyle().Background(lipgloss.Color("60")).Foreground(lipgloss.Color("255")).Bold(true).Render(cell)
+		return lipgloss.NewStyle().Reverse(true).Bold(true).Render(cell)
 	}
 	if dayKey(day) == dayKey(time.Now()) {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true).Render(cell)
@@ -6437,7 +6484,30 @@ func renderOverlapChooserDialog(m AppModel, styles tuiStyles, background string)
 		if entry.ProjectName != "" {
 			project = entry.ProjectName
 		}
-		label := fmt.Sprintf("%s | %s | %s | %s", formatRange(entry.StartedAt, entry.EndedAt), entry.Operator, project, timelineBlockLabel(entry))
+
+		dot := ""
+		if entry.ProjectColor != nil && *entry.ProjectColor != "" {
+			dot = lipgloss.NewStyle().Foreground(lipgloss.Color(*entry.ProjectColor)).Render("● ")
+		}
+
+		duration := timelineBlockEnd(entry).Sub(entry.StartedAt)
+		bar := ""
+		if duration > 0 {
+			blocks := min(4, int(duration/(30*time.Minute))+1)
+			bar = " " + strings.Repeat("█", blocks) + strings.Repeat("░", 4-blocks)
+		}
+
+		baseLabel := fmt.Sprintf("%s | %s | %s", formatRange(entry.StartedAt, entry.EndedAt), entry.Operator, project)
+		if desc := timelineBlockLabel(entry); desc != "" {
+			baseLabel += " | " + desc
+		}
+
+		textWidth := innerWidth - 2 - lipgloss.Width(dot) - lipgloss.Width(bar)
+		if textWidth < 0 {
+			textWidth = 0
+		}
+		label := dot + truncateForWidth(baseLabel, textWidth) + bar
+
 		content.WriteString(renderDialogPickerLine(label, i == m.overlapChoiceCursor, true, styles, innerWidth) + "\n")
 	}
 	content.WriteString("\n" + styles.muted.Render("up/down move | enter edit | esc cancel"))
