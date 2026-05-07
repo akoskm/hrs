@@ -749,6 +749,154 @@ func TestEditDialogRejectsInvalidTimeSuffix(t *testing.T) {
 	}
 }
 
+func TestEditDialogDescriptionHistory(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "p",
+		Description:  "First task",
+		StartedAt:    time.Date(2026, 4, 3, 11, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "p",
+		Description:  "Second task",
+		StartedAt:    time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	// cursor starts on the most recent entry (First task)
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app := updated.(AppModel)
+	if app.mode != modeEntryEdit {
+		t.Fatalf("mode = %q, want entry-edit", app.mode)
+	}
+	if app.entryInput != "First task" {
+		t.Fatalf("entryInput = %q, want First task", app.entryInput)
+	}
+
+	// up on description field should cycle to older description
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	app = updated.(AppModel)
+	if app.entryInput != "Second task" {
+		t.Fatalf("after up: entryInput = %q, want Second task", app.entryInput)
+	}
+
+	// down on description field should cycle back to newer description
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = updated.(AppModel)
+	if app.entryInput != "First task" {
+		t.Fatalf("after down: entryInput = %q, want First task", app.entryInput)
+	}
+
+	// down again should restore saved text (original description)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = updated.(AppModel)
+	if app.entryInput != "First task" {
+		t.Fatalf("after second down: entryInput = %q, want First task", app.entryInput)
+	}
+}
+
+func TestEditDialogUpDownOnProjectField(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P1", Code: "p1", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P2", Code: "p2", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "p1",
+		Description:  "Task",
+		StartedAt:    time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app := updated.(AppModel)
+
+	// tab to project field
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	if app.entryInputField != "project" {
+		t.Fatalf("entryInputField = %q, want project", app.entryInputField)
+	}
+
+	initialCursor := app.entryProjectCursor
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = updated.(AppModel)
+	if app.entryProjectCursor != initialCursor+1 {
+		t.Fatalf("project cursor = %d, want %d", app.entryProjectCursor, initialCursor+1)
+	}
+}
+
+func TestEditDialogUpDownOnStartFieldDoesNothing(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "p",
+		Description:  "Task",
+		StartedAt:    time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app := updated.(AppModel)
+
+	// tab twice to start field (description -> project -> start)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	if app.entryInputField != "start" {
+		t.Fatalf("entryInputField = %q, want start", app.entryInputField)
+	}
+
+	initialInput := app.entryInput
+	initialProjectCursor := app.entryProjectCursor
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	app = updated.(AppModel)
+	if app.entryInput != initialInput {
+		t.Fatalf("up changed entryInput on start field: %q vs %q", app.entryInput, initialInput)
+	}
+	if app.entryProjectCursor != initialProjectCursor {
+		t.Fatalf("up changed project cursor on start field: %d vs %d", app.entryProjectCursor, initialProjectCursor)
+	}
+}
+
 func TestPickerHighlightsFullRow(t *testing.T) {
 	line := renderPickerLine("Test Project", 1, 1, newStyles(80), 20)
 	if !strings.Contains(line, "Test Project") {
@@ -2193,6 +2341,9 @@ func TestSingleUnassignEntry(t *testing.T) {
 	if !strings.Contains(stripANSI(app.View()), "Unassign") {
 		t.Fatalf("edit dialog missing unassign option: %q", stripANSI(app.View()))
 	}
+	// tab to project field, then up to select Unassign
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyUp})
 	app = updated.(AppModel)
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})

@@ -108,7 +108,10 @@ type AppModel struct {
 	entryEndInput        string
 	entryInputField      string
 	entryInputCursor     int
-	entryProjectOnly     bool
+	entryProjectOnly              bool
+	entryDescriptionHistory       []string
+	entryDescriptionHistoryCursor int
+	entryDescriptionHistorySaved  string
 	dayFocusKind         string
 	dayGapFocus          int
 	daySlotStart         time.Time
@@ -1908,8 +1911,28 @@ func (m *AppModel) openEntryEditDialog(projectOnly bool) {
 	if entry.ProjectID != nil {
 		m.entryProjectCursor = m.projectIndex(*entry.ProjectID) + 1
 	}
+	m.entryDescriptionHistory = buildDescriptionHistory(m.allEntries, m.entryInput)
+	m.entryDescriptionHistoryCursor = -1
+	m.entryDescriptionHistorySaved = m.entryInput
 	m.err = nil
 	m.caretVisible = true
+}
+
+func buildDescriptionHistory(entries []model.TimeEntryDetail, current string) []string {
+	seen := make(map[string]bool)
+	var history []string
+	for _, entry := range entries {
+		if entry.Description == nil || *entry.Description == "" {
+			continue
+		}
+		desc := strings.TrimSpace(*entry.Description)
+		if desc == current || seen[desc] {
+			continue
+		}
+		seen[desc] = true
+		history = append(history, desc)
+	}
+	return history
 }
 
 func (m *AppModel) openOverlapChooser(indices []int) {
@@ -1951,6 +1974,9 @@ func (m *AppModel) closeEntryEditDialog() {
 	m.entryEndInput = ""
 	m.entryProjectCursor = 0
 	m.entryProjectOnly = false
+	m.entryDescriptionHistory = nil
+	m.entryDescriptionHistoryCursor = -1
+	m.entryDescriptionHistorySaved = ""
 	m.caretVisible = false
 }
 
@@ -2060,12 +2086,32 @@ func (m *AppModel) handleEntryEditKey(msg tea.KeyMsg) tea.Cmd {
 			m.moveEntryFieldCursorWord(1)
 		}
 	case "up", "k":
-		if m.entryProjectCursor > 0 {
-			m.entryProjectCursor--
+		if !m.entryProjectOnly && m.entryInputField == "description" {
+			if m.entryDescriptionHistoryCursor < len(m.entryDescriptionHistory)-1 {
+				m.entryDescriptionHistoryCursor++
+				m.entryInput = m.entryDescriptionHistory[m.entryDescriptionHistoryCursor]
+				m.entryInputCursor = len([]rune(m.entryInput))
+			}
+		} else if m.entryInputField == "project" {
+			if m.entryProjectCursor > 0 {
+				m.entryProjectCursor--
+			}
 		}
 	case "down", "j":
-		if m.entryProjectCursor < len(m.projects) {
-			m.entryProjectCursor++
+		if !m.entryProjectOnly && m.entryInputField == "description" {
+			if m.entryDescriptionHistoryCursor > 0 {
+				m.entryDescriptionHistoryCursor--
+				m.entryInput = m.entryDescriptionHistory[m.entryDescriptionHistoryCursor]
+				m.entryInputCursor = len([]rune(m.entryInput))
+			} else if m.entryDescriptionHistoryCursor == 0 {
+				m.entryDescriptionHistoryCursor = -1
+				m.entryInput = m.entryDescriptionHistorySaved
+				m.entryInputCursor = len([]rune(m.entryInput))
+			}
+		} else if m.entryInputField == "project" {
+			if m.entryProjectCursor < len(m.projects) {
+				m.entryProjectCursor++
+			}
 		}
 	case "backspace":
 		if !m.entryProjectOnly {
@@ -6637,7 +6683,7 @@ func entryEditHelp(m AppModel) string {
 	if m.entryProjectOnly {
 		return "up/down project | enter save | esc cancel"
 	}
-	return "up/down project | tab focus | enter save | esc cancel"
+	return "tab focus | up/down navigate | enter save | esc cancel"
 }
 
 func projectColorLabel(project model.Project) string {
