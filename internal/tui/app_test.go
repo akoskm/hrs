@@ -971,13 +971,13 @@ func TestOutlinedBlockCell(t *testing.T) {
 	slotEnd := slotStart.Add(15 * time.Minute)
 	itemStart := slotStart
 	itemEnd := slotStart.Add(45 * time.Minute)
-	if got := outlinedBlockCell(slotStart, slotEnd, itemStart, itemEnd, 12, "TUI"); strings.TrimSpace(got) != "" {
-		t.Fatalf("start cell = %q, want empty space row for multi-slot start", got)
+	if got := outlinedBlockCell(slotStart, slotEnd, itemStart, itemEnd, 12, "TUI"); !strings.Contains(got, "┌") || !strings.Contains(got, "┐") {
+		t.Fatalf("start cell = %q, want outlined top", got)
 	}
 	midStart := slotStart.Add(15 * time.Minute)
 	midEnd := midStart.Add(15 * time.Minute)
-	if got := outlinedBlockCell(midStart, midEnd, itemStart, itemEnd, 12, "TUI"); strings.TrimSpace(got) != "TUI" {
-		t.Fatalf("mid cell = %q, want label without borders", got)
+	if got := outlinedBlockCell(midStart, midEnd, itemStart, itemEnd, 12, "TUI"); !strings.Contains(got, "│") {
+		t.Fatalf("mid cell = %q, want vertical borders", got)
 	}
 }
 
@@ -1010,8 +1010,8 @@ func TestOutlinedBlockCellKeepsBottomBorderWhenShortBlockLabelMovesToTop(t *test
 	if strings.Contains(got, "verify hotfix in prod") {
 		t.Fatalf("ending midpoint cell = %q, want label only on top border row", got)
 	}
-	if got != strings.Repeat(" ", 24) {
-		t.Fatalf("ending midpoint cell = %q, want empty space row", got)
+	if got != "└──────────────────────┘" {
+		t.Fatalf("ending midpoint cell = %q, want preserved bottom border", got)
 	}
 }
 
@@ -1022,7 +1022,7 @@ func TestOutlinedBlockCellShowsLabelOnStartingMidpointRow(t *testing.T) {
 	slotEnd := time.Date(2026, 4, 9, 13, 15, 0, 0, time.Local)
 
 	got := outlinedBlockCellWithViewport(slotStart, slotEnd, time.Time{}, itemStart, itemEnd, false, false, 24, "check why language")
-	want := "check why language      "
+	want := "┌─check why language───┐"
 	if got != want {
 		t.Fatalf("starting midpoint cell = %q, want %q", got, want)
 	}
@@ -1089,11 +1089,11 @@ func TestOutlinedBlockCellSharedBoundaryForTouchingEntries(t *testing.T) {
 	lowerSlotEnd := boundary.Add(15 * time.Minute)
 	lowerEnd := boundary.Add(75 * time.Minute)
 
-	if got := outlinedBlockCellWithViewport(upperSlotStart, upperSlotEnd, time.Time{}, upperStart, boundary, false, true, 12, "upper"); strings.TrimSpace(got) != "" {
-		t.Fatalf("upper touching cell = %q, want empty space row", got)
+	if got := outlinedBlockCellWithViewport(upperSlotStart, upperSlotEnd, time.Time{}, upperStart, boundary, false, true, 12, "upper"); strings.Contains(got, "├") || strings.Contains(got, "┤") {
+		t.Fatalf("upper touching cell = %q, want no duplicate shared boundary", got)
 	}
-	if got := outlinedBlockCellWithViewport(lowerSlotStart, lowerSlotEnd, time.Time{}, boundary, lowerEnd, true, false, 12, "lower"); strings.TrimSpace(got) != "" {
-		t.Fatalf("lower touching cell = %q, want empty space row", got)
+	if got := outlinedBlockCellWithViewport(lowerSlotStart, lowerSlotEnd, time.Time{}, boundary, lowerEnd, true, false, 12, "lower"); !strings.Contains(got, "├") || !strings.Contains(got, "┤") {
+		t.Fatalf("lower touching cell = %q, want shared boundary on lower start row", got)
 	}
 }
 
@@ -1106,7 +1106,7 @@ func TestOutlinedBlockCellTouchingShortBlockWithoutInteriorRowUsesSharedBoundary
 	lastSlotStart := boundary.Add(15 * time.Minute)
 	lastSlotEnd := itemEnd
 
-	if got := outlinedBlockCellWithViewport(firstSlotStart, firstSlotEnd, time.Time{}, itemStart, itemEnd, true, false, 24, "fix e2e test suite"); !strings.Contains(got, "fix e2e test suite") {
+	if got := outlinedBlockCellWithViewport(firstSlotStart, firstSlotEnd, time.Time{}, itemStart, itemEnd, true, false, 24, "fix e2e test suite"); !strings.Contains(got, "fix e2e test suite") || !strings.Contains(got, "├") {
 		t.Fatalf("first touching short cell = %q, want label on shared boundary", got)
 	}
 	if got := outlinedBlockCellWithViewport(lastSlotStart, lastSlotEnd, time.Time{}, itemStart, itemEnd, true, false, 24, "fix e2e test suite"); strings.Contains(got, "fix e2e test suite") {
@@ -1145,13 +1145,9 @@ func TestRenderActivityCellKeepsBorderBetweenDifferentProjects(t *testing.T) {
 
 	app := AppModel{entries: entries}
 	styles := newStyles(80)
-	rendered := renderActivityCell(app, time.Time{}, boundary, boundary.Add(15*time.Minute), entries, 24, styles)
-	got := stripANSI(rendered)
-	if strings.TrimSpace(got) != "" {
-		t.Fatalf("lower cross-project cell = %q, want empty background block", got)
-	}
-	if lipgloss.Width(got) != 24 {
-		t.Fatalf("lower cross-project cell width = %d, want 24", lipgloss.Width(got))
+	got := stripANSI(renderActivityCell(app, time.Time{}, boundary, boundary.Add(15*time.Minute), entries, 24, styles))
+	if !strings.Contains(got, "┌") || strings.Contains(got, "├") {
+		t.Fatalf("lower cross-project cell = %q, want fresh top border", got)
 	}
 }
 
@@ -1190,22 +1186,14 @@ func TestRenderActivityCellKeepsBorderBetweenDifferentDescriptions(t *testing.T)
 	app := AppModel{entries: entries}
 	styles := newStyles(80)
 
-	upperRendered := renderActivityCell(app, time.Time{}, boundary.Add(-15*time.Minute), boundary, entries, 30, styles)
-	upper := stripANSI(upperRendered)
-	if strings.TrimSpace(upper) != "" {
-		t.Fatalf("upper cell = %q, want empty background block", upper)
-	}
-	if lipgloss.Width(upper) != 30 {
-		t.Fatalf("upper cell width = %d, want 30", lipgloss.Width(upper))
+	upper := stripANSI(renderActivityCell(app, time.Time{}, boundary.Add(-15*time.Minute), boundary, entries, 30, styles))
+	if !strings.Contains(upper, "└") {
+		t.Fatalf("upper cell = %q, want closing border", upper)
 	}
 
-	lowerRendered := renderActivityCell(app, time.Time{}, boundary, boundary.Add(15*time.Minute), entries, 30, styles)
-	lower := stripANSI(lowerRendered)
-	if strings.TrimSpace(lower) != "" {
-		t.Fatalf("lower cell = %q, want empty background block", lower)
-	}
-	if lipgloss.Width(lower) != 30 {
-		t.Fatalf("lower cell width = %d, want 30", lipgloss.Width(lower))
+	lower := stripANSI(renderActivityCell(app, time.Time{}, boundary, boundary.Add(15*time.Minute), entries, 30, styles))
+	if !strings.Contains(lower, "┌") || strings.Contains(lower, "├") {
+		t.Fatalf("lower cell = %q, want fresh top border", lower)
 	}
 }
 
@@ -6217,8 +6205,8 @@ func TestDayViewFocusedThreeRowEntryTouchingAboveShowsTitleInsideBlock(t *testin
 	if strings.Contains(firstRow, "freshly created block") {
 		t.Fatalf("10:00 row = %q, want no title in top border row, got:\n%s", firstRow, view)
 	}
-	if strings.TrimSpace(firstRow) != "10:00" {
-		t.Fatalf("10:00 row = %q, want time only on lower block start row, got:\n%s", firstRow, view)
+	if !strings.Contains(firstRow, "10:00 ┌") {
+		t.Fatalf("10:00 row = %q, want fresh top border on lower block start row, got:\n%s", firstRow, view)
 	}
 	if !strings.Contains(secondRow, "freshly created block") {
 		t.Fatalf("row after 10:00 = %q, want title inside body, got:\n%s", secondRow, view)

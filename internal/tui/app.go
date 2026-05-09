@@ -4312,12 +4312,17 @@ func renderVerticalEntryCell(viewportStart, slotStart, slotEnd, itemStart, itemE
 		return renderVerticalRangeCell(viewportStart, slotStart, slotEnd, itemStart, itemEnd, touchesAbove, touchesBelow, true, width, label, baseStyle, styles)
 	}
 	text := outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart, itemEnd, touchesAbove, touchesBelow, width, label)
-	blockStyle := baseStyle.Copy().Background(baseStyle.GetForeground()).UnsetForeground().Foreground(lipgloss.Color("0"))
-	return blockStyle.Render(text)
+	if strings.TrimSpace(text) == "" {
+		return padRight("", width)
+	}
+	return baseStyle.Render(text)
 }
 
 func renderVerticalRangeCell(viewportStart, slotStart, slotEnd, itemStart, itemEnd time.Time, touchesAbove, touchesBelow, focused bool, width int, label string, baseStyle lipgloss.Style, styles tuiStyles) string {
 	text := outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart, itemEnd, touchesAbove, touchesBelow, width, label)
+	if strings.TrimSpace(text) == "" {
+		return padRight("", width)
+	}
 	style := baseStyle
 	if focused {
 		style = styles.activePicker
@@ -4331,7 +4336,7 @@ func outlinedBlockCell(slotStart, slotEnd, itemStart, itemEnd time.Time, width i
 
 func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart, itemEnd time.Time, touchesAbove, touchesBelow bool, width int, label string) string {
 	if width <= 1 {
-		return " "
+		return "│"
 	}
 	starts := !itemStart.Before(slotStart) && itemStart.Before(slotEnd)
 	ends := itemEnd.After(slotStart) && !itemEnd.After(slotEnd)
@@ -4344,65 +4349,80 @@ func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart,
 	anchoredTop := entryAnchoredAtViewportTop(viewportStart, itemStart)
 	topClipped := entryClippedAtViewportTop(viewportStart, slotStart, itemStart)
 	topAnchorRow := anchoredTop && slotStart.Equal(viewportStart)
+	innerWidth := max(0, width-2)
+	fill := strings.Repeat("─", innerWidth)
+	space := strings.Repeat(" ", innerWidth)
 	if starts && ends {
-		if lipgloss.Width(label) > max(0, width-2) && lipgloss.Width(label) <= width {
+		if lipgloss.Width(label) > innerWidth && lipgloss.Width(label) <= width {
 			return compactBlockLabel(label, width)
 		}
-		return blockLabelRow(label, width)
+		return borderLabelRow('┌', '┐', label, width)
 	}
 	if topAnchorRow && starts {
 		if !hasInteriorRow {
-			return blockLabelRow(label, width)
+			return borderLabelRow('┌', '┐', label, width)
 		}
-		return padRight("", width)
+		return "┌" + fill + "┐"
 	}
 	if topClipped && ends {
-		return blockLabelRow(label, width)
+		return "└" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "┘"
 	}
 	if topClipped {
-		return blockLabelRow(label, width)
+		return "│" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "│"
 	}
 	if starts && touchesAbove {
 		if preferInteriorLabel && !hasInteriorRow {
-			return blockLabelRow(label, width)
+			return borderLabelRow('├', '┤', label, width)
 		}
-		return padRight("", width)
+		return "├" + fill + "┤"
 	}
 	if starts {
 		if preferTopBorderLabel {
-			return blockLabelRow(label, width)
+			return borderLabelRow('┌', '┐', label, width)
 		}
 		if containsMid && !anchoredTop {
-			return blockLabelRow(label, width)
+			return borderLabelRow('┌', '┐', label, width)
 		}
-		return padRight("", width)
+		return "┌" + fill + "┐"
 	}
 	if ends {
 		if preferInteriorLabel && !hasInteriorRow {
-			return padRight("", width)
+			return "└" + fill + "┘"
 		}
 		if touchesBelow {
-			return padRight("", width)
+			return "│" + space + "│"
 		}
 		if containsMid && !anchoredTop && preferInteriorLabel {
-			return blockLabelRow(label, width)
+			return borderLabelRow('└', '┘', label, width)
 		}
 		if containsMid && !anchoredTop && !preferTopBorderLabel {
-			return blockLabelRow(label, width)
+			return borderLabelRow('┌', '┐', label, width)
 		}
 		if touchesBelow {
-			return padRight("", width)
+			return "├" + fill + "┤"
 		}
-		return padRight("", width)
+		return "└" + fill + "┘"
 	}
 	if containsMid && (!preferTopBorderLabel || preferInteriorLabel) {
-		return blockLabelRow(label, width)
+		return "│" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "│"
 	}
-	return padRight("", width)
+	return "│" + space + "│"
 }
 
-func blockLabelRow(label string, width int) string {
-	return padRight(truncateForWidth(label, width), width)
+func borderLabelRow(left, right rune, label string, width int) string {
+	if width <= 1 {
+		return string(left)
+	}
+	innerWidth := max(0, width-2)
+	prefix := ""
+	availableWidth := innerWidth
+	if innerWidth > 1 {
+		prefix = "─"
+		availableWidth--
+	}
+	trimmed := truncateForWidth(label, availableWidth)
+	fill := strings.Repeat("─", max(0, innerWidth-lipgloss.Width(prefix)-lipgloss.Width(trimmed)))
+	return string(left) + prefix + trimmed + fill + string(right)
 }
 
 func entryAnchoredAtViewportTop(viewportStart, itemStart time.Time) bool {
