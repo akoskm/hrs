@@ -752,8 +752,16 @@ func (m AppModel) View() string {
 		styles = newStyles(m.width)
 	}
 	isDialogOpen := m.mode == modeAssign || m.mode == modeGapEntry || m.mode == modeTimeOff || m.mode == modeEntryEdit || m.mode == modeOverlapChooser || m.mode == modeDeleteConfirm
+	bgMode := m.mode
+	if isDialogOpen {
+		if m.previousMode != "" {
+			bgMode = m.previousMode
+		} else {
+			bgMode = modeTimeline
+		}
+	}
 	var sections []string
-	showDayLayout := m.timelineView == timelineViewDay && (m.mode == modeTimeline || isDialogOpen)
+	showDayLayout := m.timelineView == timelineViewDay && bgMode == modeTimeline
 	if !showDayLayout {
 		sections = append(sections, styles.header.Render(renderHeader(m.entries, m.width)))
 	}
@@ -761,11 +769,11 @@ func (m AppModel) View() string {
 		sections = append(sections, styles.error.Render("✕ "+m.err.Error()))
 	}
 	var b strings.Builder
-	if m.mode == modeReport {
+	if bgMode == modeReport {
 		b.WriteString(renderReportView(m, styles))
-	} else if m.mode == modeDashboard {
+	} else if bgMode == modeDashboard {
 		b.WriteString(renderDashboardView(m, styles))
-	} else if m.mode == modeInbox {
+	} else if bgMode == modeInbox {
 		inspectorWidth := dayInspectorWidth(m.width)
 		listWidth := max(40, m.width-inspectorWidth-2)
 		b.WriteString(renderInboxPane(m, styles, listWidth, dayPaneHeight(m.height)))
@@ -812,10 +820,10 @@ func (m AppModel) View() string {
 		}
 	}
 	body := b.String()
-	if showDayLayout || m.mode == modeInbox {
+	if showDayLayout || bgMode == modeInbox {
 		inspectorWidth := dayInspectorWidth(m.width)
 		inspector := renderInspectorPane(m, styles, inspectorWidth, dayPaneHeight(m.height))
-		if m.mode == modeInbox {
+		if bgMode == modeInbox {
 			selectedItem := m.selectedInboxItem()
 			if selectedItem != nil {
 				inspector = renderInboxInspector(*selectedItem, styles, inspectorWidth)
