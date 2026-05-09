@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -145,6 +146,7 @@ type AppModel struct {
 	inboxPendingEntryID      string
 	inboxPendingItemStart    time.Time
 	inboxPendingItemOperator string
+	inboxChecked         map[int]bool
 	reportPreset         reportPreset
 	reportProjectCursor  int
 	reportResult         db.ReportResult
@@ -2179,16 +2181,8 @@ func (m *AppModel) saveEntryEdit() {
 		m.inboxPendingEntryID = ""
 		m.inboxPendingItemStart = time.Time{}
 		m.inboxPendingItemOperator = ""
-		for i, item := range m.inboxItems {
-			if item.Start.Equal(entry.StartedAt) && item.Operator == entry.Operator {
-				m.inboxItems = append(m.inboxItems[:i], m.inboxItems[i+1:]...)
-				if m.inboxCursor >= len(m.inboxItems) {
-					m.inboxCursor = max(0, len(m.inboxItems)-1)
-				}
-				m.ensureInboxVisible()
-				break
-			}
-		}
+		m.buildInboxItems()
+		m.ensureInboxVisible()
 	}
 	m.closeEntryEditDialog()
 }
@@ -5061,6 +5055,7 @@ func (m *AppModel) closeInbox() {
 	m.inboxSearchActive = false
 	m.inboxSearchQuery = ""
 	m.inboxLastSearch = ""
+	m.inboxChecked = nil
 }
 
 func (m *AppModel) buildInboxItems() {
@@ -5075,6 +5070,7 @@ func (m *AppModel) buildInboxItems() {
 	if m.inboxCursor >= len(m.inboxItems) {
 		m.inboxCursor = max(0, len(m.inboxItems)-1)
 	}
+	m.inboxChecked = make(map[int]bool)
 }
 
 func inboxRangeForPreset(preset inboxPreset, anchor time.Time) (time.Time, time.Time) {
@@ -5127,7 +5123,7 @@ func filterAndMergeInboxSlots(slots []model.ActivitySlot, entries []model.TimeEn
 	for i := 1; i < len(uncovered); i++ {
 		slot := uncovered[i]
 		gap := slot.SlotTime.Sub(current.End)
-		if slot.Operator == current.Operator && gap <= 15*time.Minute {
+		if slot.Operator == current.Operator && slot.Cwd == current.Cwd && gap <= 15*time.Minute {
 			current.End = slot.SlotTime.Add(15 * time.Minute)
 			current.Slots = append(current.Slots, slot)
 			if slot.FirstText != "" {
@@ -5272,7 +5268,29 @@ func (m *AppModel) handleInboxKey(msg tea.KeyMsg) tea.Cmd {
 	case "/":
 		m.inboxSearchActive = true
 		m.inboxSearchQuery = ""
+	case " ":
+		if len(m.inboxItems) > 0 && m.inboxCursor >= 0 && m.inboxCursor < len(m.inboxItems) {
+			m.inboxChecked[m.inboxCursor] = !m.inboxChecked[m.inboxCursor]
+		}
+	case "a":
+		if len(m.inboxItems) == 0 {
+			break
+		}
+		allChecked := true
+		for i := range m.inboxItems {
+			if !m.inboxChecked[i] {
+				allChecked = false
+				break
+			}
+		}
+		for i := range m.inboxItems {
+			m.inboxChecked[i] = !allChecked
+		}
 	case "enter":
+		checked := m.checkedInboxIndices()
+		if len(checked) > 1 {
+			return m.createMergedEntryFromCheckedItems(checked)
+		}
 		if len(m.inboxItems) > 0 && m.inboxCursor >= 0 && m.inboxCursor < len(m.inboxItems) {
 			return m.createEntryFromInboxItem()
 		}
@@ -5450,6 +5468,85 @@ func (m *AppModel) createEntryFromInboxItem() tea.Cmd {
 	return nil
 }
 
+func (m *AppModel) checkedInboxIndices() []int {
+	var checked []int
+	for i := range m.inboxItems {
+		if m.inboxChecked[i] {
+			checked = append(checked, i)
+		}
+	}
+	return checked
+}
+
+func (m *AppModel) createMergedEntryFromCheckedItems(checked []int) tea.Cmd {
+	if len(checked) < 2 {
+		return nil
+	}
+	items := make([]inboxItem, len(checked))
+	for i, idx := range checked {
+		items[i] = m.inboxItems[idx]
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Start.Before(items[j].Start)
+	})
+	first := items[0]
+	last := items[len(items)-1]
+	desc := m.inboxItemDescription(first)
+	projectID, err := m.store.DetectProjectIDByPath(m.ctx, first.Cwd)
+	if err != nil {
+		m.err = err
+		return nil
+	}
+	var input db.AgentEntryUpsertInput
+	if projectID != nil {
+		project, err := m.store.ProjectByID(m.ctx, *projectID)
+		if err != nil {
+			m.err = err
+			return nil
+		}
+		input.ProjectIdent = project.Name
+	}
+	input.Description = desc
+	input.StartedAt = first.Start
+	input.EndedAt = last.End
+	input.Operator = first.Operator
+	input.GitBranch = first.GitBranch
+	input.Cwd = first.Cwd
+	input.SourceRef = fmt.Sprintf("inbox-merge-%s", ulid.Make().String())
+	entry, err := m.store.UpsertAgentEntry(m.ctx, input)
+	if err != nil {
+		m.err = err
+		return nil
+	}
+	if err := m.reloadEntries(); err != nil {
+		m.err = err
+		return nil
+	}
+	m.inboxPendingEntryID = entry.ID
+	m.inboxPendingItemStart = first.Start
+	m.inboxPendingItemOperator = first.Operator
+	m.previousMode = modeInbox
+	for i, e := range m.entries {
+		if e.ID == entry.ID {
+			m.cursor = i
+			break
+		}
+	}
+	m.openEntryEditDialog(false)
+	return nil
+}
+
+func pathBase(p string) string {
+	if p == "" || p == "/" {
+		return p
+	}
+	base := filepath.Base(p)
+	if base == "." || base == "/" {
+		return p
+	}
+	return base
+}
+
 func (m AppModel) inboxItemDescription(item inboxItem) string {
 	if len(item.Texts) > 0 {
 		return item.Texts[0]
@@ -5572,13 +5669,22 @@ func renderInboxList(m AppModel, styles tuiStyles, contentWidth int) string {
 			b.WriteString(styles.dateHeader.Render(renderDateHeader(row.Day, contentWidth)) + "\n")
 			continue
 		}
+		if row.IsCwdHeader {
+			cwdLabel := "📁 " + pathBase(row.Cwd)
+			b.WriteString(styles.muted.Render(truncateForWidth("  "+cwdLabel, contentWidth)) + "\n")
+			continue
+		}
 		marker := "  "
 		if row.Index == m.inboxCursor {
 			marker = "❯ "
 		}
+		checked := "[ ]"
+		if m.inboxChecked[row.Index] {
+			checked = "[x]"
+		}
 		timeRange := formatRange(row.Item.Start, &row.Item.End)
-		desc := truncateForWidth(m.inboxItemDescription(row.Item), contentWidth-lipgloss.Width(marker)-lipgloss.Width(timeRange)-2)
-		line := marker + timeRange + " " + desc
+		desc := truncateForWidth(m.inboxItemDescription(row.Item), contentWidth-lipgloss.Width(marker)-lipgloss.Width(checked)-lipgloss.Width(timeRange)-3)
+		line := marker + checked + " " + timeRange + " " + desc
 		if row.Index == m.inboxCursor {
 			line = styles.activePicker.Render(truncateForWidth(line, contentWidth))
 		} else {
@@ -5594,10 +5700,12 @@ func renderInboxList(m AppModel, styles tuiStyles, contentWidth int) string {
 }
 
 type inboxRow struct {
-	IsHeader bool
-	Day      string
-	Item     inboxItem
-	Index    int
+	IsHeader    bool
+	IsCwdHeader bool
+	Cwd         string
+	Day         string
+	Item        inboxItem
+	Index       int
 }
 
 func inboxRowsData(groups []inboxDayGroup) []inboxRow {
@@ -5605,7 +5713,16 @@ func inboxRowsData(groups []inboxDayGroup) []inboxRow {
 	globalIdx := 0
 	for _, group := range groups {
 		rows = append(rows, inboxRow{IsHeader: true, Day: group.Day})
+		var lastCwd string
 		for _, item := range group.Items {
+			cwd := item.Cwd
+			if cwd == "" {
+				cwd = "unknown"
+			}
+			if cwd != lastCwd {
+				rows = append(rows, inboxRow{IsCwdHeader: true, Cwd: cwd})
+				lastCwd = cwd
+			}
 			rows = append(rows, inboxRow{Item: item, Index: globalIdx})
 			globalIdx++
 		}

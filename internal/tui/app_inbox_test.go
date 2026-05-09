@@ -992,3 +992,138 @@ func TestInboxCursorPreservedAfterDismissWithOkaySearch(t *testing.T) {
 		t.Fatalf("item at cursor = %q, want deploy okay", app.inboxItems[app.inboxCursor].Texts[0])
 	}
 }
+
+func TestInboxCWDAwareMerge(t *testing.T) {
+	_, _, m := setupInboxTest(t, []model.ActivitySlot{
+		{SlotTime: time.Date(2026, 4, 7, 9, 0, 0, 0, time.Local), Operator: "claude-code", Cwd: "/tmp/hrs", MsgCount: 1, FirstText: "a"},
+		{SlotTime: time.Date(2026, 4, 7, 9, 15, 0, 0, time.Local), Operator: "claude-code", Cwd: "/tmp/other", MsgCount: 1, FirstText: "b"},
+	}, time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local), nil)
+
+	if len(m.inboxItems) != 2 {
+		t.Fatalf("inbox items = %d, want 2 (different CWDs should not merge)", len(m.inboxItems))
+	}
+	if m.inboxItems[0].Cwd != "/tmp/hrs" {
+		t.Fatalf("first item CWD = %q, want /tmp/hrs", m.inboxItems[0].Cwd)
+	}
+	if m.inboxItems[1].Cwd != "/tmp/other" {
+		t.Fatalf("second item CWD = %q, want /tmp/other", m.inboxItems[1].Cwd)
+	}
+}
+
+func TestInboxCheckboxToggle(t *testing.T) {
+	_, _, m := setupInboxTest(t, []model.ActivitySlot{
+		{SlotTime: time.Date(2026, 4, 7, 9, 0, 0, 0, time.Local), Operator: "claude-code", MsgCount: 1, FirstText: "a"},
+	}, time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local), nil)
+
+	if len(m.inboxItems) != 1 {
+		t.Fatalf("inbox items = %d, want 1", len(m.inboxItems))
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	app := updated.(AppModel)
+	if !app.inboxChecked[0] {
+		t.Fatal("space should check item 0")
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeySpace})
+	app = updated.(AppModel)
+	if app.inboxChecked[0] {
+		t.Fatal("second space should uncheck item 0")
+	}
+}
+
+func TestInboxCheckAll(t *testing.T) {
+	_, _, m := setupInboxTest(t, []model.ActivitySlot{
+		{SlotTime: time.Date(2026, 4, 7, 9, 0, 0, 0, time.Local), Operator: "claude-code", MsgCount: 1, FirstText: "a"},
+		{SlotTime: time.Date(2026, 4, 7, 11, 0, 0, 0, time.Local), Operator: "claude-code", MsgCount: 1, FirstText: "b"},
+	}, time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local), nil)
+
+	if len(m.inboxItems) != 2 {
+		t.Fatalf("inbox items = %d, want 2", len(m.inboxItems))
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	app := updated.(AppModel)
+	if !app.inboxChecked[0] || !app.inboxChecked[1] {
+		t.Fatalf("a should check all items: checked=%v", app.inboxChecked)
+	}
+
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	app = updated.(AppModel)
+	if app.inboxChecked[0] || app.inboxChecked[1] {
+		t.Fatalf("second a should uncheck all items: checked=%v", app.inboxChecked)
+	}
+}
+
+func TestInboxMergedEntry(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	slots := []model.ActivitySlot{
+		{SlotTime: time.Date(2026, 4, 7, 9, 0, 0, 0, time.Local), Operator: "claude-code", Cwd: "/tmp/hrs", MsgCount: 1, FirstText: "first"},
+		{SlotTime: time.Date(2026, 4, 7, 10, 0, 0, 0, time.Local), Operator: "claude-code", Cwd: "/tmp/hrs", MsgCount: 1, FirstText: "second"},
+	}
+	if err := store.UpsertActivitySlots(ctx, slots); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.dayDate = dayStart(time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local))
+	m.openInbox()
+
+	if len(m.inboxItems) != 2 {
+		t.Fatalf("inbox items = %d, want 2", len(m.inboxItems))
+	}
+
+	// check first item
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	app := updated.(AppModel)
+	// move down and check second item
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeySpace})
+	app = updated.(AppModel)
+
+	if len(app.checkedInboxIndices()) != 2 {
+		t.Fatalf("checked items = %d, want 2", len(app.checkedInboxIndices()))
+	}
+
+	// enter should open edit dialog for merged entry
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.mode != modeEntryEdit {
+		t.Fatalf("mode after enter = %q, want entry-edit", app.mode)
+	}
+
+	// the merged entry should span 09:00 to 10:15
+	if app.entryStartInput != "09:00" {
+		t.Fatalf("merged start = %q, want 09:00", app.entryStartInput)
+	}
+	wantEnd := "10:15"
+	if app.entryEndInput != wantEnd {
+		t.Fatalf("merged end = %q, want %s", app.entryEndInput, wantEnd)
+	}
+
+	// save the entry
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+
+	if app.mode != modeInbox {
+		t.Fatalf("mode after save = %q, want inbox", app.mode)
+	}
+	if len(app.inboxItems) != 0 {
+		t.Fatalf("inbox items after save = %d, want 0", len(app.inboxItems))
+	}
+}
