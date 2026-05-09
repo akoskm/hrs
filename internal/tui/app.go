@@ -761,7 +761,7 @@ func (m AppModel) View() string {
 		}
 	}
 	var sections []string
-	showDayLayout := m.timelineView == timelineViewDay && bgMode == modeTimeline
+	showDayLayout := m.timelineView == timelineViewDay && (bgMode == modeTimeline || bgMode == modeInbox)
 	if !showDayLayout {
 		sections = append(sections, styles.header.Render(renderHeader(m.entries, m.width)))
 	}
@@ -1884,6 +1884,7 @@ func (m *AppModel) openGapEntryDialog() {
 	rng := m.selectedCreateRange()
 	m.slotMarkStart = time.Time{}
 	m.slotMarkSpan = 0
+	m.previousMode = m.mode
 	m.mode = modeGapEntry
 	m.gapInput = ""
 	m.gapInputField = "description"
@@ -1900,6 +1901,7 @@ func (m *AppModel) openEntryEditDialog(projectOnly bool) {
 		return
 	}
 	entry := m.entries[m.cursor]
+	m.previousMode = m.mode
 	m.mode = modeEntryEdit
 	m.entryProjectOnly = projectOnly
 	m.entryInputField = "description"
@@ -1949,6 +1951,7 @@ func (m *AppModel) openOverlapChooser(indices []int) {
 	if len(indices) < 2 {
 		return
 	}
+	m.previousMode = m.mode
 	m.mode = modeOverlapChooser
 	m.overlapChoiceIndices = append(m.overlapChoiceIndices[:0], indices...)
 	m.overlapChoiceCursor = 0
@@ -2848,6 +2851,7 @@ func (m *AppModel) selectedTimeOffType() *model.TimeOffType {
 }
 
 func (m *AppModel) openTimeOffManageDialog() {
+	m.previousMode = m.mode
 	m.mode = modeTimeOff
 	m.timeOffDialogMode = timeOffDialogManage
 	m.timeOffInput = ""
@@ -2861,6 +2865,7 @@ func (m *AppModel) openTimeOffManageDialog() {
 }
 
 func (m *AppModel) openTimeOffRecordDialog() {
+	m.previousMode = m.mode
 	m.mode = modeTimeOff
 	m.timeOffDialogMode = timeOffDialogRecord
 	m.timeOffInput = ""

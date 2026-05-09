@@ -993,45 +993,6 @@ func TestInboxCursorPreservedAfterDismissWithOkaySearch(t *testing.T) {
 	}
 }
 
-func TestInboxDialogBackgroundShowsInboxNotTimeline(t *testing.T) {
-	ctx := context.Background()
-	store := openTestStore(t)
-	defer store.Close()
-
-	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
-		t.Fatalf("CreateProject() error = %v", err)
-	}
-
-	slots := []model.ActivitySlot{
-		{SlotTime: time.Date(2026, 4, 7, 9, 0, 0, 0, time.Local), Operator: "claude-code", Cwd: "/tmp/hrs", MsgCount: 1, FirstText: "debug auth"},
-	}
-	if err := store.UpsertActivitySlots(ctx, slots); err != nil {
-		t.Fatalf("UpsertActivitySlots() error = %v", err)
-	}
-
-	m, err := NewAppModel(ctx, store)
-	if err != nil {
-		t.Fatalf("NewAppModel() error = %v", err)
-	}
-	m.dayDate = dayStart(time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local))
-	m.openInbox()
-
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	app := updated.(AppModel)
-
-	if app.mode != modeEntryEdit {
-		t.Fatalf("mode = %q, want entry-edit", app.mode)
-	}
-
-	view := stripANSI(app.View())
-	if !strings.Contains(view, "Inbox") {
-		t.Fatalf("edit dialog background should show inbox, got: %q", view)
-	}
-	if strings.Contains(view, "Timeline") && !strings.Contains(view, "Inbox") {
-		t.Fatalf("edit dialog background should not be timeline, got: %q", view)
-	}
-}
-
 func TestInboxCWDAwareMerge(t *testing.T) {
 	_, _, m := setupInboxTest(t, []model.ActivitySlot{
 		{SlotTime: time.Date(2026, 4, 7, 9, 0, 0, 0, time.Local), Operator: "claude-code", Cwd: "/tmp/hrs", MsgCount: 1, FirstText: "a"},
@@ -1164,5 +1125,50 @@ func TestInboxMergedEntry(t *testing.T) {
 	}
 	if len(app.inboxItems) != 0 {
 		t.Fatalf("inbox items after save = %d, want 0", len(app.inboxItems))
+	}
+}
+
+func TestInboxEnterDialogBackgroundNoHeaderInDayView(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	slots := []model.ActivitySlot{
+		{SlotTime: time.Date(2026, 4, 7, 9, 0, 0, 0, time.Local), Operator: "claude-code", Cwd: "/tmp/hrs", MsgCount: 1, FirstText: "debug auth"},
+	}
+	if err := store.UpsertActivitySlots(ctx, slots); err != nil {
+		t.Fatalf("UpsertActivitySlots() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local))
+	m.height = 30
+	m.width = 120
+
+	// open inbox from day view
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	app := updated.(AppModel)
+	if app.mode != modeInbox {
+		t.Fatalf("mode = %q, want inbox", app.mode)
+	}
+
+	// hit enter to create entry from inbox
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = updated.(AppModel)
+	if app.mode != modeEntryEdit {
+		t.Fatalf("mode after enter = %q, want entry-edit", app.mode)
+	}
+
+	view := stripANSI(app.View())
+	if strings.Contains(view, "⏱ hrs") {
+		t.Fatalf("edit dialog from inbox should not show ⏱ hrs header in background:\n%s", view)
 	}
 }
