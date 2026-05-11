@@ -6246,6 +6246,42 @@ func TestDayViewThreeRowEntryShowsTitleInsideBody(t *testing.T) {
 	}
 }
 
+func TestDayViewClippedLongEntryShowsLabelOnce(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "hrs", Code: "hrs", Currency: "CHF"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "hrs",
+		Description:  "bitsy claude/chat gpt cancelled issue",
+		StartedAt:    time.Date(2026, 4, 7, 7, 48, 0, 0, time.Local),
+		EndedAt:      time.Date(2026, 4, 7, 9, 12, 0, 0, time.Local),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	m, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	m.SetDefaultTimelineView("day")
+	m.dayDate = dayStart(time.Date(2026, 4, 7, 0, 0, 0, 0, time.Local))
+	m.dayWindowStart = time.Date(2026, 4, 7, 8, 0, 0, 0, time.Local)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 35})
+	app := updated.(AppModel)
+	view := stripANSI(renderDayTimeline(app, newStyles(app.width)))
+
+	// Count occurrences of the label in the day view
+	label := "bitsy claude/chat gpt cancelled issue"
+	count := strings.Count(view, label)
+	if count != 1 {
+		t.Fatalf("label appears %d times, want exactly 1:\n%s", count, view)
+	}
+}
+
 func TestDayViewFocusedThreeRowEntryTouchingAboveShowsTitleInsideBlock(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)

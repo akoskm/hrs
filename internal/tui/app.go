@@ -4410,7 +4410,10 @@ func outlinedBlockCellWithViewport(slotStart, slotEnd, viewportStart, itemStart,
 		return "└" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "┘"
 	}
 	if topClipped {
-		return "│" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "│"
+		if containsMid || midpoint.Before(slotStart) {
+			return "│" + padRight(truncateForWidth(label, innerWidth), innerWidth) + "│"
+		}
+		return "│" + space + "│"
 	}
 	if starts && touchesAbove {
 		if preferInteriorLabel && !hasInteriorRow {
