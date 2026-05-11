@@ -99,11 +99,14 @@ type AppModel struct {
 	timeOffProjectCursor int
 	timeOffTypeCursor    int
 	timeOffField         string
-	gapInput             string
-	gapStartInput        string
-	gapEndInput          string
-	gapInputField        string
-	gapInputCursor       int
+	gapInput                      string
+	gapStartInput                 string
+	gapEndInput                   string
+	gapInputField                 string
+	gapInputCursor                int
+	gapDescriptionHistory         []string
+	gapDescriptionHistoryCursor   int
+	gapDescriptionHistorySaved    string
 	entryInput           string
 	entryStartInput      string
 	entryEndInput        string
@@ -1892,6 +1895,9 @@ func (m *AppModel) openGapEntryDialog() {
 	m.gapStartInput = clock(rng.start)
 	m.gapEndInput = clock(rng.end)
 	m.gapProjectCursor = 0
+	m.gapDescriptionHistory = buildDescriptionHistory(m.allEntries, "")
+	m.gapDescriptionHistoryCursor = -1
+	m.gapDescriptionHistorySaved = ""
 	m.err = nil
 	m.caretVisible = true
 }
@@ -2206,6 +2212,9 @@ func (m *AppModel) closeGapEntryDialog() {
 	m.gapInputField = ""
 	m.gapInputCursor = 0
 	m.gapProjectCursor = 0
+	m.gapDescriptionHistory = nil
+	m.gapDescriptionHistoryCursor = -1
+	m.gapDescriptionHistorySaved = ""
 	m.caretVisible = false
 }
 
@@ -2243,12 +2252,40 @@ func (m *AppModel) handleGapEntryKey(msg tea.KeyMsg) tea.Cmd {
 	case "alt+right", "alt+f":
 		m.moveGapFieldCursorWord(1)
 	case "up", "k":
-		if m.gapProjectCursor > 0 {
-			m.gapProjectCursor--
+		if m.gapInputField == "description" {
+			if m.gapDescriptionHistoryCursor < len(m.gapDescriptionHistory)-1 {
+				m.gapDescriptionHistoryCursor++
+				m.gapInput = m.gapDescriptionHistory[m.gapDescriptionHistoryCursor]
+				m.gapInputCursor = len([]rune(m.gapInput))
+			}
+		} else if m.gapInputField == "project" {
+			if m.gapProjectCursor > 0 {
+				m.gapProjectCursor--
+			}
+		} else if m.gapInputField == "start" {
+			m.gapStartInput = adjustTimeByMinutes(m.gapStartInput, 10)
+		} else if m.gapInputField == "end" {
+			m.gapEndInput = adjustTimeByMinutes(m.gapEndInput, 10)
 		}
 	case "down", "j":
-		if m.gapProjectCursor < len(m.projects) {
-			m.gapProjectCursor++
+		if m.gapInputField == "description" {
+			if m.gapDescriptionHistoryCursor > 0 {
+				m.gapDescriptionHistoryCursor--
+				m.gapInput = m.gapDescriptionHistory[m.gapDescriptionHistoryCursor]
+				m.gapInputCursor = len([]rune(m.gapInput))
+			} else if m.gapDescriptionHistoryCursor == 0 {
+				m.gapDescriptionHistoryCursor = -1
+				m.gapInput = m.gapDescriptionHistorySaved
+				m.gapInputCursor = len([]rune(m.gapInput))
+			}
+		} else if m.gapInputField == "project" {
+			if m.gapProjectCursor < len(m.projects) {
+				m.gapProjectCursor++
+			}
+		} else if m.gapInputField == "start" {
+			m.gapStartInput = adjustTimeByMinutes(m.gapStartInput, -10)
+		} else if m.gapInputField == "end" {
+			m.gapEndInput = adjustTimeByMinutes(m.gapEndInput, -10)
 		}
 	case "backspace":
 		m.backspaceGapFieldInput()

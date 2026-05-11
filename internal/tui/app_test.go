@@ -2106,6 +2106,100 @@ func TestGapDialogDefaultsToSelectedSlotRange(t *testing.T) {
 	}
 }
 
+func TestGapDialogUpDownFieldAware(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	if _, err := store.CreateProject(ctx, db.ProjectCreateInput{Name: "P", Code: "p", Currency: "USD"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "p",
+		Description:  "First task",
+		StartedAt:    time.Date(2026, 4, 3, 11, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+	if _, err := store.CreateManualEntry(ctx, db.ManualEntryInput{
+		ProjectIdent: "p",
+		Description:  "Second task",
+		StartedAt:    time.Date(2026, 4, 3, 9, 0, 0, 0, time.UTC),
+		EndedAt:      time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("CreateManualEntry() error = %v", err)
+	}
+
+	model, err := NewAppModel(ctx, store)
+	if err != nil {
+		t.Fatalf("NewAppModel() error = %v", err)
+	}
+	model.InitializeTodayTimelineView()
+	model.daySlotStart = time.Date(2026, 4, 3, 15, 15, 0, 0, time.Local)
+	model.daySlotSpan = time.Hour
+	model.dayFocusKind = "slot"
+	model.openGapEntryDialog()
+
+	// description field: up should cycle to most recent description first
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyUp})
+	app := updated.(AppModel)
+	if app.gapInput != "First task" {
+		t.Fatalf("after up on desc: gapInput = %q, want First task", app.gapInput)
+	}
+
+	// up again to older description
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	app = updated.(AppModel)
+	if app.gapInput != "Second task" {
+		t.Fatalf("after second up on desc: gapInput = %q, want Second task", app.gapInput)
+	}
+
+	// down should cycle back to newer
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = updated.(AppModel)
+	if app.gapInput != "First task" {
+		t.Fatalf("after down on desc: gapInput = %q, want First task", app.gapInput)
+	}
+
+	// down again to restore empty
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = updated.(AppModel)
+	if app.gapInput != "" {
+		t.Fatalf("after second down on desc: gapInput = %q, want empty (restored)", app.gapInput)
+	}
+
+	// tab to project field
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	if app.gapInputField != "project" {
+		t.Fatalf("gapInputField = %q, want project", app.gapInputField)
+	}
+
+	// up on project should move cursor
+	initialCursor := app.gapProjectCursor
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = updated.(AppModel)
+	if app.gapProjectCursor != initialCursor+1 {
+		t.Fatalf("project cursor = %d, want %d", app.gapProjectCursor, initialCursor+1)
+	}
+
+	// tab to start field
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
+	if app.gapInputField != "start" {
+		t.Fatalf("gapInputField = %q, want start", app.gapInputField)
+	}
+
+	initialStart := app.gapStartInput
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	app = updated.(AppModel)
+	wantStartUp := adjustTimeByMinutes(initialStart, 10)
+	if app.gapStartInput != wantStartUp {
+		t.Fatalf("after up on start: gapStartInput = %q, want %q", app.gapStartInput, wantStartUp)
+	}
+}
+
 func TestGapDialogUsesEditedTimesOnCreate(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -2205,6 +2299,8 @@ func TestTimelineDayViewCreateManualEntryFromGap(t *testing.T) {
 		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		app = updated.(AppModel)
 	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
 	app = updated.(AppModel)
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -4331,6 +4427,8 @@ func TestSpaceMarkSlotRangeAndCreateEntry(t *testing.T) {
 		updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		app = updated.(AppModel)
 	}
+	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = updated.(AppModel)
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
 	app = updated.(AppModel)
 	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
